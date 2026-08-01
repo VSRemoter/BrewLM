@@ -20,9 +20,19 @@ export interface Source {
 export interface ChatMessage {
   id: string;
   notebook_id: string;
+  chat_id: string | null;
   role: "user" | "assistant";
   content: string;
   created_at: number;
+}
+
+/** A saved conversation thread within a notebook. */
+export interface Chat {
+  id: string;
+  notebook_id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research";

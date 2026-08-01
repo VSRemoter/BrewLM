@@ -26,6 +26,31 @@ window.addEventListener("unhandledrejection", (e) =>
   showFatal(e.reason instanceof Error ? e.reason.message : String(e.reason))
 );
 
+/* ------------------------- App zoom (⌘+ / ⌘- / ⌘0) ------------------------ */
+const ZOOM_KEY = "om.zoom";
+let zoom = Number(localStorage.getItem(ZOOM_KEY)) || 1;
+const applyZoom = () => {
+  document.documentElement.style.setProperty("zoom", String(zoom));
+};
+applyZoom();
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  if (e.key === "=" || e.key === "+" || e.code === "NumpadAdd") {
+    e.preventDefault();
+    zoom = Math.min(1.6, Math.round((zoom + 0.1) * 100) / 100);
+  } else if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract") {
+    e.preventDefault();
+    zoom = Math.max(0.6, Math.round((zoom - 0.1) * 100) / 100);
+  } else if (e.key === "0") {
+    e.preventDefault();
+    zoom = 1;
+  } else {
+    return;
+  }
+  localStorage.setItem(ZOOM_KEY, String(zoom));
+  applyZoom();
+});
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

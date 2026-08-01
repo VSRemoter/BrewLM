@@ -1,4 +1,4 @@
-import { BookOpen, Plus, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { BookOpen, Pencil, Plus, Settings as SettingsIcon, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Notebook } from "../lib/types";
 import { formatTime } from "../lib/source";
@@ -9,16 +9,20 @@ export default function Home({
   onOpen,
   onCreate,
   onDelete,
+  onRename,
   onSettings,
 }: {
   notebooks: Notebook[];
   onOpen: (id: string) => void;
   onCreate: (title: string) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
   onSettings: () => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   const sorted = useMemo(() => notebooks, [notebooks]);
 
@@ -28,6 +32,12 @@ export default function Home({
     onCreate(t);
     setTitle("");
     setCreating(false);
+  };
+
+  const commitRename = (id: string, original: string) => {
+    const t = renameDraft.trim();
+    setRenamingId(null);
+    if (t && t !== original) onRename(id, t);
   };
 
   return (
@@ -71,23 +81,52 @@ export default function Home({
             {sorted.map((nb) => (
               <div
                 key={nb.id}
-                onClick={() => onOpen(nb.id)}
+                onClick={() => renamingId !== nb.id && onOpen(nb.id)}
                 className="group relative flex h-[120px] cursor-pointer flex-col justify-between rounded-xl border border-edge bg-panel p-4 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)]"
               >
-                <span className="line-clamp-2 text-[13.5px] font-medium leading-snug tracking-tight">
-                  {nb.title}
-                </span>
+                {renamingId === nb.id ? (
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename(nb.id, nb.title);
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                    onBlur={() => commitRename(nb.id, nb.title)}
+                    className="rounded-md border border-edge bg-canvas px-2 py-1 text-[13.5px] font-medium tracking-tight outline-none focus:border-ink-3"
+                    aria-label="Notebook title"
+                  />
+                ) : (
+                  <span className="line-clamp-2 text-[13.5px] font-medium leading-snug tracking-tight">
+                    {nb.title}
+                  </span>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-[11.5px] text-ink-3">{formatTime(nb.updated_at)}</span>
-                  <span
-                    className="rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-danger-bg hover:text-danger group-hover:opacity-100"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(nb.id);
-                    }}
-                    title="Delete notebook"
-                  >
-                    <Trash2 size={13} strokeWidth={1.8} />
+                  <span className="flex items-center gap-0.5">
+                    <span
+                      className="rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-hover-soft hover:text-ink group-hover:opacity-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingId(nb.id);
+                        setRenameDraft(nb.title);
+                      }}
+                      title="Rename notebook"
+                    >
+                      <Pencil size={12.5} strokeWidth={1.8} />
+                    </span>
+                    <span
+                      className="rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-danger-bg hover:text-danger group-hover:opacity-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(nb.id);
+                      }}
+                      title="Delete notebook"
+                    >
+                      <Trash2 size={13} strokeWidth={1.8} />
+                    </span>
                   </span>
                 </div>
               </div>

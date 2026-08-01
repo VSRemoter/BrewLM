@@ -59,16 +59,22 @@ export function buildSystemPrompt(sources: Source[]): string {
 
 export default function ChatPanel({
   notebookId,
+  chatId,
   notebookTitle,
+  chatTitle,
   sources,
   settings,
   onOpenSettings,
+  onChatActivity,
 }: {
   notebookId: string;
+  chatId: string | null;
   notebookTitle: string;
+  chatTitle: string;
   sources: Source[];
   settings: Settings;
   onOpenSettings: () => void;
+  onChatActivity?: (chatId: string, firstUserText?: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -78,10 +84,14 @@ export default function ChatPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    if (!chatId) {
+      setMessages([]);
+      return;
+    }
     import("../lib/db").then(({ listMessages }) =>
-      listMessages(notebookId).then(setMessages)
+      listMessages(chatId).then(setMessages)
     );
-  }, [notebookId]);
+  }, [chatId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -92,11 +102,12 @@ export default function ChatPanel({
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || streaming !== null) return;
+    if (!text || streaming !== null || !chatId) return;
     setError(null);
     setDraft("");
+    const isFirst = messages.length === 0;
 
-    const userMsg = await addMessage(notebookId, "user", text);
+    const userMsg = await addMessage(chatId, notebookId, "user", text);
     const history = [...messages, userMsg];
     setMessages(history);
     setStreaming("");
@@ -117,18 +128,19 @@ export default function ChatPanel({
         acc += delta;
         setStreaming(acc);
       }
-      const assistantMsg = await addMessage(notebookId, "assistant", acc || "(no response)");
+      const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc || "(no response)");
       setMessages([...history, assistantMsg]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       if (acc) {
-        const assistantMsg = await addMessage(notebookId, "assistant", acc);
+        const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc);
         setMessages([...history, assistantMsg]);
       }
     } finally {
       setStreaming(null);
       textareaRef.current?.focus();
     }
+    onChatActivity?.(chatId, isFirst ? text : undefined);
   };
 
   return (
@@ -136,7 +148,7 @@ export default function ChatPanel({
       {/* header */}
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-edge-soft bg-panel px-4">
         <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
-          Chat
+          Chat{chatTitle ? ` · ${chatTitle}` : ""}
         </span>
         <div className="flex items-center gap-1">
           {!keyed && (
@@ -149,7 +161,8 @@ export default function ChatPanel({
           )}
           <IconButton
             onClick={async () => {
-              await clearMessages(notebookId);
+              if (!chatId) return;
+              await clearMessages(chatId);
               setMessages([]);
             }}
             label="Clear chat"

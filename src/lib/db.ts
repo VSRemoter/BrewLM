@@ -1,6 +1,6 @@
 import Database from "@tauri-apps/plugin-sql";
 import { CONSTITUTION_BODY, CONSTITUTION_TITLE } from "./constitution";
-import type { Artifact, ArtifactKind, ChatMessage, Notebook, Source, SourceType } from "./types";
+import type { Artifact, ArtifactKind, Chat, ChatMessage, Notebook, Source, SourceType } from "./types";
 
 export function uid(): string {
   return crypto.randomUUID();
@@ -37,6 +37,35 @@ export async function getDb(): Promise<Database> {
       created_at INTEGER NOT NULL
     )`);
   await db.execute(`
+    CREATE TABLE IF NOT EXISTS chats (
+      id TEXT PRIMARY KEY,
+      notebook_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+  // chat_sessions migration: messages gain chat_id; pre-existing threads
+  // become a single "Chat 1" per notebook.
+  const msgCols = await db.select<{ name: string }[]>("PRAGMA table_info(messages)");
+  if (!msgCols.some((c) => c.name === "chat_id")) {
+    await db.execute("ALTER TABLE messages ADD COLUMN chat_id TEXT");
+    const owners = await db.select<{ notebook_id: string }[]>(
+      "SELECT DISTINCT notebook_id FROM messages"
+    );
+    for (const { notebook_id } of owners) {
+      const now = Date.now();
+      const chatId = uid();
+      await db.execute(
+        "INSERT INTO chats (id, notebook_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+        [chatId, notebook_id, "Chat 1", now, now]
+      );
+      await db.execute(
+        "UPDATE messages SET chat_id = $1 WHERE notebook_id = $2 AND chat_id IS NULL",
+        [chatId, notebook_id]
+      );
+    }
+  }
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,
       notebook_id TEXT NOT NULL,
@@ -52,6 +81,8 @@ export async function getDb(): Promise<Database> {
     )`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chats_nb ON chats(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_artifacts_nb ON artifacts(notebook_id)`);
   return db;
 }
@@ -96,6 +127,7 @@ export async function deleteNotebook(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM sources WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM messages WHERE notebook_id = $1", [id]);
+  await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
 }
@@ -155,15 +187,16 @@ export async function deleteSource(id: string): Promise<void> {
 
 /* ------------------------------- Messages ------------------------------ */
 
-export async function listMessages(notebookId: string): Promise<ChatMessage[]> {
+export async function listMessages(chatId: string): Promise<ChatMessage[]> {
   const d = await getDb();
   return d.select<ChatMessage[]>(
-    "SELECT * FROM messages WHERE notebook_id = $1 ORDER BY created_at ASC",
-    [notebookId]
+    "SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at ASC",
+    [chatId]
   );
 }
 
 export async function addMessage(
+  chatId: string,
   notebookId: string,
   role: "user" | "assistant",
   content: string
@@ -172,21 +205,67 @@ export async function addMessage(
   const msg: ChatMessage = {
     id: uid(),
     notebook_id: notebookId,
+    chat_id: chatId,
     role,
     content,
     created_at: Date.now(),
   };
   await d.execute(
-    "INSERT INTO messages (id, notebook_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)",
-    [msg.id, msg.notebook_id, msg.role, msg.content, msg.created_at]
+    "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+    [msg.id, msg.notebook_id, msg.chat_id, msg.role, msg.content, msg.created_at]
   );
+  await touchChat(chatId);
   await touchNotebook(notebookId);
   return msg;
 }
 
-export async function clearMessages(notebookId: string): Promise<void> {
+export async function clearMessages(chatId: string): Promise<void> {
   const d = await getDb();
-  await d.execute("DELETE FROM messages WHERE notebook_id = $1", [notebookId]);
+  await d.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
+}
+
+/* --------------------------------- Chats ------------------------------- */
+
+export async function listChats(notebookId: string): Promise<Chat[]> {
+  const d = await getDb();
+  return d.select<Chat[]>(
+    "SELECT * FROM chats WHERE notebook_id = $1 ORDER BY updated_at DESC",
+    [notebookId]
+  );
+}
+
+export async function createChat(notebookId: string, title = "New chat"): Promise<Chat> {
+  const d = await getDb();
+  const now = Date.now();
+  const chat: Chat = {
+    id: uid(),
+    notebook_id: notebookId,
+    title,
+    created_at: now,
+    updated_at: now,
+  };
+  await d.execute(
+    "INSERT INTO chats (id, notebook_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+    [chat.id, chat.notebook_id, chat.title, chat.created_at, chat.updated_at]
+  );
+  await touchNotebook(notebookId);
+  return chat;
+}
+
+export async function renameChat(id: string, title: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE chats SET title = $1 WHERE id = $2", [title, id]);
+}
+
+export async function touchChat(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE chats SET updated_at = $1 WHERE id = $2", [Date.now(), id]);
+}
+
+export async function deleteChat(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM messages WHERE chat_id = $1", [id]);
+  await d.execute("DELETE FROM chats WHERE id = $1", [id]);
 }
 
 /* ------------------------------ Artifacts ------------------------------ */

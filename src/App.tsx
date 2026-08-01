@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import SettingsModal from "./components/SettingsModal";
-import { createNotebook, deleteNotebook, getDb, listNotebooks } from "./lib/db";
+import { createNotebook, deleteNotebook, getDb, listNotebooks, renameNotebook } from "./lib/db";
 import { loadSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themes";
 import type { Notebook, Settings } from "./lib/types";
@@ -88,6 +88,10 @@ export default function App() {
           }}
           onDelete={async (id) => {
             await deleteNotebook(id);
+            await refresh();
+          }}
+          onRename={async (id, title) => {
+            await renameNotebook(id, title);
             await refresh();
           }}
         />
