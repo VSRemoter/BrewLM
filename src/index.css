@@ -1,0 +1,434 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   OpenMind design tokens.
+   @theme emits the "Original" palette to :root; every other theme overrides
+   the same vars beneath its [data-theme="…"] selector. All components use
+   these tokens, so the whole app recolors instantly.
+   ========================================================================== */
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Original — light, neutral */
+  --color-canvas: #fafafa;
+  --color-panel: #ffffff;
+  --color-edge: #e5e5e5;
+  --color-edge-soft: #eeeeee;
+  --color-ink: #171717;
+  --color-ink-2: #525252;
+  --color-ink-3: #8a8a8a;
+  --color-accent: #171717;
+  --color-accent-ink: #ffffff;
+  --color-hover: #f5f5f5;
+  --color-hover-soft: #fafafa;
+
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-danger-edge: #f1b8b8;
+  --color-ok: #15803d;
+  --color-ok-bg: #f0fdf4;
+  --color-ok-edge: #7ed9a0;
+  --color-warn: #92400e;
+  --color-warn-bg: #fffbeb;
+  --color-warn-edge: #fcd34d;
+  --color-link: #2563eb;
+  --color-select: #dbeafe;
+  --color-scroll: #d4d4d4;
+  --color-code-bg: #f3f3f3;
+  --color-pre-bg: #171717;
+  --color-pre-ink: #f5f5f5;
+}
+
+/* ------------------------------- Midnight ------------------------------- */
+[data-theme="midnight"] {
+  color-scheme: dark;
+  --color-canvas: #0e0e11;
+  --color-panel: #17171b;
+  --color-edge: #2b2b31;
+  --color-edge-soft: #202025;
+  --color-ink: #f4f4f5;
+  --color-ink-2: #a1a1aa;
+  --color-ink-3: #6e6e78;
+  --color-accent: #f4f4f5;
+  --color-accent-ink: #101012;
+  --color-hover: #26262c;
+  --color-hover-soft: #1d1d22;
+  --color-danger: #f87171;
+  --color-danger-bg: #2b1418;
+  --color-danger-edge: #55262d;
+  --color-ok: #4ade80;
+  --color-ok-bg: #12241a;
+  --color-ok-edge: #1e4d2f;
+  --color-warn: #fcd34d;
+  --color-warn-bg: #27200d;
+  --color-warn-edge: #5a4a17;
+  --color-link: #60a5fa;
+  --color-select: #274156;
+  --color-scroll: #3a3a41;
+  --color-code-bg: #232329;
+  --color-pre-bg: #0a0a0d;
+  --color-pre-ink: #e4e4e7;
+}
+
+/* -------------------------------- Forest -------------------------------- */
+[data-theme="forest"] {
+  color-scheme: dark;
+  --color-canvas: #0c1410;
+  --color-panel: #121f18;
+  --color-edge: #24402f;
+  --color-edge-soft: #192b21;
+  --color-ink: #e8f2ea;
+  --color-ink-2: #9cb8a6;
+  --color-ink-3: #64826f;
+  --color-accent: #3ecf8e;
+  --color-accent-ink: #04231a;
+  --color-hover: #1c2f25;
+  --color-hover-soft: #16241c;
+  --color-danger: #f9a1ad;
+  --color-danger-bg: #2c141a;
+  --color-danger-edge: #57242f;
+  --color-ok: #4ade80;
+  --color-ok-bg: #122619;
+  --color-ok-edge: #20522f;
+  --color-warn: #fcd34d;
+  --color-warn-bg: #282307;
+  --color-warn-edge: #5c5210;
+  --color-link: #6ee7b7;
+  --color-select: #1c3a2a;
+  --color-scroll: #2e5240;
+  --color-code-bg: #1a2d22;
+  --color-pre-bg: #07100b;
+  --color-pre-ink: #d2ecd9;
+}
+
+/* --------------------------------- Ocean -------------------------------- */
+[data-theme="ocean"] {
+  color-scheme: dark;
+  --color-canvas: #081120;
+  --color-panel: #0f1c31;
+  --color-edge: #223a5c;
+  --color-edge-soft: #16283f;
+  --color-ink: #e7effc;
+  --color-ink-2: #9ab1d1;
+  --color-ink-3: #61789c;
+  --color-accent: #4da2ff;
+  --color-accent-ink: #051b30;
+  --color-hover: #1a2c48;
+  --color-hover-soft: #13233a;
+  --color-danger: #fda4af;
+  --color-danger-bg: #2c1620;
+  --color-danger-edge: #592936;
+  --color-ok: #4ade80;
+  --color-ok-bg: #10251c;
+  --color-ok-edge: #1d4f33;
+  --color-warn: #fcd34d;
+  --color-warn-bg: #29240c;
+  --color-warn-edge: #5b5212;
+  --color-link: #7cc4ff;
+  --color-select: #1c3f66;
+  --color-scroll: #2c4a73;
+  --color-code-bg: #152744;
+  --color-pre-bg: #040b18;
+  --color-pre-ink: #d8e7fa;
+}
+
+/* -------------------------------- Copper -------------------------------- */
+[data-theme="copper"] {
+  color-scheme: dark;
+  --color-canvas: #170e08;
+  --color-panel: #221509;
+  --color-edge: #432c17;
+  --color-edge-soft: #2f1e0e;
+  --color-ink: #f6ebdf;
+  --color-ink-2: #c9a88c;
+  --color-ink-3: #92725a;
+  --color-accent: #e8853d;
+  --color-accent-ink: #2a1100;
+  --color-hover: #31210f;
+  --color-hover-soft: #291a0b;
+  --color-danger: #fca5a5;
+  --color-danger-bg: #301612;
+  --color-danger-edge: #5e2b23;
+  --color-ok: #7fc98a;
+  --color-ok-bg: #152410;
+  --color-ok-edge: #2f5224;
+  --color-warn: #ffd166;
+  --color-warn-bg: #2c240a;
+  --color-warn-edge: #63520f;
+  --color-link: #ffab5e;
+  --color-select: #503215;
+  --color-scroll: #554027;
+  --color-code-bg: #2a1a0e;
+  --color-pre-bg: #0f0702;
+  --color-pre-ink: #f4e3cf;
+}
+
+/* --------------------------------- Wine --------------------------------- */
+[data-theme="wine"] {
+  color-scheme: dark;
+  --color-canvas: #140a10;
+  --color-panel: #1f1119;
+  --color-edge: #41232f;
+  --color-edge-soft: #2b161f;
+  --color-ink: #f7e9f0;
+  --color-ink-2: #c09aac;
+  --color-ink-3: #8a6175;
+  --color-accent: #d85674;
+  --color-accent-ink: #2a0712;
+  --color-hover: #301a25;
+  --color-hover-soft: #27141c;
+  --color-danger: #f97583;
+  --color-danger-bg: #2c1316;
+  --color-danger-edge: #582326;
+  --color-ok: #4ade80;
+  --color-ok-bg: #101f17;
+  --color-ok-edge: #1e4a2e;
+  --color-warn: #fcd34d;
+  --color-warn-bg: #28220a;
+  --color-warn-edge: #5c4d10;
+  --color-link: #f0a8be;
+  --color-select: #461a2a;
+  --color-scroll: #51283a;
+  --color-code-bg: #27141e;
+  --color-pre-bg: #0d050a;
+  --color-pre-ink: #f3dfe9;
+}
+
+/* --------------------------------- Rose --------------------------------- */
+[data-theme="rose"] {
+  color-scheme: light;
+  --color-canvas: #fdf1f6;
+  --color-panel: #ffffff;
+  --color-edge: #f2d3e1;
+  --color-edge-soft: #f8e2ec;
+  --color-ink: #3f1a2d;
+  --color-ink-2: #93536f;
+  --color-ink-3: #c18ba6;
+  --color-accent: #ec4899;
+  --color-accent-ink: #ffffff;
+  --color-hover: #f9e3ee;
+  --color-hover-soft: #fceaf3;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f3;
+  --color-danger-edge: #f0b6bf;
+  --color-ok: #0ca678;
+  --color-ok-bg: #eafaf4;
+  --color-ok-edge: #7edcb9;
+  --color-warn: #b45309;
+  --color-warn-bg: #fff8e6;
+  --color-warn-edge: #f3cd72;
+  --color-link: #db2777;
+  --color-select: #f7cde1;
+  --color-scroll: #eec4d8;
+  --color-code-bg: #fbe6f0;
+  --color-pre-bg: #3d1428;
+  --color-pre-ink: #fce0ee;
+}
+
+/* -------------------------------- Matrix -------------------------------- */
+[data-theme="matrix"] {
+  color-scheme: dark;
+  --font-sans: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --color-canvas: #010603;
+  --color-panel: #04140b;
+  --color-edge: #11452a;
+  --color-edge-soft: #082014;
+  --color-ink: #a3f7bf;
+  --color-ink-2: #52b96f;
+  --color-ink-3: #2d7a44;
+  --color-accent: #22e05c;
+  --color-accent-ink: #011505;
+  --color-hover: #0a2b18;
+  --color-hover-soft: #062010;
+  --color-danger: #ff5964;
+  --color-danger-bg: #260a10;
+  --color-danger-edge: #561420;
+  --color-ok: #22ff88;
+  --color-ok-bg: #042a14;
+  --color-ok-edge: #0b5c2c;
+  --color-warn: #ffd83d;
+  --color-warn-bg: #242005;
+  --color-warn-edge: #575106;
+  --color-link: #4ade80;
+  --color-select: #0e3d1e;
+  --color-scroll: #14532d;
+  --color-code-bg: #062413;
+  --color-pre-bg: #000b04;
+  --color-pre-ink: #86efac;
+}
+
+/* Matrix phosphor glow on primary surfaces */
+[data-theme="matrix"] .bg-accent {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+/* ============================ base application ============================ */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+::selection {
+  background: var(--color-select);
+}
+
+/* Thin, unobtrusive scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scroll) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-scroll);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Markdown-ish rendering inside chat bubbles */
+.md p {
+  margin: 0 0 0.75em;
+}
+.md p:last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3 {
+  font-weight: 600;
+  margin: 1em 0 0.5em;
+}
+.md h1 {
+  font-size: 1.1em;
+}
+.md h2 {
+  font-size: 1.05em;
+}
+.md h3 {
+  font-size: 1em;
+}
+.md ul,
+.md ol {
+  margin: 0 0 0.75em 1.25em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.2em 0;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.md pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-pre-bg);
+  color: var(--color-pre-ink);
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 0 0 0.75em;
+}
+.md pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.md blockquote {
+  border-left: 2px solid var(--color-edge);
+  padding-left: 0.9em;
+  color: var(--color-ink-2);
+  margin: 0 0 0.75em;
+}
+.md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.75em;
+  font-size: 0.92em;
+}
+.md th {
+  text-align: left;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--color-edge);
+}
+.md td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--color-edge-soft);
+  vertical-align: top;
+}
+.md tr:last-child td {
+  border-bottom: none;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--color-edge-soft);
+  margin: 1em 0;
+}
+.md a {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@keyframes om-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.anim-fade-up {
+  animation: om-fade-up 0.22s ease-out both;
+}
+
+@keyframes om-pulse-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+.typing-dot {
+  animation: om-pulse-dot 1.2s infinite;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
