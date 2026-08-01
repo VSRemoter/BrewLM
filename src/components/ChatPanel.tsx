@@ -1,23 +1,39 @@
-import { ArrowUp, BookOpen, Settings2, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowUp, BookOpen, FileText, Settings2, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { addMessage, clearMessages } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
+import {
+  buildMentionCatalog,
+  resolveMentions,
+  segmentMentions,
+  type MentionItem,
+} from "../lib/mentions";
 import { streamChat, type LlmMessage } from "../lib/llm";
 import { activeKey } from "../lib/settings";
-import type { ChatMessage, Settings, Source } from "../lib/types";
+import type { Artifact, ChatMessage, Settings, Source } from "../lib/types";
 import { IconButton, TypingDots } from "./ui";
 
 const MAX_CONSTITUTION_CHARS = 6000;
 const MAX_SOURCE_CHARS = 6000;
 const MAX_TOTAL_CONTEXT = 30_000;
+const MAX_MENTION_CHARS = 8000;
+const MAX_MENTION_TOTAL = 16_000;
 const HISTORY_LIMIT = 16;
 
-export function buildSystemPrompt(sources: Source[]): string {
+export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = []): string {
   const constitutions = sources.filter(
     (s) => s.type === "context" && s.content.trim()
   );
+  // Mentioned sources move into the priority section — don't include twice.
+  const mentionedSourceIds = new Set(
+    mentioned.filter((m) => m.group === "source").map((m) => m.id)
+  );
   const knowledge = sources.filter(
-    (s) => s.type !== "context" && s.content && !s.content.startsWith("data:")
+    (s) =>
+      s.type !== "context" &&
+      s.content &&
+      !s.content.startsWith("data:") &&
+      !mentionedSourceIds.has(s.id)
   );
 
   const parts: string[] = ["You are OpenMind, a thoughtful study assistant."];
@@ -34,12 +50,35 @@ export function buildSystemPrompt(sources: Source[]): string {
     parts.push(`# Notebook constitution\n${body}\n\nThe constitution above governs how you behave in this notebook — follow it strictly. Where it conflicts with the default rules below, the constitution wins.`);
   }
 
-  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
+  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
+
+  if (mentioned.length > 0) {
+    let budget = MAX_MENTION_TOTAL;
+    const sections: string[] = [];
+    for (const m of mentioned) {
+      if (budget <= 0) break;
+      const cap = Math.min(MAX_MENTION_CHARS, budget);
+      const body = m.text
+        ? m.text.length > cap
+          ? m.text.slice(0, cap) + "\n[…truncated]"
+          : m.text
+        : "[No readable text — this is a binary/media file; acknowledge it by title, but don't invent its contents.]";
+      sections.push(
+        `### @${m.title} (${m.group === "source" ? "Source" : "Output"} · ${m.type})\n${body}`
+      );
+      budget -= body.length;
+    }
+    parts.push(
+      `# @-mentioned materials — PRIORITY\nThe user pointed at these with @, so focus on them and cite them by title:\n\n${sections.join("\n\n")}`
+    );
+  }
 
   if (knowledge.length === 0) {
-    parts.push(
-      "The user has not added any knowledge sources yet — encourage them to add sources, or answer simple questions generally."
-    );
+    if (mentioned.length === 0) {
+      parts.push(
+        "The user has not added any knowledge sources yet — encourage them to add sources, or answer simple questions generally."
+      );
+    }
     return parts.join("\n\n");
   }
 
@@ -57,12 +96,26 @@ export function buildSystemPrompt(sources: Source[]): string {
   return parts.join("\n\n");
 }
 
+/** Grow the textarea with its content, up to ~10 lines. */
+function autoSize(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+}
+
+/** Detect `@query` at the caret: prefix must be start/whitespace/paren. */
+function detectMention(value: string, caret: number): { start: number; query: string } | null {
+  const m = /(^|[\s(])@([^\n@]{0,80})$/.exec(value.slice(0, caret));
+  if (!m) return null;
+  return { start: caret - m[2].length - 1, query: m[2] };
+}
+
 export default function ChatPanel({
   notebookId,
   chatId,
   notebookTitle,
   chatTitle,
   sources,
+  artifacts,
   settings,
   onOpenSettings,
   onChatActivity,
@@ -72,6 +125,7 @@ export default function ChatPanel({
   notebookTitle: string;
   chatTitle: string;
   sources: Source[];
+  artifacts: Artifact[];
   settings: Settings;
   onOpenSettings: () => void;
   onChatActivity?: (chatId: string, firstUserText?: string) => void;
@@ -80,8 +134,33 @@ export default function ChatPanel({
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const catalog = useMemo(() => buildMentionCatalog(sources, artifacts), [sources, artifacts]);
+  const mentionHits = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.trim().toLowerCase();
+    const all = q ? catalog.filter((c) => c.title.toLowerCase().includes(q)) : catalog;
+    return all.slice(0, 8);
+  }, [mention, catalog]);
+  const activeIdx = Math.min(mention?.active ?? 0, Math.max(mentionHits.length - 1, 0));
+
+  const acceptMention = (item: MentionItem) => {
+    if (!mention) return;
+    const ta = textareaRef.current;
+    const caret = ta?.selectionStart ?? draft.length;
+    setDraft(draft.slice(0, mention.start) + `@${item.title} ` + draft.slice(caret));
+    setMention(null);
+    const pos = mention.start + item.title.length + 2;
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+      autoSize(ta);
+    });
+  };
 
   useEffect(() => {
     if (!chatId) {
@@ -105,6 +184,7 @@ export default function ChatPanel({
     if (!text || streaming !== null || !chatId) return;
     setError(null);
     setDraft("");
+    setMention(null);
     const isFirst = messages.length === 0;
 
     const userMsg = await addMessage(chatId, notebookId, "user", text);
@@ -112,8 +192,17 @@ export default function ChatPanel({
     setMessages(history);
     setStreaming("");
 
+    // Mentions from recent user turns keep their priority across follow-ups.
+    const mentioned = resolveMentions(
+      history
+        .filter((m) => m.role === "user")
+        .slice(-8)
+        .map((m) => m.content)
+        .join("\n"),
+      catalog
+    );
     const llmMessages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(sources) },
+      { role: "system", content: buildSystemPrompt(sources, mentioned) },
       ...history.slice(-HISTORY_LIMIT).map((m) => ({ role: m.role, content: m.content })),
     ];
 
@@ -191,7 +280,7 @@ export default function ChatPanel({
         ) : (
           <div className="mx-auto max-w-2xl px-5 py-6">
             {messages.map((m) => (
-              <Bubble key={m.id} role={m.role} content={m.content} />
+              <Bubble key={m.id} role={m.role} content={m.content} items={catalog} />
             ))}
             {streaming !== null && (
               <div className="anim-fade-up mb-5 flex justify-start">
@@ -219,7 +308,40 @@ export default function ChatPanel({
 
       {/* input */}
       <div className="shrink-0 px-5 pb-5 pt-2">
-        <div className="mx-auto max-w-2xl">
+        <div className="relative mx-auto max-w-2xl">
+          {/* @-mention suggestions */}
+          {mention && mentionHits.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {mentionHits.map((item, i) => (
+                  <button
+                    key={item.id}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptMention(item);
+                    }}
+                    onMouseEnter={() => setMention((m) => (m ? { ...m, active: i } : m))}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                      i === activeIdx ? "bg-hover" : ""
+                    }`}
+                  >
+                    {item.group === "source" ? (
+                      <FileText size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    ) : (
+                      <Sparkles size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-[13px]">{item.title}</span>
+                    <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                      {item.type}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to insert · Esc to dismiss
+              </p>
+            </div>
+          )}
           <div
             className={`flex items-end gap-2 rounded-2xl border bg-panel p-2 pl-4 shadow-sm transition-colors ${
               streaming !== null ? "border-edge-soft" : "border-edge focus-within:border-ink-3"
@@ -230,10 +352,41 @@ export default function ChatPanel({
               value={draft}
               onChange={(e) => {
                 setDraft(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                autoSize(e.target);
+                const hit = detectMention(e.target.value, e.target.selectionStart);
+                setMention(hit ? { ...hit, active: 0 } : null);
+              }}
+              onSelect={(e) => {
+                const el = e.currentTarget;
+                setMention((prev) => {
+                  const hit = detectMention(el.value, el.selectionStart);
+                  if (!hit) return null;
+                  return { ...hit, active: prev && prev.query === hit.query ? prev.active : 0 };
+                });
               }}
               onKeyDown={(e) => {
+                if (mention && mentionHits.length > 0) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMention((m) => m && { ...m, active: (activeIdx + 1) % mentionHits.length });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMention((m) => m && { ...m, active: (activeIdx - 1 + mentionHits.length) % mentionHits.length });
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === "Tab") {
+                    e.preventDefault();
+                    acceptMention(mentionHits[activeIdx]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMention(null);
+                    return;
+                  }
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   send();
@@ -241,7 +394,7 @@ export default function ChatPanel({
               }}
               rows={1}
               placeholder={
-                sources.length > 0 ? "Ask about your sources…" : "Ask anything…"
+                sources.length > 0 ? "Ask about your sources… (@ to reference)" : "Ask anything…"
               }
               className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3"
             />
@@ -263,12 +416,36 @@ export default function ChatPanel({
   );
 }
 
-function Bubble({ role, content }: { role: "user" | "assistant"; content: string }) {
+function Bubble({
+  role,
+  content,
+  items,
+}: {
+  role: "user" | "assistant";
+  content: string;
+  items: MentionItem[];
+}) {
+  const segments = useMemo(
+    () => (role === "user" ? segmentMentions(content, items) : []),
+    [role, content, items]
+  );
   if (role === "user") {
     return (
       <div className="anim-fade-up mb-5 flex justify-end">
         <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-tr-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-accent-ink">
-          {content}
+          {segments.map((seg, i) =>
+            seg.item ? (
+              <span
+                key={i}
+                title={`${seg.item.group === "source" ? "Source" : "Output"} · ${seg.item.type}`}
+                className="rounded-md border border-accent-ink/25 bg-accent-ink/10 px-1 py-px text-[12.5px] font-medium"
+              >
+                {seg.text}
+              </span>
+            ) : (
+              <span key={i}>{seg.text}</span>
+            )
+          )}
         </div>
       </div>
     );

@@ -230,6 +230,7 @@ export default function NotebookView({
           notebookTitle={notebook.title}
           chatTitle={activeChat?.title ?? ""}
           sources={sources}
+          artifacts={artifacts}
           settings={settings}
           onOpenSettings={onOpenSettings}
           onChatActivity={handleChatActivity}
