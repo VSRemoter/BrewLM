@@ -154,6 +154,7 @@ function chunksToBase64(chunks: Uint8Array[]): string {
 
 export default function StudioPanel({
   notebookId,
+  width = 288,
   sources,
   artifacts,
   settings,
@@ -162,6 +163,7 @@ export default function StudioPanel({
   onOpenSettings,
 }: {
   notebookId: string;
+  width?: number;
   sources: Source[];
   artifacts: Artifact[];
   settings: Settings;
@@ -402,7 +404,10 @@ export default function StudioPanel({
   };
 
   return (
-    <aside className="flex h-full w-[288px] shrink-0 flex-col border-l border-edge-soft bg-panel">
+    <aside
+      className="flex h-full shrink-0 flex-col border-l border-edge-soft bg-panel"
+      style={{ width }}
+    >
       <div className="flex h-11 shrink-0 items-center border-b border-edge-soft px-3.5">
         <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
           Studio

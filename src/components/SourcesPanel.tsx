@@ -1,4 +1,5 @@
 import {
+  Check,
   FileText,
   File as FileIcon,
   Image as ImageIcon,
@@ -6,6 +7,7 @@ import {
   Link2,
   Loader2,
   Music,
+  Pencil,
   Plus,
   Type,
   Upload,
@@ -13,7 +15,7 @@ import {
 } from "lucide-react";
 import { useRef, useState } from "react";
 import { CONSTITUTION_BODY, CONSTITUTION_TITLE } from "../lib/constitution";
-import { addSource, deleteSource } from "../lib/db";
+import { addSource, deleteSource, updateSource } from "../lib/db";
 import {
   ACCEPT_STRING,
   classifyFile,
@@ -55,6 +57,17 @@ export default function SourcesPanel({
   const [viewing, setViewing] = useState<Source | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  const commitRename = async (s: Source) => {
+    const t = renameDraft.trim();
+    setRenamingId(null);
+    if (t && t !== s.title) {
+      await updateSource(s.id, t, s.content);
+      onChanged();
+    }
+  };
 
   const hasConstitution = sources.some((s) => s.type === "context");
   const ordered = [...sources].sort(
@@ -106,7 +119,7 @@ export default function SourcesPanel({
   };
 
   return (
-    <aside className="flex h-full w-[264px] shrink-0 flex-col border-r border-edge-soft bg-panel">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-edge-soft px-3.5">
         <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
           Sources
@@ -180,6 +193,7 @@ export default function SourcesPanel({
           const Icon = TYPE_ICON[s.type] ?? FileIcon;
           const isImage = s.type === "image" && s.content.startsWith("data:");
           const isConstitution = s.type === "context";
+          const isRenaming = renamingId === s.id;
           return (
             <div
               key={s.id}
@@ -202,29 +216,68 @@ export default function SourcesPanel({
                   onClick={() => setViewing(s)}
                 />
               )}
-              <button
-                onClick={() => setViewing(s)}
-                className="min-w-0 flex-1 text-left"
-                title="Click to view & edit"
-              >
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-[12.5px] font-medium leading-tight">
-                    {s.title}
-                  </span>
-                  {isConstitution && (
-                    <span className="shrink-0 rounded-full border border-edge bg-panel px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wider text-ink-3">
-                      Constitution
+              {isRenaming ? (
+                <div className="flex min-w-0 flex-1 items-center gap-1">
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename(s);
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                    onBlur={() => commitRename(s)}
+                    className="min-w-0 flex-1 rounded border border-edge bg-panel px-1.5 py-0.5 text-[12.5px] outline-none focus:border-ink-3"
+                    aria-label="Source title"
+                  />
+                  <button
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      commitRename(s);
+                    }}
+                    className="shrink-0 rounded p-0.5 text-ok hover:bg-hover"
+                    title="Save title"
+                  >
+                    <Check size={13} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setViewing(s)}
+                  className="min-w-0 flex-1 text-left"
+                  title="Click to view & edit"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate text-[12.5px] font-medium leading-tight">
+                      {s.title}
                     </span>
-                  )}
-                </span>
-                <span className="mt-0.5 line-clamp-1 block text-[11px] text-ink-3">
-                  {isConstitution
-                    ? "Governs AI behavior in this notebook"
-                    : isImage || (s.type === "audio" && s.content.startsWith("data:"))
-                      ? s.mime ?? s.type
-                      : sourcePreview(s.content)}
-                </span>
-              </button>
+                    {isConstitution && (
+                      <span className="shrink-0 rounded-full border border-edge bg-panel px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wider text-ink-3">
+                        Constitution
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 line-clamp-1 block text-[11px] text-ink-3">
+                    {isConstitution
+                      ? "Governs AI behavior in this notebook"
+                      : isImage || (s.type === "audio" && s.content.startsWith("data:"))
+                        ? s.mime ?? s.type
+                        : sourcePreview(s.content)}
+                  </span>
+                </button>
+              )}
+              {!isRenaming && (
+                <button
+                  onClick={() => {
+                    setRenamingId(s.id);
+                    setRenameDraft(s.title);
+                  }}
+                  className="shrink-0 rounded p-0.5 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
+                  title="Rename source"
+                >
+                  <Pencil size={12} />
+                </button>
+              )}
               <button
                 onClick={async () => {
                   await deleteSource(s.id);
@@ -289,7 +342,7 @@ export default function SourcesPanel({
           onChanged={onChanged}
         />
       )}
-    </aside>
+    </div>
   );
 }
 
