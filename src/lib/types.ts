@@ -1,6 +1,9 @@
 export interface Notebook {
   id: string;
   title: string;
+  description: string;
+  /** SQLite boolean: 1 = pinned to the top of the homepage. */
+  starred: number;
   created_at: number;
   updated_at: number;
 }
@@ -48,6 +51,9 @@ export interface Artifact {
 
 export type Provider = "openrouter" | "openai" | "anthropic";
 
+/** Where Audio overviews get their voices from. */
+export type TtsProvider = "system" | "openai" | "openrouter" | "elevenlabs";
+
 export interface Settings {
   provider: Provider;
   openrouterKey: string;
@@ -55,6 +61,19 @@ export interface Settings {
   anthropicKey: string;
   model: string;
   theme: string;
+  /** Text-to-speech for studio audio. Independent of the chat provider. */
+  ttsProvider: TtsProvider;
+  /** Dedicated TTS key for OpenAI; falls back to openaiKey when empty. */
+  openaiTtsKey: string;
+  /** Dedicated TTS key for OpenRouter; falls back to openrouterKey when empty. */
+  openrouterTtsKey: string;
+  elevenlabsKey: string;
+  /** Empty → provider default. */
+  ttsModel: string;
+  ttsVoiceAlex: string;
+  ttsVoiceSam: string;
+  /** Direction for how the hosts should sound (tone, pace, accent…). OpenAI TTS only. */
+  ttsInstructions: string;
 }
 
 export interface Flashcard {

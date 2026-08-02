@@ -58,22 +58,58 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
+  // Image-generation models (e.g. gemini-*-image) need both modalities requested.
+  if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
+    body.modalities = ["image", "text"];
+  }
 
   const res = await fetch(base, { method: "POST", headers, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(await apiError(res));
   if (!res.body) throw new Error("Empty response body");
 
+  // Image-capable models return binary output in `images` (or typed content
+  // parts), not in `content` — collect them and emit as markdown image embeds
+  // after the text stream ends.
+  const images: string[] = [];
+  const pushImage = (url: string | null) => {
+    if (url && !images.includes(url)) images.push(url);
+  };
+
   for await (const payload of sseLines(res.body)) {
-    if (payload === "[DONE]") return;
+    if (payload === "[DONE]") break;
     try {
       const json = JSON.parse(payload);
-      const delta: string | undefined =
-        json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content;
-      if (delta) yield delta;
+      const choice = json.choices?.[0];
+      const delta = choice?.delta?.content ?? choice?.message?.content;
+      if (typeof delta === "string") {
+        if (delta) yield delta;
+      } else if (Array.isArray(delta)) {
+        // some providers stream content as typed parts
+        for (const part of delta) {
+          if (part?.type === "text" && typeof part.text === "string") yield part.text;
+          else pushImage(imagePartUrl(part));
+        }
+      }
+      const imgs = choice?.delta?.images ?? choice?.message?.images;
+      if (Array.isArray(imgs)) for (const img of imgs) pushImage(imagePartUrl(img));
     } catch {
       // partial JSON chunk — ignore
     }
   }
+  for (const url of images) yield `\n\n![generated image](${url})\n\n`;
+}
+
+/** Pull an image URL/data-URI out of an OpenAI-style image part. */
+function imagePartUrl(part: unknown): string | null {
+  if (!part || typeof part !== "object") return null;
+  const p = part as Record<string, unknown>;
+  const nested = p.image_url as Record<string, unknown> | string | undefined;
+  const url =
+    (typeof nested === "string" ? nested : (nested?.url as string | undefined)) ??
+    (typeof p.url === "string" ? p.url : undefined);
+  if (url && (url.startsWith("data:image/") || url.startsWith("http"))) return url;
+  if (typeof p.b64_json === "string") return `data:image/png;base64,${p.b64_json}`;
+  return null;
 }
 
 async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
@@ -116,7 +152,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
   }
 }
 
-async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

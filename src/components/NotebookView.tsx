@@ -10,6 +10,7 @@ import {
   renameNotebook,
   touchChat,
 } from "../lib/db";
+import { ingestFiles } from "../lib/ingest";
 import type { Artifact, Chat, Notebook, Settings, Source } from "../lib/types";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
@@ -84,6 +85,16 @@ export default function NotebookView({
     setChats(list);
     return list;
   }, [notebook.id]);
+
+  /** Files dropped/picked in chat become notebook sources (+ auto-@mention). */
+  const handleChatFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const result = await ingestFiles(notebook.id, files);
+      refreshSources();
+      return result;
+    },
+    [notebook.id, refreshSources]
+  );
 
   // Load per-notebook data; guarantee at least one chat exists and select the
   // most recently active one.
@@ -234,6 +245,7 @@ export default function NotebookView({
           settings={settings}
           onOpenSettings={onOpenSettings}
           onChatActivity={handleChatActivity}
+          onAddFiles={handleChatFiles}
         />
         <div
           role="separator"

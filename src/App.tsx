@@ -2,7 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import SettingsModal from "./components/SettingsModal";
-import { createNotebook, deleteNotebook, getDb, listNotebooks, renameNotebook } from "./lib/db";
+import {
+  createNotebook,
+  deleteNotebook,
+  getDb,
+  listNotebooks,
+  setNotebookStarred,
+  updateNotebookDetails,
+} from "./lib/db";
 import { loadSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themes";
 import type { Notebook, Settings } from "./lib/types";
@@ -81,8 +88,8 @@ export default function App() {
           notebooks={notebooks}
           onOpen={setOpenId}
           onSettings={() => setSettingsOpen(true)}
-          onCreate={async (title) => {
-            const nb = await createNotebook(title);
+          onCreate={async (title, description) => {
+            const nb = await createNotebook(title, description);
             await refresh();
             setOpenId(nb.id);
           }}
@@ -90,8 +97,12 @@ export default function App() {
             await deleteNotebook(id);
             await refresh();
           }}
-          onRename={async (id, title) => {
-            await renameNotebook(id, title);
+          onUpdateDetails={async (id, title, description) => {
+            await updateNotebookDetails(id, title, description);
+            await refresh();
+          }}
+          onToggleStar={async (id, starred) => {
+            await setNotebookStarred(id, starred);
             await refresh();
           }}
         />
