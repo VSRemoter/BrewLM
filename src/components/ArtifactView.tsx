@@ -1,24 +1,119 @@
-import { Check, ChevronLeft, ChevronRight, Play, RotateCw, Square } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { Check, ChevronLeft, ChevronRight, Download, FilePlus2, Play, RotateCw, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
+import { artifactText } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { Modal, GhostButton, IconButton } from "./ui";
 
+/** Filesystem-safe name for downloads. */
+function exportName(title: string, ext: string): string {
+  const base = title.replace(/[/\\?%*:|"<>]/g, "").trim().slice(0, 60);
+  return `${base || "openmind-output"}.${ext}`;
+}
+
 export default function ArtifactView({
   artifact,
   onClose,
+  onSourcesChanged,
 }: {
   artifact: Artifact;
   onClose: () => void;
+  onSourcesChanged?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [added, setAdded] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
   useEffect(() => {
     void hydrateMermaid(rootRef.current);
   }, [artifact.data]);
 
+  /** Push the output into the notebook's Sources panel as readable markdown. */
+  const addToSources = async () => {
+    setExportError(null);
+    const text = artifactText(artifact);
+    if (!text) {
+      setExportError("This output has no readable text to add as a source.");
+      return;
+    }
+    try {
+      await addSource(artifact.notebook_id, "text", artifact.title, text);
+      onSourcesChanged?.();
+      setAdded(true);
+    } catch (e) {
+      setExportError(`Couldn't add to sources: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  /** Save the output to disk — audio as mp3/wav, everything else as markdown. */
+  const download = async () => {
+    setExportError(null);
+    try {
+      if (artifact.kind === "audio") {
+        const parsed = parseAudio(artifact.data);
+        if (parsed?.audio) {
+          const isWav = parsed.audio.startsWith("data:audio/wav");
+          const ext = isWav ? "wav" : "mp3";
+          const path = await save({
+            defaultPath: exportName(artifact.title, ext),
+            filters: [{ name: "Audio", extensions: [ext] }],
+          });
+          if (!path) return; // cancelled
+          const bytes = Uint8Array.from(atob(parsed.audio.split(",")[1] ?? ""), (c) =>
+            c.charCodeAt(0)
+          );
+          await writeFile(path, bytes);
+          return;
+        }
+      }
+      const text = artifactText(artifact);
+      if (!text) {
+        setExportError("Nothing to download — this output has no readable content.");
+        return;
+      }
+      const path = await save({
+        defaultPath: exportName(artifact.title, "md"),
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return; // cancelled
+      await writeTextFile(path, text);
+    } catch (e) {
+      setExportError(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   return (
-    <Modal title={artifact.title} onClose={onClose} wide>
+    <Modal
+      title={artifact.title}
+      onClose={onClose}
+      wide
+      actions={
+        <>
+          <IconButton
+            onClick={addToSources}
+            label={added ? "Added to sources" : "Add to sources"}
+          >
+            {added ? (
+              <Check size={15} strokeWidth={2.2} className="text-ok" />
+            ) : (
+              <FilePlus2 size={15} strokeWidth={1.8} />
+            )}
+          </IconButton>
+          <IconButton onClick={download} label="Download…">
+            <Download size={15} strokeWidth={1.8} />
+          </IconButton>
+        </>
+      }
+    >
+      {exportError && (
+        <p className="mb-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+          {exportError}
+        </p>
+      )}
       <div ref={rootRef}>
       {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
       {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
