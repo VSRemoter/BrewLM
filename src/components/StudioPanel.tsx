@@ -5,6 +5,7 @@ import {
   Layers,
   Loader2,
   Network,
+  SlidersHorizontal,
   StickyNote,
   Telescope,
   Trash2,
@@ -15,10 +16,30 @@ import { complete, extractJson } from "../lib/llm";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
 import { formatTime } from "../lib/source";
+import {
+  PROMPT_BRIEFING,
+  PROMPT_STUDY_GUIDE,
+  REPORT_RULES,
+  REPORT_TYPE_LABELS,
+  buildAudioPrompt,
+  buildFlashcardsPrompt,
+  buildMindmapPrompt,
+  buildQuizPrompt,
+  buildReportPrompt,
+  type AudioOptions,
+  type ReportOptions,
+} from "../lib/studio";
 import { synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
 import { buildSystemPrompt } from "./ChatPanel";
+import {
+  AudioModal,
+  FlashcardsModal,
+  MindmapModal,
+  QuizModal,
+  ReportModal,
+} from "./StudioCustomize";
 import { Modal, PrimaryButton } from "./ui";
 
 const TOOLS: {
@@ -68,8 +89,6 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
 
 /* --------------------------------- Report --------------------------------- */
 
-const REPORT_RULES = `Rules: output ONLY the document itself in GitHub-flavored markdown — no preface, no "here is", no trailing questions. Use ## headings, bullets, and **bold** for key terms. Ground everything in the sources; cite specific facts with the source title in parentheses, e.g. (Source: Week 4 lecture.pdf). Never invent facts.`;
-
 const REPORT_FORMATS: { id: string; label: string; desc: string; prompt: string }[] = [
   {
     id: "summary",
@@ -81,7 +100,7 @@ const REPORT_FORMATS: { id: string; label: string; desc: string; prompt: string 
     id: "study-guide",
     label: "Study guide",
     desc: "Concepts, terms & review questions",
-    prompt: `Create a study guide for my sources with: ## Key concepts (each with a short explanation), ## Important terms & definitions, ## Example questions (with answers folded in), and ## Study checklist. ${REPORT_RULES}`,
+    prompt: PROMPT_STUDY_GUIDE,
   },
   {
     id: "faq",
@@ -99,7 +118,7 @@ const REPORT_FORMATS: { id: string; label: string; desc: string; prompt: string 
     id: "briefing",
     label: "Briefing doc",
     desc: "Themes, insights & key quotes",
-    prompt: `Write a briefing document on my sources with sections: ## Overview, ## Main themes, ## Key insights, ## Notable facts & quotes, and ## Open questions. ${REPORT_RULES}`,
+    prompt: PROMPT_BRIEFING,
   },
 ];
 
@@ -132,6 +151,9 @@ function parseScript(raw: string): ScriptTurn[] {
   return turns.slice(0, 24);
 }
 
+/** Tools with a customize modal (deep research already opens its own). */
+type CustomizeKind = "flashcards" | "quiz" | "mindmap" | "audio" | "report";
+
 export default function StudioPanel({
   notebookId,
   width = 288,
@@ -157,19 +179,49 @@ export default function StudioPanel({
   const [viewing, setViewing] = useState<Artifact | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
+  const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
 
-  const textSources = sources.filter(
-    (s) => s.type !== "context" && s.content && !s.content.startsWith("data:")
+  const isTextSource = (s: Source) =>
+    s.type !== "context" && s.content && !s.content.startsWith("data:");
+
+  const textSources = sources.filter(isTextSource);
+
+  /**
+   * Sources to ground a generation on. Constitutions always pass through;
+   * when the customize modal scopes to specific sources, only those are used
+   * as knowledge material.
+   */
+  const scopedSources = (sourceIds?: string[]): Source[] =>
+    sourceIds ? sources.filter((s) => s.type === "context" || sourceIds.includes(s.id)) : sources;
+
+  /** Hover icon on every tool card — opens its customize modal. */
+  const customizeIcon = (kind: CustomizeKind, label: string) => (
+    <span
+      role="button"
+      aria-label={`Customize ${label}`}
+      title={`Customize ${label}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        setCustomizing(kind);
+      }}
+      className="absolute right-2 top-2 rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-hover-soft hover:text-ink group-hover:opacity-100"
+    >
+      <SlidersHorizontal size={13} strokeWidth={1.8} />
+    </span>
   );
 
-  const generate = async (tool: (typeof TOOLS)[number]) => {
+  const generate = async (
+    tool: (typeof TOOLS)[number],
+    opts?: { sourceIds?: string[]; prompt?: string }
+  ) => {
     setError(null);
     if (!activeKey(settings)) {
       onOpenSettings();
       return;
     }
-    if (textSources.length === 0) {
-      setError("Add at least one text-based source (PDF, text, or link) first.");
+    const usedSources = scopedSources(opts?.sourceIds);
+    if (!usedSources.some(isTextSource)) {
+      setError("Select at least one text-based source (PDF, text, or link) first.");
       return;
     }
     setGenerating(tool.kind);
@@ -180,8 +232,8 @@ export default function StudioPanel({
         model: settings.model,
         maxTokens: 4096,
         messages: [
-          { role: "system", content: buildSystemPrompt(sources) },
-          { role: "user", content: tool.prompt },
+          { role: "system", content: buildSystemPrompt(usedSources) },
+          { role: "user", content: opts?.prompt ?? tool.prompt },
         ],
       });
 
@@ -220,7 +272,18 @@ export default function StudioPanel({
   };
 
   /** Report: grounded markdown document (summary, study guide, FAQ…). */
-  const genReport = async (format: (typeof REPORT_FORMATS)[number]) => {
+  const genReport = (format: (typeof REPORT_FORMATS)[number]) =>
+    runReport(format.label, format.prompt);
+
+  /** Customized report: named type (incl. Thorough Analysis) or user's own prompt. */
+  const genCustomReport = (opts: ReportOptions) =>
+    runReport(
+      opts.type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[opts.type],
+      buildReportPrompt(opts.type, opts.customPrompt),
+      opts.sourceIds
+    );
+
+  const runReport = async (label: string, prompt: string, sourceIds?: string[]) => {
     setReportOpen(false);
     setError(null);
     const blocked = canGenerate();
@@ -229,7 +292,7 @@ export default function StudioPanel({
       return;
     }
     setGenerating("report");
-    setGenPhase(`Writing ${format.label.toLowerCase()}…`);
+    setGenPhase(`Writing ${label.toLowerCase()}…`);
     try {
       const raw = await complete({
         provider: settings.provider,
@@ -237,13 +300,13 @@ export default function StudioPanel({
         model: settings.model,
         maxTokens: 4096,
         messages: [
-          { role: "system", content: buildSystemPrompt(sources) },
-          { role: "user", content: format.prompt },
+          { role: "system", content: buildSystemPrompt(scopedSources(sourceIds)) },
+          { role: "user", content: prompt },
         ],
       });
       const doc = raw.trim();
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
-      await addArtifact(notebookId, "report", format.label, doc);
+      await addArtifact(notebookId, "report", label, doc);
       onArtifactsChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -258,7 +321,7 @@ export default function StudioPanel({
    * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
    * system voices) decides how it's synthesized.
    */
-  const genAudio = async () => {
+  const genAudio = async (opts?: AudioOptions) => {
     setError(null);
     const blocked = canGenerate();
     if (blocked) {
@@ -274,8 +337,8 @@ export default function StudioPanel({
         model: settings.model,
         maxTokens: 4096,
         messages: [
-          { role: "system", content: buildSystemPrompt(sources) },
-          { role: "user", content: AUDIO_PROMPT },
+          { role: "system", content: buildSystemPrompt(scopedSources(opts?.sourceIds)) },
+          { role: "user", content: opts ? buildAudioPrompt(opts) : AUDIO_PROMPT },
         ],
       });
 
@@ -379,12 +442,21 @@ export default function StudioPanel({
         {/* generation grid */}
         <div className="grid grid-cols-2 gap-2">
           {TOOLS.map((t) => (
-            <button
+            <div
               key={t.kind}
+              role="button"
+              tabIndex={0}
               onClick={() => generate(t)}
-              disabled={generating !== null}
-              className="flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm disabled:opacity-50"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") generate(t);
+              }}
+              className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
+                generating !== null
+                  ? "pointer-events-none opacity-50"
+                  : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
+              }`}
             >
+              {customizeIcon(t.kind as CustomizeKind, t.name)}
               <t.icon size={16} strokeWidth={1.8} className="text-ink" />
               <span className="text-[12.5px] font-semibold leading-none">{t.name}</span>
               <span className="text-[11px] leading-tight text-ink-3">{t.desc}</span>
@@ -393,14 +465,23 @@ export default function StudioPanel({
                   <Loader2 size={11} className="animate-spin" /> Generating…
                 </span>
               )}
-            </button>
+            </div>
           ))}
           {/* Audio overview */}
-          <button
-            onClick={genAudio}
-            disabled={generating !== null}
-            className="flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm disabled:opacity-50"
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => genAudio()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") genAudio();
+            }}
+            className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
+              generating !== null
+                ? "pointer-events-none opacity-50"
+                : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
+            }`}
           >
+            {customizeIcon("audio", "Audio overview")}
             <AudioLines size={16} strokeWidth={1.8} className="text-ink" />
             <span className="text-[12.5px] font-semibold leading-none">Audio overview</span>
             <span className="text-[11px] leading-tight text-ink-3">
@@ -411,13 +492,22 @@ export default function StudioPanel({
                 <Loader2 size={11} className="animate-spin" /> {genPhase ?? "Generating…"}
               </span>
             )}
-          </button>
+          </div>
           {/* Report */}
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onClick={() => setReportOpen(true)}
-            disabled={generating !== null}
-            className="flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm disabled:opacity-50"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setReportOpen(true);
+            }}
+            className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
+              generating !== null
+                ? "pointer-events-none opacity-50"
+                : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
+            }`}
           >
+            {customizeIcon("report", "Report")}
             <FileText size={16} strokeWidth={1.8} className="text-ink" />
             <span className="text-[12.5px] font-semibold leading-none">Report</span>
             <span className="text-[11px] leading-tight text-ink-3">
@@ -428,7 +518,7 @@ export default function StudioPanel({
                 <Loader2 size={11} className="animate-spin" /> {genPhase ?? "Generating…"}
               </span>
             )}
-          </button>
+          </div>
           {/* Deep research */}
           <button
             onClick={() => setResearchOpen(true)}
@@ -546,10 +636,68 @@ export default function StudioPanel({
         />
       )}
 
+      {/* customize modals */}
+      {customizing === "flashcards" && (
+        <FlashcardsModal
+          sources={textSources}
+          onClose={() => setCustomizing(null)}
+          onGenerate={(opts) => {
+            setCustomizing(null);
+            const tool = TOOLS.find((t) => t.kind === "flashcards");
+            if (tool) generate(tool, { sourceIds: opts.sourceIds, prompt: buildFlashcardsPrompt(opts) });
+          }}
+        />
+      )}
+      {customizing === "quiz" && (
+        <QuizModal
+          sources={textSources}
+          onClose={() => setCustomizing(null)}
+          onGenerate={(opts) => {
+            setCustomizing(null);
+            const tool = TOOLS.find((t) => t.kind === "quiz");
+            if (tool) generate(tool, { sourceIds: opts.sourceIds, prompt: buildQuizPrompt(opts) });
+          }}
+        />
+      )}
+      {customizing === "mindmap" && (
+        <MindmapModal
+          sources={textSources}
+          onClose={() => setCustomizing(null)}
+          onGenerate={(opts) => {
+            setCustomizing(null);
+            const tool = TOOLS.find((t) => t.kind === "mindmap");
+            if (tool)
+              generate(tool, { sourceIds: opts.sourceIds, prompt: buildMindmapPrompt(opts.description) });
+          }}
+        />
+      )}
+      {customizing === "audio" && (
+        <AudioModal
+          sources={textSources}
+          onClose={() => setCustomizing(null)}
+          onGenerate={(opts) => {
+            setCustomizing(null);
+            genAudio(opts);
+          }}
+        />
+      )}
+      {customizing === "report" && (
+        <ReportModal
+          sources={textSources}
+          onClose={() => setCustomizing(null)}
+          onGenerate={(opts) => {
+            setCustomizing(null);
+            genCustomReport(opts);
+          }}
+        />
+      )}
+
       {viewing && (
         <ArtifactView
+          key={viewing.id}
           artifact={viewing}
           onClose={() => setViewing(null)}
+          onSourcesChanged={onSourcesChanged}
         />
       )}
     </aside>

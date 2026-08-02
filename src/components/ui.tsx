@@ -6,11 +6,14 @@ export function Modal({
   onClose,
   children,
   wide,
+  actions,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  /** Extra icon buttons rendered in the header, left of the close button. */
+  actions?: ReactNode;
 }) {
   return (
     <div
@@ -25,14 +28,17 @@ export function Modal({
         aria-label={title}
       >
         <div className="flex items-center justify-between border-b border-edge-soft px-5 py-3.5">
-          <h2 className="text-[13.5px] font-semibold tracking-tight">{title}</h2>
-          <button
-            onClick={onClose}
-            className="rounded-md p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-            aria-label="Close"
-          >
-            <X size={15} strokeWidth={2} />
-          </button>
+          <h2 className="min-w-0 truncate text-[13.5px] font-semibold tracking-tight">{title}</h2>
+          <div className="flex items-center gap-1">
+            {actions}
+            <button
+              onClick={onClose}
+              className="rounded-md p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+              aria-label="Close"
+            >
+              <X size={15} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         <div className="max-h-[calc(85vh-52px)] overflow-y-auto px-5 py-4">{children}</div>
       </div>
@@ -125,5 +131,35 @@ export function TypingDots() {
         <span key={i} className="typing-dot h-1.5 w-1.5 rounded-full bg-ink-3" />
       ))}
     </span>
+  );
+}
+
+/** Segmented radio-style picker — one option always selected. */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { id: T; label: string }[];
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <div className="flex rounded-lg border border-edge bg-canvas p-0.5" role="radiogroup">
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={o.id === value}
+          onClick={() => onChange(o.id)}
+          className={`flex-1 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors ${
+            o.id === value ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }
