@@ -175,3 +175,28 @@ export function activeKey(s: Settings): string {
 export function defaultModelFor(p: Provider): string {
   return DEFAULT_MODELS[p];
 }
+
+/* -------------------- User-editable per-provider model lists -------------------- */
+
+const CUSTOM_MODELS_KEY = (p: Provider) => `customModels.${p}`;
+
+/** The provider's chip list: defaults unless the user has customized (added/removed). */
+export async function loadModelList(p: Provider): Promise<string[]> {
+  const raw = await getSetting(CUSTOM_MODELS_KEY(p));
+  if (!raw) return [...MODEL_PRESETS[p]];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter((m): m is string => typeof m === "string");
+  } catch {
+    /* fall through to defaults */
+  }
+  return [...MODEL_PRESETS[p]];
+}
+
+export async function saveModelList(p: Provider, list: string[]): Promise<void> {
+  // Storing exact parity with defaults would also be fine, but keying off "is it customized"
+  // keeps fresh installs picking up new presets we ship later.
+  const isDefault =
+    list.length === MODEL_PRESETS[p].length && list.every((m, i) => m === MODEL_PRESETS[p][i]);
+  await setSetting(CUSTOM_MODELS_KEY(p), isDefault ? "" : JSON.stringify(list));
+}

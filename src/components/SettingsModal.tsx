@@ -1,15 +1,16 @@
-import { Check, ExternalLink } from "lucide-react";
+import { Check, ExternalLink, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   ELEVENLABS_VOICE_PRESETS,
-  MODEL_PRESETS,
   OPENAI_TTS_VOICES,
   OPENROUTER_TTS_VOICES,
   PROVIDER_LABELS,
   TTS_MODEL_PRESETS,
   TTS_PROVIDER_LABELS,
   defaultModelFor,
+  loadModelList,
   loadSettings,
+  saveModelList,
   saveSettings,
 } from "../lib/settings";
 import { THEMES, chooseTheme } from "../lib/themes";
@@ -66,10 +67,25 @@ function VoiceField({
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saved, setSaved] = useState(false);
+  const [modelList, setModelList] = useState<string[]>([]);
+  const [newModel, setNewModel] = useState("");
 
   useEffect(() => {
     loadSettings().then(setSettings);
   }, []);
+
+  const provider = settings?.provider ?? "openrouter";
+
+  // (Re)load the editable chip list whenever the provider changes.
+  useEffect(() => {
+    let cancelled = false;
+    loadModelList(provider).then((list) => {
+      if (!cancelled) setModelList(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider]);
 
   if (!settings) return null;
 
@@ -83,6 +99,29 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const pick = (patch: Partial<Settings>) => {
     setSettings((s) => (s ? { ...s, ...patch } : s));
     setSaved(false);
+  };
+
+  const addModel = () => {
+    const m = newModel.trim();
+    if (!m || modelList.includes(m)) return;
+    const next = [...modelList, m];
+    setModelList(next);
+    saveModelList(provider, next);
+    setNewModel("");
+    if (!settings.model) pick({ model: m });
+    setSaved(false);
+  };
+
+  const removeModel = (m: string) => {
+    const next = modelList.filter((x) => x !== m);
+    setModelList(next);
+    saveModelList(provider, next);
+    // If the removed chip was the active model, fall back sensibly.
+    if (settings.model === m) {
+      pick({ model: next[0] ?? defaultModelFor(provider) });
+    } else {
+      setSaved(false);
+    }
   };
 
   const save = async () => {
@@ -174,9 +213,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={() =>
                   pick({
                     provider: p,
-                    model: MODEL_PRESETS[p].includes(settings.model)
-                      ? settings.model
-                      : defaultModelFor(p),
+                    // reset to the provider default — model ids are provider-namespaced,
+                    // so a model from another provider is almost never valid here.
+                    model: defaultModelFor(p),
                   })
                 }
                 className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
@@ -231,27 +270,78 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
 
         {/* Model */}
         <div>
-          <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Model</label>
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <label className="text-[12.5px] font-medium text-ink-2">Model</label>
+            <span className="text-[11px] text-ink-3">
+              Click a chip to use it · × removes · saved per provider
+            </span>
+          </div>
           <input
             value={settings.model}
             onChange={(e) => pick({ model: e.target.value })}
             placeholder="model id"
             className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
           />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {MODEL_PRESETS[settings.provider].map((m) => (
-              <button
-                key={m}
-                onClick={() => pick({ model: m })}
-                className={`rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors ${
-                  settings.model === m
-                    ? "border-accent bg-accent text-accent-ink"
-                    : "border-edge bg-panel text-ink-2 hover:border-ink-3"
-                }`}
-              >
-                {m}
-              </button>
-            ))}
+
+          {/* Editable chip list */}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {modelList.map((m) => {
+              const active = settings.model === m;
+              return (
+                <span
+                  key={m}
+                  className={`group inline-flex items-center gap-1 rounded-full border py-1 pl-2.5 pr-1 font-mono text-[11px] transition-colors ${
+                    active
+                      ? "border-accent bg-accent text-accent-ink"
+                      : "border-edge bg-panel text-ink-2 hover:border-ink-3"
+                  }`}
+                >
+                  <button
+                    onClick={() => pick({ model: m })}
+                    className="outline-none"
+                    title={`Use ${m}`}
+                  >
+                    {m}
+                  </button>
+                  <button
+                    onClick={() => removeModel(m)}
+                    aria-label={`Remove ${m}`}
+                    title="Remove"
+                    className={`rounded-full p-0.5 transition-opacity ${
+                      active
+                        ? "text-accent-ink/80 hover:bg-white/20 hover:text-accent-ink"
+                        : "text-ink-3 opacity-0 hover:bg-hover hover:text-ink group-hover:opacity-100"
+                    }`}
+                  >
+                    <X size={11} strokeWidth={2.5} />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+
+          {/* Add a model */}
+          <div className="mt-2 flex gap-1.5">
+            <input
+              value={newModel}
+              onChange={(e) => setNewModel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addModel();
+                }
+              }}
+              placeholder={`Add a ${PROVIDER_LABELS[settings.provider]} model id…`}
+              className="min-w-0 flex-1 rounded-lg border border-edge bg-panel px-3 py-1.5 font-mono text-[12px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+            />
+            <button
+              onClick={addModel}
+              disabled={!newModel.trim() || modelList.includes(newModel.trim())}
+              title="Add model"
+              className="flex items-center gap-1 rounded-lg border border-edge bg-panel px-2.5 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Plus size={13} strokeWidth={2.5} /> Add
+            </button>
           </div>
         </div>
 

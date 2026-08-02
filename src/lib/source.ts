@@ -103,6 +103,34 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Downscale an image file into a compact JPEG data URL for notebook covers.
+ * Cards render ~230px wide, so 560px covers 2x displays; JPEG keeps the
+ * SQLite row small (a raw PNG photo would bloat the notebooks table).
+ */
+export function fileToCoverDataUrl(file: File, maxWidth = 560, quality = 0.82): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxWidth / img.naturalWidth);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return reject(new Error("Canvas is unavailable."));
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("That file doesn't look like an image."));
+    };
+    img.src = url;
+  });
+}
+
 /** Fetches a URL through the Tauri HTTP plugin (no CORS) and extracts readable text. */
 export async function fetchLinkContent(url: string): Promise<{ title: string; text: string }> {
   let parsed: URL;
