@@ -14,17 +14,11 @@ import {
   X,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import { CONSTITUTION_BODY, CONSTITUTION_TITLE } from "../lib/constitution";
+import { CONSTITUTION_TITLE } from "../lib/constitution";
+import { ConstitutionPickerModal } from "./ConstitutionPicker";
 import { addSource, deleteSource, updateSource } from "../lib/db";
-import {
-  ACCEPT_STRING,
-  classifyFile,
-  extractPdfText,
-  fetchLinkContent,
-  readFileAsDataUrl,
-  readFileAsText,
-  sourcePreview,
-} from "../lib/source";
+import { ingestFiles } from "../lib/ingest";
+import { ACCEPT_STRING, fetchLinkContent, sourcePreview } from "../lib/source";
 import type { Source } from "../lib/types";
 import SourceViewModal from "./SourceViewModal";
 import { IconButton, Modal, PrimaryButton } from "./ui";
@@ -39,8 +33,6 @@ const TYPE_ICON = {
   file: FileIcon,
 } as const;
 
-const MAX_BINARY_BYTES = 8 * 1024 * 1024; // 8 MB for base64-embedded images/audio
-
 export default function SourcesPanel({
   notebookId,
   sources,
@@ -51,8 +43,11 @@ export default function SourcesPanel({
   onChanged: () => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
+  const [constitutionOpen, setConstitutionOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [viewing, setViewing] = useState<Source | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -76,50 +71,52 @@ export default function SourcesPanel({
 
   /* ---------------------------- file ingestion ---------------------------- */
 
-  const ingestFiles = async (files: FileList | File[]) => {
+  const ingest = async (files: FileList | File[]) => {
     setError(null);
     setMenuOpen(false);
-    for (const file of Array.from(files)) {
-      const type = classifyFile(file);
-      setBusy(file.name);
-      try {
-        if (type === "pdf") {
-          const text = await extractPdfText(file);
-          await addSource(notebookId, "pdf", file.name, text, file.type);
-        } else if (type === "text" || type === "file") {
-          const text = await readFileAsText(file).catch(() => "");
-          await addSource(
-            notebookId,
-            type,
-            file.name,
-            text || `Could not extract text from ${file.name}.`,
-            file.type || null
-          );
-        } else {
-          // image / audio — embed small files as data URLs so they persist locally
-          if (file.size > MAX_BINARY_BYTES) {
-            await addSource(
-              notebookId,
-              type,
-              file.name,
-              `[${type} attached but too large to embed: ${(file.size / 1024 / 1024).toFixed(1)} MB]`,
-              file.type
-            );
-          } else {
-            const dataUrl = await readFileAsDataUrl(file);
-            await addSource(notebookId, type, file.name, dataUrl, file.type);
-          }
-        }
-      } catch (e) {
-        setError(`Failed to add ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-    setBusy(null);
+    const { errors } = await ingestFiles(notebookId, files, setBusy);
+    if (errors.length) setError(errors.join("\n"));
     onChanged();
   };
 
+  const hasDraggedFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="relative flex min-h-0 flex-1 flex-col"
+      onDragEnter={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current++;
+        setDragActive(true);
+      }}
+      onDragOver={(e) => {
+        if (hasDraggedFiles(e)) e.preventDefault();
+      }}
+      onDragLeave={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragActive(false);
+      }}
+      onDrop={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragActive(false);
+        void ingest(e.dataTransfer.files);
+      }}
+    >
+      {/* drop overlay */}
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-40 m-2 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-accent bg-canvas/80">
+          <Upload size={20} strokeWidth={1.8} className="text-ink-2" />
+          <p className="px-4 text-center text-[13px] font-medium text-ink-2">
+            Drop files to add as sources
+          </p>
+        </div>
+      )}
+
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-edge-soft px-3.5">
         <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
           Sources
@@ -141,10 +138,9 @@ export default function SourcesPanel({
                         {
                           icon: Landmark,
                           label: "Add constitution",
-                          act: async () => {
+                          act: () => {
                             setMenuOpen(false);
-                            await addSource(notebookId, "context", CONSTITUTION_TITLE, CONSTITUTION_BODY);
-                            onChanged();
+                            setConstitutionOpen(true);
                           },
                         },
                       ]
@@ -172,7 +168,7 @@ export default function SourcesPanel({
         accept={ACCEPT_STRING}
         className="hidden"
         onChange={(e) => {
-          if (e.target.files?.length) ingestFiles(e.target.files);
+          if (e.target.files?.length) ingest(e.target.files);
           e.target.value = "";
         }}
       />
@@ -318,6 +314,17 @@ export default function SourcesPanel({
           onAdd={async (title, text) => {
             await addSource(notebookId, "text", title, text);
             setPasteOpen(false);
+            onChanged();
+          }}
+        />
+      )}
+
+      {constitutionOpen && (
+        <ConstitutionPickerModal
+          onClose={() => setConstitutionOpen(false)}
+          onPick={async (template) => {
+            await addSource(notebookId, "context", CONSTITUTION_TITLE, template.body);
+            setConstitutionOpen(false);
             onChanged();
           }}
         />

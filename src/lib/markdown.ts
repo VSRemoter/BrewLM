@@ -13,7 +13,41 @@ function inline(s: string): string {
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    // images must run before links (![alt](url) contains [alt](url))
+    .replace(
+      /!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[a-zA-Z0-9.+-]+;base64,[^)\s]+)\)/g,
+      '<img src="$2" alt="$1" loading="lazy"/>'
+    )
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
+
+function unescapeHtml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Keep the drawing, drop anything active: script/foreignObject/a elements,
+ * on* event attributes, and hrefs pointing outside the document (only #refs
+ * survive, so gradients/links-by-id keep working and nothing phones home).
+ */
+function sanitizeSvg(escaped: string): string | null {
+  let raw = unescapeHtml(escaped.trim()).replace(/^<\?xml[^?]*\?>\s*/, "");
+  if (!raw.toLowerCase().startsWith("<svg")) return null;
+  raw = raw
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject\s*>/gi, "")
+    .replace(/<a[\s>][\s\S]*?<\/a\s*>/gi, "")
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+    .replace(/\son\w+\s*=\s*[^\s>]+\s*/gi, "")
+    .replace(/(xlink:)?href\s*=\s*"(?!#)[^"]*"/gi, "")
+    .replace(/(xlink:)?href\s*=\s*'(?!#)[^']*'/gi, "");
+  return raw;
 }
 
 export function renderMarkdown(src: string): string {
@@ -25,7 +59,21 @@ export function renderMarkdown(src: string): string {
     if (i % 2 === 1) {
       // code fence: first line may be a language label
       const nl = block.indexOf("\n");
-      const code = nl === -1 ? block : block.slice(nl + 1);
+      const lang = (nl === -1 ? block : block.slice(0, nl)).trim().toLowerCase();
+      const code = (nl === -1 ? "" : block.slice(nl + 1)).replace(/\n$/, "");
+      // mermaid diagrams: placeholder div, hydrated into an svg on the client
+      if (lang === "mermaid") {
+        html += `<div class="mermaid-block">${code}</div>`;
+        return;
+      }
+      // svg fences: render the drawing inline (scripts/handlers stripped)
+      if (lang === "svg" || lang === "xml") {
+        const svg = sanitizeSvg(code);
+        if (svg) {
+          html += `<div class="svg-embed">${svg}</div>`;
+          return;
+        }
+      }
       html += `<pre><code>${code.replace(/\n$/, "")}</code></pre>`;
       return;
     }

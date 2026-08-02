@@ -1,7 +1,19 @@
-import { ArrowUp, BookOpen, FileText, Settings2, Sparkles, Trash2 } from "lucide-react";
+import {
+  ArrowUp,
+  BookOpen,
+  FileText,
+  Loader2,
+  Plus,
+  Settings2,
+  Sparkles,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { addMessage, clearMessages } from "../lib/db";
+import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
+import { hydrateMermaid } from "../lib/mermaid";
 import {
   buildMentionCatalog,
   resolveMentions,
@@ -10,6 +22,7 @@ import {
 } from "../lib/mentions";
 import { streamChat, type LlmMessage } from "../lib/llm";
 import { activeKey } from "../lib/settings";
+import { ACCEPT_STRING } from "../lib/source";
 import type { Artifact, ChatMessage, Settings, Source } from "../lib/types";
 import { IconButton, TypingDots } from "./ui";
 
@@ -50,7 +63,7 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
     parts.push(`# Notebook constitution\n${body}\n\nThe constitution above governs how you behave in this notebook — follow it strictly. Where it conflicts with the default rules below, the constitution wins.`);
   }
 
-  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
+  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
 
   if (mentioned.length > 0) {
     let budget = MAX_MENTION_TOTAL;
@@ -119,6 +132,7 @@ export default function ChatPanel({
   settings,
   onOpenSettings,
   onChatActivity,
+  onAddFiles,
 }: {
   notebookId: string;
   chatId: string | null;
@@ -129,14 +143,56 @@ export default function ChatPanel({
   settings: Settings;
   onOpenSettings: () => void;
   onChatActivity?: (chatId: string, firstUserText?: string) => void;
+  /** Ingest dropped/picked files as notebook sources; returns what was added. */
+  onAddFiles: (files: FileList | File[]) => Promise<IngestResult>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
+  const [ingesting, setIngesting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+
+  /** Append @Title tokens for freshly added sources, then focus the input. */
+  const insertMentions = (titles: string[]) => {
+    setDraft((prev) => {
+      const add = titles
+        .filter((t) => !prev.includes(`@${t}`))
+        .map((t) => `@${t}`)
+        .join(" ");
+      if (!add) return prev;
+      const next = (prev ? prev.replace(/\s+$/, "") + " " : "") + add + " ";
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          autoSize(ta);
+          ta.focus();
+          ta.setSelectionRange(next.length, next.length);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleFiles = async (files: FileList | File[]) => {
+    if (ingesting || !chatId || !files.length) return;
+    setIngesting(true);
+    try {
+      const { added, errors } = await onAddFiles(files);
+      if (errors.length) setError(errors.join("\n"));
+      if (added.length) insertMentions(added.map((s) => s.title));
+    } finally {
+      setIngesting(false);
+    }
+  };
+
+  const hasDraggedFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
 
   const catalog = useMemo(() => buildMentionCatalog(sources, artifacts), [sources, artifacts]);
   const mentionHits = useMemo(() => {
@@ -176,6 +232,11 @@ export default function ChatPanel({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, streaming]);
+
+  // Render ```mermaid diagrams once streaming settles (mid-stream they stay code).
+  useEffect(() => {
+    if (streaming === null) void hydrateMermaid(scrollRef.current);
+  }, [streaming, messages]);
 
   const keyed = activeKey(settings);
 
@@ -233,7 +294,39 @@ export default function ChatPanel({
   };
 
   return (
-    <section className="flex h-full min-w-0 flex-1 flex-col bg-canvas">
+    <section
+      className="relative flex h-full min-w-0 flex-1 flex-col bg-canvas"
+      onDragEnter={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current++;
+        setDragActive(true);
+      }}
+      onDragOver={(e) => {
+        if (hasDraggedFiles(e)) e.preventDefault();
+      }}
+      onDragLeave={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragActive(false);
+      }}
+      onDrop={(e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragActive(false);
+        handleFiles(e.dataTransfer.files);
+      }}
+    >
+      {/* drop overlay */}
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-40 m-3 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-accent bg-canvas/80">
+          <Upload size={22} strokeWidth={1.8} className="text-ink-2" />
+          <p className="text-[13.5px] font-medium text-ink-2">
+            Drop files to add as sources &amp; @mention them
+          </p>
+        </div>
+      )}
       {/* header */}
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-edge-soft bg-panel px-4">
         <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
@@ -343,10 +436,30 @@ export default function ChatPanel({
             </div>
           )}
           <div
-            className={`flex items-end gap-2 rounded-2xl border bg-panel p-2 pl-4 shadow-sm transition-colors ${
+            className={`flex items-end gap-2 rounded-2xl border bg-panel p-2 pl-2 shadow-sm transition-colors ${
               streaming !== null ? "border-edge-soft" : "border-edge focus-within:border-ink-3"
             }`}
           >
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              accept={ACCEPT_STRING}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.length) handleFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={() => attachInputRef.current?.click()}
+              disabled={ingesting}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-hover hover:text-ink disabled:opacity-40"
+              aria-label="Add file to chat"
+              title="Add file (also @mentions it)"
+            >
+              {ingesting ? <Loader2 size={15} className="animate-spin" /> : <Plus size={16} strokeWidth={2} />}
+            </button>
             <textarea
               ref={textareaRef}
               value={draft}

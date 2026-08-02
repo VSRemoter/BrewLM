@@ -398,6 +398,49 @@ body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* LLM-generated media: markdown images, svg fences, mermaid diagrams */
+.md img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 10px;
+  border: 1px solid var(--color-edge-soft);
+  margin: 0.5em 0 0.75em;
+  object-fit: contain;
+}
+.md .svg-embed {
+  margin: 0.5em 0 0.75em;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--color-edge-soft);
+  background: var(--color-panel);
+}
+.md .svg-embed svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.md .mermaid-block {
+  margin: 0.5em 0 0.75em;
+  overflow-x: auto;
+}
+.md .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.md .mermaid-block.mermaid-error,
+.md .mermaid-block:not([data-hydrated]) {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-pre-bg);
+  color: var(--color-pre-ink);
+  padding: 12px 14px;
+  border-radius: 10px;
+  white-space: pre;
+}
 
 @keyframes om-fade-up {
   from {

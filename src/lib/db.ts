@@ -1,5 +1,4 @@
 import Database from "@tauri-apps/plugin-sql";
-import { CONSTITUTION_BODY, CONSTITUTION_TITLE } from "./constitution";
 import type { Artifact, ArtifactKind, Chat, ChatMessage, Notebook, Source, SourceType } from "./types";
 
 export function uid(): string {
@@ -79,6 +78,24 @@ export async function getDb(): Promise<Database> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`);
+  // notebooks gain description (added after the initial schema).
+  const nbCols = await db.select<{ name: string }[]>("PRAGMA table_info(notebooks)");
+  if (!nbCols.some((c) => c.name === "description"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  // notebooks gain starred (homepage pinning).
+  if (!nbCols.some((c) => c.name === "starred"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN starred INTEGER NOT NULL DEFAULT 0");
+  // Homepage folders were removed: drop the table and the notebooks.folder_id
+  // column so existing installs get cleaned up. (DROP COLUMN needs SQLite
+  // 3.35+; if it fails, the leftover column is harmless.)
+  await db.execute("DROP TABLE IF EXISTS folders");
+  if (nbCols.some((c) => c.name === "folder_id")) {
+    try {
+      await db.execute("ALTER TABLE notebooks DROP COLUMN folder_id");
+    } catch {
+      /* old SQLite — leave the column */
+    }
+  }
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -96,16 +113,25 @@ export async function listNotebooks(): Promise<Notebook[]> {
   );
 }
 
-export async function createNotebook(title: string): Promise<Notebook> {
+export async function createNotebook(
+  title: string,
+  description = ""
+): Promise<Notebook> {
   const d = await getDb();
   const now = Date.now();
-  const nb: Notebook = { id: uid(), title, created_at: now, updated_at: now };
+  const nb: Notebook = {
+    id: uid(),
+    title,
+    description,
+    starred: 0,
+    created_at: now,
+    updated_at: now,
+  };
   await d.execute(
-    "INSERT INTO notebooks (id, title, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-    [nb.id, nb.title, nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+    [nb.id, nb.title, nb.description, nb.created_at, nb.updated_at]
   );
-  // Every notebook starts with its constitution as an editable source.
-  await addSource(nb.id, "context", CONSTITUTION_TITLE, CONSTITUTION_BODY);
+  // Constitutions are opt-in: added via the sources "+" menu inside the notebook.
   return nb;
 }
 
@@ -116,6 +142,25 @@ export async function renameNotebook(id: string, title: string): Promise<void> {
     Date.now(),
     id,
   ]);
+}
+
+/** Edit title and description together (homepage edit modal). */
+export async function updateNotebookDetails(
+  id: string,
+  title: string,
+  description: string
+): Promise<void> {
+  const d = await getDb();
+  await d.execute(
+    "UPDATE notebooks SET title = $1, description = $2, updated_at = $3 WHERE id = $4",
+    [title, description, Date.now(), id]
+  );
+}
+
+/** Starring only pins — it must not bump updated_at (date sorting uses it). */
+export async function setNotebookStarred(id: string, starred: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET starred = $1 WHERE id = $2", [starred ? 1 : 0, id]);
 }
 
 export async function touchNotebook(id: string): Promise<void> {

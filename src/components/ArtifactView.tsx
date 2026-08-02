@@ -1,6 +1,7 @@
 import { Check, ChevronLeft, ChevronRight, Play, RotateCw, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "../lib/markdown";
+import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { Modal, GhostButton, IconButton } from "./ui";
 
@@ -11,8 +12,14 @@ export default function ArtifactView({
   artifact: Artifact;
   onClose: () => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    void hydrateMermaid(rootRef.current);
+  }, [artifact.data]);
+
   return (
     <Modal title={artifact.title} onClose={onClose} wide>
+      <div ref={rootRef}>
       {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
       {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
       {artifact.kind === "mindmap" && <MindmapView data={artifact.data} />}
@@ -27,6 +34,7 @@ export default function ArtifactView({
       )}
       {artifact.kind === "research" && <ResearchView data={artifact.data} />}
       {artifact.kind === "audio" && <AudioView data={artifact.data} />}
+      </div>
     </Modal>
   );
 }

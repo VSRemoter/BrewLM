@@ -15,6 +15,7 @@ import { complete, extractJson } from "../lib/llm";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
 import { formatTime } from "../lib/source";
+import { synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
 import { buildSystemPrompt } from "./ChatPanel";
@@ -117,11 +118,6 @@ Rules:
 - Open by naming the topic of the sources; close with the 2–3 biggest takeaways.
 - Stay strictly grounded in the sources — no fabricated facts.`;
 
-interface ScriptTurn {
-  speaker: "Alex" | "Sam";
-  text: string;
-}
-
 function parseScript(raw: string): ScriptTurn[] {
   const turns: ScriptTurn[] = [];
   for (const line of raw.split("\n")) {
@@ -134,22 +130,6 @@ function parseScript(raw: string): ScriptTurn[] {
     }
   }
   return turns.slice(0, 24);
-}
-
-function chunksToBase64(chunks: Uint8Array[]): string {
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.length;
-  }
-  let bin = "";
-  const STEP = 0x8000;
-  for (let i = 0; i < out.length; i += STEP) {
-    bin += String.fromCharCode(...out.subarray(i, i + STEP));
-  }
-  return btoa(bin);
 }
 
 export default function StudioPanel({
@@ -274,9 +254,9 @@ export default function StudioPanel({
   };
 
   /**
-   * Audio overview: chat model writes a two-host podcast script; if the
-   * provider supports text-to-speech (OpenAI), synthesize a real mp3 —
-   * otherwise keep the script for playback with system voices.
+   * Audio overview: chat model writes a two-host podcast script; the TTS
+   * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
+   * system voices) decides how it's synthesized.
    */
   const genAudio = async () => {
     setError(null);
@@ -305,33 +285,14 @@ export default function StudioPanel({
 
       let audio: string | null = null;
       let note: string | undefined;
-      if (settings.provider === "openai" && settings.openaiKey) {
-        try {
-          const parts: Uint8Array[] = [];
-          for (let i = 0; i < turns.length; i++) {
-            setGenPhase(`Synthesizing audio ${i + 1}/${turns.length}…`);
-            const resp = await fetch("https://api.openai.com/v1/audio/speech", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${settings.openaiKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                model: "gpt-4o-mini-tts",
-                input: turns[i].text,
-                voice: turns[i].speaker === "Alex" ? "nova" : "onyx",
-                response_format: "mp3",
-              }),
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            parts.push(new Uint8Array(await resp.arrayBuffer()));
-          }
-          audio = `data:audio/mpeg;base64,${chunksToBase64(parts)}`;
-        } catch (e) {
-          note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
-        }
-      } else {
-        note = "Text-to-speech needs the OpenAI provider";
+      try {
+        const result = await synthesizeScript(turns, settings, (i, total) =>
+          setGenPhase(`Synthesizing audio ${i + 1}/${total}…`)
+        );
+        audio = result.audio;
+        note = result.note;
+      } catch (e) {
+        note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
       }
 
       await addArtifact(
