@@ -31,12 +31,15 @@ export default function NotebookView({
   onBack,
   onOpenSettings,
   onRenamed,
+  onNotebookMoved,
 }: {
   notebook: Notebook;
   settings: Settings;
   onBack: () => void;
   onOpenSettings: () => void;
   onRenamed: () => void;
+  /** Folder changes via /move in chat — App refreshes notebooks+folders. */
+  onNotebookMoved: () => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -239,6 +242,7 @@ export default function NotebookView({
           notebookId={notebook.id}
           chatId={activeChatId}
           notebookTitle={notebook.title}
+          notebookFolderId={notebook.folder_id}
           chatTitle={activeChat?.title ?? ""}
           sources={sources}
           artifacts={artifacts}
@@ -246,6 +250,7 @@ export default function NotebookView({
           onOpenSettings={onOpenSettings}
           onChatActivity={handleChatActivity}
           onAddFiles={handleChatFiles}
+          onNotebookMoved={onNotebookMoved}
         />
         <div
           role="separator"

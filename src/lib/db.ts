@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { Artifact, ArtifactKind, Chat, ChatMessage, Notebook, Source, SourceType } from "./types";
+import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceType } from "./types";
 
 export function uid(): string {
   return crypto.randomUUID();
@@ -85,17 +85,20 @@ export async function getDb(): Promise<Database> {
   // notebooks gain starred (homepage pinning).
   if (!nbCols.some((c) => c.name === "starred"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN starred INTEGER NOT NULL DEFAULT 0");
-  // Homepage folders were removed: drop the table and the notebooks.folder_id
-  // column so existing installs get cleaned up. (DROP COLUMN needs SQLite
-  // 3.35+; if it fails, the leftover column is harmless.)
-  await db.execute("DROP TABLE IF EXISTS folders");
-  if (nbCols.some((c) => c.name === "folder_id")) {
-    try {
-      await db.execute("ALTER TABLE notebooks DROP COLUMN folder_id");
-    } catch {
-      /* old SQLite — leave the column */
-    }
-  }
+  // notebooks gain cover (homepage card banner, data URL — grid view only).
+  if (!nbCols.some((c) => c.name === "cover"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN cover TEXT NOT NULL DEFAULT ''");
+  // Homepage folders: notebooks belong to at most one folder ("" = root).
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      cover TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    )`);
+  if (!nbCols.some((c) => c.name === "folder_id"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -115,7 +118,8 @@ export async function listNotebooks(): Promise<Notebook[]> {
 
 export async function createNotebook(
   title: string,
-  description = ""
+  description = "",
+  folderId = ""
 ): Promise<Notebook> {
   const d = await getDb();
   const now = Date.now();
@@ -124,12 +128,14 @@ export async function createNotebook(
     title,
     description,
     starred: 0,
+    cover: "",
+    folder_id: folderId,
     created_at: now,
     updated_at: now,
   };
   await d.execute(
-    "INSERT INTO notebooks (id, title, description, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-    [nb.id, nb.title, nb.description, nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
+    [nb.id, nb.title, nb.description, nb.folder_id, nb.created_at, nb.updated_at]
   );
   // Constitutions are opt-in: added via the sources "+" menu inside the notebook.
   return nb;
@@ -163,6 +169,18 @@ export async function setNotebookStarred(id: string, starred: boolean): Promise<
   await d.execute("UPDATE notebooks SET starred = $1 WHERE id = $2", [starred ? 1 : 0, id]);
 }
 
+/** Cover images are cosmetic — like starring, they must not bump updated_at. */
+export async function setNotebookCover(id: string, cover: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET cover = $1 WHERE id = $2", [cover, id]);
+}
+
+/** Moving a notebook between folders is organizational — don't bump updated_at. */
+export async function moveNotebookToFolder(id: string, folderId: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET folder_id = $1 WHERE id = $2", [folderId, id]);
+}
+
 export async function touchNotebook(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE notebooks SET updated_at = $1 WHERE id = $2", [Date.now(), id]);
@@ -175,6 +193,68 @@ export async function deleteNotebook(id: string): Promise<void> {
   await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
+}
+
+/* ------------------------------- Folders ------------------------------- */
+
+export async function listFolders(): Promise<Folder[]> {
+  const d = await getDb();
+  return d.select<Folder[]>("SELECT * FROM folders ORDER BY created_at ASC");
+}
+
+export async function createFolder(name: string, description = ""): Promise<Folder> {
+  const d = await getDb();
+  const folder: Folder = { id: uid(), name, description, cover: "", created_at: Date.now() };
+  await d.execute(
+    "INSERT INTO folders (id, name, description, cover, created_at) VALUES ($1, $2, $3, $4, $5)",
+    [folder.id, folder.name, folder.description, folder.cover, folder.created_at]
+  );
+  return folder;
+}
+
+/** Rename/redescribe a folder. Purely organizational — touches no timestamps anywhere. */
+export async function updateFolderDetails(
+  id: string,
+  name: string,
+  description: string
+): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE folders SET name = $1, description = $2 WHERE id = $3", [
+    name,
+    description,
+    id,
+  ]);
+}
+
+export async function setFolderCover(id: string, cover: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE folders SET cover = $1 WHERE id = $2", [cover, id]);
+}
+
+/** Deleting a folder never deletes notebooks — they return to the homepage root. */
+export async function deleteFolder(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET folder_id = '' WHERE folder_id = $1", [id]);
+  await d.execute("DELETE FROM folders WHERE id = $1", [id]);
+}
+
+/**
+ * Resolve a folder by display name for the /move chat command:
+ * case-insensitive exact match first, then a unique prefix match.
+ * Returns "ambiguous" with the candidates when a prefix matches several.
+ */
+export async function findFolderByName(
+  name: string
+): Promise<{ status: "found"; folder: Folder } | { status: "none" } | { status: "ambiguous"; matches: Folder[] }> {
+  const folders = await listFolders();
+  const q = name.trim().toLowerCase();
+  if (!q) return { status: "none" };
+  const exact = folders.find((f) => f.name.toLowerCase() === q);
+  if (exact) return { status: "found", folder: exact };
+  const prefix = folders.filter((f) => f.name.toLowerCase().startsWith(q));
+  if (prefix.length === 1) return { status: "found", folder: prefix[0] };
+  if (prefix.length > 1) return { status: "ambiguous", matches: prefix };
+  return { status: "none" };
 }
 
 /* ------------------------------- Sources ------------------------------- */

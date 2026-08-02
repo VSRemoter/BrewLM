@@ -1,7 +1,9 @@
 import {
   ArrowUp,
+  ArrowUpFromLine,
   BookOpen,
   FileText,
+  FolderClosed,
   Loader2,
   Plus,
   Settings2,
@@ -10,7 +12,13 @@ import {
   Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addMessage, clearMessages } from "../lib/db";
+import {
+  addMessage,
+  clearMessages,
+  findFolderByName,
+  listFolders,
+  moveNotebookToFolder,
+} from "../lib/db";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
 import { hydrateMermaid } from "../lib/mermaid";
@@ -23,7 +31,7 @@ import {
 import { streamChat, type LlmMessage } from "../lib/llm";
 import { activeKey } from "../lib/settings";
 import { ACCEPT_STRING } from "../lib/source";
-import type { Artifact, ChatMessage, Settings, Source } from "../lib/types";
+import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
 import { IconButton, TypingDots } from "./ui";
 
 const MAX_CONSTITUTION_CHARS = 6000;
@@ -126,6 +134,7 @@ export default function ChatPanel({
   notebookId,
   chatId,
   notebookTitle,
+  notebookFolderId,
   chatTitle,
   sources,
   artifacts,
@@ -133,10 +142,13 @@ export default function ChatPanel({
   onOpenSettings,
   onChatActivity,
   onAddFiles,
+  onNotebookMoved,
 }: {
   notebookId: string;
   chatId: string | null;
   notebookTitle: string;
+  /** "" when the notebook sits at the homepage root. */
+  notebookFolderId: string;
   chatTitle: string;
   sources: Source[];
   artifacts: Artifact[];
@@ -145,12 +157,16 @@ export default function ChatPanel({
   onChatActivity?: (chatId: string, firstUserText?: string) => void;
   /** Ingest dropped/picked files as notebook sources; returns what was added. */
   onAddFiles: (files: FileList | File[]) => Promise<IngestResult>;
+  /** Folder reassignment happened via /move — App refreshes notebook/folder state. */
+  onNotebookMoved: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
+  const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const dragDepth = useRef(0);
@@ -218,6 +234,85 @@ export default function ChatPanel({
     });
   };
 
+  /* ------------------------------ /move command ------------------------------ */
+
+  /** `/move`, `/move math`, `/move "Math Courses"` at the start of the draft. */
+  const detectMove = (value: string): string | null => {
+    const m = /^\/move(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+    if (!m) return null;
+    return m[2] ?? "";
+  };
+
+  /** Folders matching the /move query; a Root row rides on top when applicable. */
+  const moveHits = useMemo(() => {
+    if (moveQuery === null) return [];
+    const q = moveQuery.query.trim().toLowerCase();
+    const hits = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
+    return hits.slice(0, 8);
+  }, [moveQuery, folders]);
+  const moveActiveIdx = Math.min(moveQuery?.active ?? 0, Math.max(moveHits.length - 1, 0));
+  const showRootMove =
+    moveQuery !== null &&
+    notebookFolderId !== "" &&
+    (!moveQuery.query.trim() || "notebooks".startsWith(moveQuery.query.trim().toLowerCase()));
+
+  useEffect(() => {
+    if (moveQuery !== null) void listFolders().then(setFolders);
+  }, [moveQuery]);
+
+  const acceptMove = (name: string) => {
+    setDraft(`/move "${name}" `);
+    setMoveQuery(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      autoSize(ta);
+    });
+  };
+
+  /**
+   * Execute the /move command locally (no LLM round-trip) and report the
+   * outcome as an assistant message. Returns true when `text` was a command.
+   */
+  const runMoveCommand = async (text: string): Promise<boolean> => {
+    const m = /^\/move(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    if (!m) return false;
+    const raw = (m[2] ?? "").trim();
+    let reply: string;
+    if (!raw || /^(out|root|home|notebooks)$/i.test(raw)) {
+      if (!notebookFolderId) {
+        reply = `“${notebookTitle}” isn't in any folder — nothing to move.`;
+      } else {
+        await moveNotebookToFolder(notebookId, "");
+        onNotebookMoved();
+        reply = `📁 Moved “${notebookTitle}” out of its folder to Notebooks.`;
+      }
+    } else {
+      const hit = await findFolderByName(raw);
+      if (hit.status === "found") {
+        if (hit.folder.id === notebookFolderId) {
+          reply = `“${notebookTitle}” is already in “${hit.folder.name}”.`;
+        } else {
+          await moveNotebookToFolder(notebookId, hit.folder.id);
+          onNotebookMoved();
+          reply = `📁 Moved “${notebookTitle}” to folder “${hit.folder.name}”.`;
+        }
+      } else if (hit.status === "ambiguous") {
+        reply = `“${raw}” matches several folders: ${hit.matches.map((f) => f.name).join(", ")}. Be a little more specific.`;
+      } else {
+        const all = await listFolders();
+        reply = all.length
+          ? `No folder named “${raw}”. Your folders: ${all.map((f) => f.name).join(", ")}.`
+          : `No folder named “${raw}” — there are no folders yet. Create one from the homepage with “New folder”.`;
+      }
+    }
+    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
+    setMessages((prev) => [...prev, replyMsg]);
+    return true;
+  };
+
   useEffect(() => {
     if (!chatId) {
       setMessages([]);
@@ -246,11 +341,21 @@ export default function ChatPanel({
     setError(null);
     setDraft("");
     setMention(null);
+    setMoveQuery(null);
     const isFirst = messages.length === 0;
 
     const userMsg = await addMessage(chatId, notebookId, "user", text);
     const history = [...messages, userMsg];
     setMessages(history);
+
+    // /move is a local app command — file the notebook, no LLM call.
+    if (/^\/move(\s|$)/i.test(text)) {
+      await runMoveCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
     setStreaming("");
 
     // Mentions from recent user turns keep their priority across follow-ups.
@@ -402,9 +507,59 @@ export default function ChatPanel({
       {/* input */}
       <div className="shrink-0 px-5 pb-5 pt-2">
         <div className="relative mx-auto max-w-2xl">
-          {/* @-mention suggestions */}
-          {mention && mentionHits.length > 0 && (
+          {/* /move folder suggestions */}
+          {moveQuery !== null && (moveHits.length > 0 || showRootMove) && (
             <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {showRootMove && (
+                  <button
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setDraft("/move out");
+                      setMoveQuery(null);
+                      textareaRef.current?.focus();
+                    }}
+                    onMouseEnter={() => setMoveQuery((m) => (m ? { ...m, active: 0 } : m))}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                      moveActiveIdx === 0 ? "bg-hover" : ""
+                    }`}
+                  >
+                    <ArrowUpFromLine size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                      Out of folder (back to Notebooks)
+                    </span>
+                  </button>
+                )}
+                {moveHits.map((f, i) => {
+                  const idx = showRootMove ? i + 1 : i;
+                  return (
+                    <button
+                      key={f.id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        acceptMove(f.name);
+                      }}
+                      onMouseEnter={() => setMoveQuery((m) => (m ? { ...m, active: idx } : m))}
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                        idx === moveActiveIdx ? "bg-hover" : ""
+                      }`}
+                    >
+                      <FolderClosed size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                      <span className="min-w-0 flex-1 truncate text-[13px]">{f.name}</span>
+                      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                        folder
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to pick · Esc to dismiss · /move out to un-file
+              </p>
+            </div>
+          )}
+          {/* @-mention suggestions */}
+          {mention && mentionHits.length > 0 && (            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
               <div className="max-h-56 overflow-y-auto py-1">
                 {mentionHits.map((item, i) => (
                   <button
@@ -466,8 +621,15 @@ export default function ChatPanel({
               onChange={(e) => {
                 setDraft(e.target.value);
                 autoSize(e.target);
-                const hit = detectMention(e.target.value, e.target.selectionStart);
-                setMention(hit ? { ...hit, active: 0 } : null);
+                const mv = detectMove(e.target.value);
+                if (mv !== null) {
+                  setMoveQuery({ query: mv, active: 0 });
+                  setMention(null);
+                } else {
+                  setMoveQuery(null);
+                  const hit = detectMention(e.target.value, e.target.selectionStart);
+                  setMention(hit ? { ...hit, active: 0 } : null);
+                }
               }}
               onSelect={(e) => {
                 const el = e.currentTarget;
@@ -478,6 +640,35 @@ export default function ChatPanel({
                 });
               }}
               onKeyDown={(e) => {
+                if (moveQuery !== null) {
+                  const count = moveHits.length + (showRootMove ? 1 : 0);
+                  if (e.key === "ArrowDown" && count > 0) {
+                    e.preventDefault();
+                    setMoveQuery((m) => m && { ...m, active: (Math.min(m.active, count - 1) + 1) % count });
+                    return;
+                  }
+                  if (e.key === "ArrowUp" && count > 0) {
+                    e.preventDefault();
+                    setMoveQuery((m) => m && { ...m, active: (Math.min(m.active, count - 1) - 1 + count) % count });
+                    return;
+                  }
+                  if ((e.key === "Enter" || e.key === "Tab") && count > 0) {
+                    e.preventDefault();
+                    if (showRootMove && moveActiveIdx === 0) {
+                      setDraft("/move out");
+                      setMoveQuery(null);
+                      textareaRef.current?.focus();
+                    } else {
+                      acceptMove(moveHits[showRootMove ? moveActiveIdx - 1 : moveActiveIdx].name);
+                    }
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMoveQuery(null);
+                    return;
+                  }
+                }
                 if (mention && mentionHits.length > 0) {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
@@ -507,7 +698,9 @@ export default function ChatPanel({
               }}
               rows={1}
               placeholder={
-                sources.length > 0 ? "Ask about your sources… (@ to reference)" : "Ask anything…"
+                sources.length > 0
+                  ? "Ask about your sources… (@ to reference · /move to file)"
+                  : "Ask anything… (/move files this notebook)"
               }
               className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3"
             />

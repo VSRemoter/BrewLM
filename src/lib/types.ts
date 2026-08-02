@@ -4,8 +4,22 @@ export interface Notebook {
   description: string;
   /** SQLite boolean: 1 = pinned to the top of the homepage. */
   starred: number;
+  /** Data-URL banner image for the homepage grid card ("" = none). Not shown in list view. */
+  cover: string;
+  /** Folder this notebook lives in ("" = homepage root). */
+  folder_id: string;
   created_at: number;
   updated_at: number;
+}
+
+/** Homepage folder grouping notebooks. */
+export interface Folder {
+  id: string;
+  name: string;
+  description: string;
+  /** Data-URL banner image for the homepage grid card ("" = none). Not shown in list view. */
+  cover: string;
+  created_at: number;
 }
 
 export type SourceType = "context" | "pdf" | "text" | "link" | "image" | "audio" | "file";
