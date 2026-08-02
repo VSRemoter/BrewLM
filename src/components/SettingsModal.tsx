@@ -1,4 +1,4 @@
-import { Check, ExternalLink, Plus, X } from "lucide-react";
+import { Check, ExternalLink, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   ELEVENLABS_VOICE_PRESETS,
@@ -68,7 +68,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saved, setSaved] = useState(false);
   const [modelList, setModelList] = useState<string[]>([]);
-  const [newModel, setNewModel] = useState("");
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -101,15 +100,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     setSaved(false);
   };
 
+  /** Add the typed model id to the chip list (Enter in the Model field). */
   const addModel = () => {
-    const m = newModel.trim();
+    const m = settings.model.trim();
     if (!m || modelList.includes(m)) return;
     const next = [...modelList, m];
     setModelList(next);
     saveModelList(provider, next);
-    setNewModel("");
-    if (!settings.model) pick({ model: m });
-    setSaved(false);
   };
 
   const removeModel = (m: string) => {
@@ -273,12 +270,18 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <div className="mb-1.5 flex items-baseline justify-between">
             <label className="text-[12.5px] font-medium text-ink-2">Model</label>
             <span className="text-[11px] text-ink-3">
-              Click a chip to use it · × removes · saved per provider
+              Click a chip to use it · × removes · Enter saves a typed id
             </span>
           </div>
           <input
             value={settings.model}
             onChange={(e) => pick({ model: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addModel();
+              }
+            }}
             placeholder="model id"
             className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
           />
@@ -318,30 +321,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 </span>
               );
             })}
-          </div>
-
-          {/* Add a model */}
-          <div className="mt-2 flex gap-1.5">
-            <input
-              value={newModel}
-              onChange={(e) => setNewModel(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addModel();
-                }
-              }}
-              placeholder={`Add a ${PROVIDER_LABELS[settings.provider]} model id…`}
-              className="min-w-0 flex-1 rounded-lg border border-edge bg-panel px-3 py-1.5 font-mono text-[12px] outline-none placeholder:text-ink-3 focus:border-ink-3"
-            />
-            <button
-              onClick={addModel}
-              disabled={!newModel.trim() || modelList.includes(newModel.trim())}
-              title="Add model"
-              className="flex items-center gap-1 rounded-lg border border-edge bg-panel px-2.5 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Plus size={13} strokeWidth={2.5} /> Add
-            </button>
           </div>
         </div>
 
