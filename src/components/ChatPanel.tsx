@@ -41,6 +41,82 @@ const MAX_MENTION_CHARS = 8000;
 const MAX_MENTION_TOTAL = 16_000;
 const HISTORY_LIMIT = 16;
 
+interface ChatCommand {
+  cmd: string;
+  usage: string;
+  desc: string;
+  icon: typeof FolderClosed;
+  /** True when the command inserts a partial draft (expects an argument). */
+  takesArgs: boolean;
+}
+
+/** Registry behind the `/` autocomplete palette. */
+const COMMANDS: ChatCommand[] = [
+  {
+    cmd: "/help",
+    usage: "/help",
+    desc: "How to use OpenMind — setup, tools & tips",
+    icon: BookOpen,
+    takesArgs: false,
+  },
+  {
+    cmd: "/move",
+    usage: "/move <folder>",
+    desc: "File this notebook into a folder (or /move out)",
+    icon: FolderClosed,
+    takesArgs: true,
+  },
+];
+
+const HELP_TEXT = `# OpenMind — quick start guide
+
+OpenMind is a private, local-first study workspace: your documents stay on your computer, and the AI only sees the sources you share while chatting.
+
+## 1. Connect a provider
+Open **Settings** (gear icon, top right of any notebook):
+1. Pick a provider — **OpenAI**, **Anthropic**, or **OpenRouter** (one OpenRouter key gives you access to Claude, GPT, Gemini, Llama, DeepSeek and many more).
+2. Paste your API key. It is stored in the local database on your machine and is only sent to your chosen provider.
+3. Choose a model — or edit the model list to add/remove models.
+One key powers everything: chat, Studio tools, and web research.
+
+## 2. Organize notebooks (homepage)
+- Create a **notebook** per class, project, or topic. Edit its title, description and cover anytime.
+- **Folders** keep things tidy: create one with "New folder", then drag notebooks into it — or use the /move command from chat. Click a folder to enter it, **← Notebooks** to go back.
+- **Star** notebooks to pin them, switch between grid/list view, sort by date or name, and search by title.
+
+## 3. Add sources (left panel)
+Use **+** in the Sources panel to upload **PDFs, text, markdown, CSV, images or audio**, **paste text**, or add a **web link** (the page is fetched and cleaned automatically). PDF text is extracted locally, on your machine.
+The **constitution** button adds a persona document (Professor, Tutor, Critic…). Edit that source — it changes how the AI behaves inside this notebook.
+
+## 4. Chat
+- Ask anything. Answers are grounded in your sources and **cite them by title**.
+- **@-mention**: type \`@\` and pick a source or a saved output. Mentioned material gets **top priority**, so the reply centers on it — e.g. "Compare @Lecture 3 with @Lecture 5".
+- **Drag files into the chat** to add them as sources and @-mention them automatically.
+- Keep several **chat threads** per notebook (Chats panel, bottom left): create, rename, delete, switch.
+- The AI can draw: ask for a mermaid flowchart, a diagram, or an SVG sketch and it renders inline.
+
+## 5. Studio (right panel)
+One click turns your sources into study materials. Every result is saved as an **artifact** you can reopen, **download** (.md / .mp3 / .wav), or **add back as a source**:
+
+| Tool | What it does |
+| --- | --- |
+| Flashcards | Active-recall deck — 8/12/24 cards, difficulty & focus |
+| Quiz | Multiple-choice questions with explanations — 4/8/15 |
+| Mind map | Hierarchical outline of the key ideas |
+| Report | Summary, Study guide, FAQ, Timeline, Briefing doc, or your own prompt |
+| Audio overview | Two hosts (Alex & Sam) discuss your sources — Deep dive / Brief / Debate / Critique, then voiced via OpenAI, OpenRouter or ElevenLabs |
+| Deep research | Plans search queries, browses the web, writes a cited report |
+
+## 6. Chat commands
+Type \`/\` in the composer to browse them (arrow keys + Enter):
+- \`/help\` — shows this guide.
+- \`/move <folder>\` — files this notebook into a folder (folder names autocomplete); \`/move out\` returns it to the homepage root.
+Commands run locally — they never use AI tokens.
+
+## Privacy
+API keys, sources, chats and artifacts all live in a local database on your machine. No account, no cloud sync. Organizing works offline; only AI calls need a network.`;
+
+
 export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = []): string {
   const constitutions = sources.filter(
     (s) => s.type === "context" && s.content.trim()
@@ -165,6 +241,7 @@ export default function ChatPanel({
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
+  const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
@@ -232,6 +309,39 @@ export default function ChatPanel({
       ta.setSelectionRange(pos, pos);
       autoSize(ta);
     });
+  };
+
+  /* ---------------------------- / command palette ---------------------------- */
+
+  /** `/`, `/h`, `/mo…` — the user just started a slash command (no space yet). */
+  const detectCommand = (value: string): string | null => {
+    const m = /^\/([A-Za-z-]{0,20})$/.exec(value);
+    return m ? m[1].toLowerCase() : null;
+  };
+
+  const cmdHits = useMemo(() => {
+    if (cmdQuery === null) return [];
+    const q = cmdQuery.query;
+    return q ? COMMANDS.filter((c) => c.cmd.slice(1).startsWith(q)) : COMMANDS;
+  }, [cmdQuery]);
+  const cmdActiveIdx = Math.min(cmdQuery?.active ?? 0, Math.max(cmdHits.length - 1, 0));
+
+  /** Insert the picked command; `/move` continues into folder autocomplete, `/help` sends. */
+  const acceptCommand = (c: ChatCommand) => {
+    setCmdQuery(null);
+    if (c.takesArgs) {
+      setDraft(`${c.cmd} `);
+      setMoveQuery({ query: "", active: 0 });
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        autoSize(ta);
+      });
+    } else {
+      void send(c.cmd);
+    }
   };
 
   /* ------------------------------ /move command ------------------------------ */
@@ -335,18 +445,28 @@ export default function ChatPanel({
 
   const keyed = activeKey(settings);
 
-  const send = async () => {
-    const text = draft.trim();
+  const send = async (direct?: string) => {
+    const text = (direct ?? draft).trim();
     if (!text || streaming !== null || !chatId) return;
     setError(null);
     setDraft("");
     setMention(null);
+    setCmdQuery(null);
     setMoveQuery(null);
     const isFirst = messages.length === 0;
 
     const userMsg = await addMessage(chatId, notebookId, "user", text);
     const history = [...messages, userMsg];
     setMessages(history);
+
+    // /help is a local app command — post the guide, no LLM call.
+    if (/^\/help(\s|$)/i.test(text)) {
+      const replyMsg = await addMessage(chatId, notebookId, "assistant", HELP_TEXT);
+      setMessages((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
 
     // /move is a local app command — file the notebook, no LLM call.
     if (/^\/move(\s|$)/i.test(text)) {
@@ -507,6 +627,36 @@ export default function ChatPanel({
       {/* input */}
       <div className="shrink-0 px-5 pb-5 pt-2">
         <div className="relative mx-auto max-w-2xl">
+          {/* / command palette */}
+          {cmdQuery !== null && cmdHits.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {cmdHits.map((c, i) => {
+                  const Icon = c.icon;
+                  return (
+                    <button
+                      key={c.cmd}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        acceptCommand(c);
+                      }}
+                      onMouseEnter={() => setCmdQuery((q) => (q ? { ...q, active: i } : q))}
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                        i === cmdActiveIdx ? "bg-hover" : ""
+                      }`}
+                    >
+                      <Icon size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                      <span className="shrink-0 font-mono text-[12.5px] font-semibold">{c.usage}</span>
+                      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{c.desc}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to pick · Esc to dismiss · /help for the full guide
+              </p>
+            </div>
+          )}
           {/* /move folder suggestions */}
           {moveQuery !== null && (moveHits.length > 0 || showRootMove) && (
             <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
@@ -622,6 +772,14 @@ export default function ChatPanel({
                 setDraft(e.target.value);
                 autoSize(e.target);
                 const mv = detectMove(e.target.value);
+                const cmd = mv === null ? detectCommand(e.target.value) : null;
+                if (cmd !== null) {
+                  setCmdQuery({ query: cmd, active: 0 });
+                  setMoveQuery(null);
+                  setMention(null);
+                  return;
+                }
+                setCmdQuery(null);
                 if (mv !== null) {
                   setMoveQuery({ query: mv, active: 0 });
                   setMention(null);
@@ -640,6 +798,28 @@ export default function ChatPanel({
                 });
               }}
               onKeyDown={(e) => {
+                if (cmdQuery !== null && cmdHits.length > 0) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setCmdQuery((q) => q && { ...q, active: (Math.min(q.active, cmdHits.length - 1) + 1) % cmdHits.length });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setCmdQuery((q) => q && { ...q, active: (Math.min(q.active, cmdHits.length - 1) - 1 + cmdHits.length) % cmdHits.length });
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === "Tab") {
+                    e.preventDefault();
+                    acceptCommand(cmdHits[cmdActiveIdx]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setCmdQuery(null);
+                    return;
+                  }
+                }
                 if (moveQuery !== null) {
                   const count = moveHits.length + (showRootMove ? 1 : 0);
                   if (e.key === "ArrowDown" && count > 0) {
@@ -699,13 +879,13 @@ export default function ChatPanel({
               rows={1}
               placeholder={
                 sources.length > 0
-                  ? "Ask about your sources… (@ to reference · /move to file)"
-                  : "Ask anything… (/move files this notebook)"
+                  ? "Ask about your sources… (@ to reference · / for commands)"
+                  : "Ask anything… (type / for commands)"
               }
               className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3"
             />
             <button
-              onClick={send}
+              onClick={() => send()}
               disabled={!draft.trim() || streaming !== null}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink transition-opacity hover:opacity-85 disabled:opacity-25"
               aria-label="Send message"
