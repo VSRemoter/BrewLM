@@ -1,13 +1,27 @@
 import {
+  AlignLeft,
   ArrowUp,
   ArrowUpFromLine,
+  AudioLines,
   BookOpen,
   FileText,
   FolderClosed,
+  GraduationCap,
+  Layers,
+  Link,
+  ListPlus,
   Loader2,
+  MessageSquarePlus,
+  Network,
+  Palette,
+  Pencil,
   Plus,
   Settings2,
   Sparkles,
+  Square,
+  Star,
+  StickyNote,
+  Telescope,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -18,6 +32,9 @@ import {
   findFolderByName,
   listFolders,
   moveNotebookToFolder,
+  renameChat,
+  setNotebookStarred,
+  setSetting,
 } from "../lib/db";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
@@ -28,9 +45,15 @@ import {
   segmentMentions,
   type MentionItem,
 } from "../lib/mentions";
-import { streamChat, type LlmMessage } from "../lib/llm";
-import { activeKey } from "../lib/settings";
+import { isAbortError, streamChat, type LlmMessage } from "../lib/llm";
+import {
+  activeKey,
+  loadModelList,
+  saveModelList,
+} from "../lib/settings";
 import { ACCEPT_STRING } from "../lib/source";
+import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
+import { THEMES, chooseTheme } from "../lib/themes";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
 import { IconButton, TypingDots } from "./ui";
 
@@ -48,6 +71,8 @@ interface ChatCommand {
   icon: typeof FolderClosed;
   /** True when the command inserts a partial draft (expects an argument). */
   takesArgs: boolean;
+  /** Argument kind with its own autocomplete popup. */
+  autocomplete?: "theme" | "model";
 }
 
 /** Registry behind the `/` autocomplete palette. */
@@ -60,10 +85,131 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: false,
   },
   {
+    cmd: "/model",
+    usage: "/model <id>",
+    desc: "Switch the active model (autocompletes yours)",
+    icon: Settings2,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
     cmd: "/move",
     usage: "/move <folder>",
     desc: "File this notebook into a folder (or /move out)",
     icon: FolderClosed,
+    takesArgs: true,
+  },
+  {
+    cmd: "/theme",
+    usage: "/theme <name>",
+    desc: "Switch the app theme instantly (e.g. /theme Wine)",
+    icon: Palette,
+    takesArgs: true,
+    autocomplete: "theme",
+  },
+  {
+    cmd: "/new",
+    usage: "/new",
+    desc: "Start a fresh chat — this one stays saved in the Chats panel",
+    icon: MessageSquarePlus,
+    takesArgs: false,
+  },
+  {
+    cmd: "/return",
+    usage: "/return",
+    desc: "Back to the homepage",
+    icon: BookOpen,
+    takesArgs: false,
+  },
+  {
+    cmd: "/clear",
+    usage: "/clear",
+    desc: "Delete this chat thread and start fresh",
+    icon: Trash2,
+    takesArgs: false,
+  },
+  {
+    cmd: "/star",
+    usage: "/star",
+    desc: "Star or un-star this notebook",
+    icon: Star,
+    takesArgs: false,
+  },
+  {
+    cmd: "/note",
+    usage: "/note <text>",
+    desc: "Paste text straight into your Sources",
+    icon: StickyNote,
+    takesArgs: true,
+  },
+  {
+    cmd: "/url",
+    usage: "/url <link>",
+    desc: "Fetch a webpage into your Sources",
+    icon: Link,
+    takesArgs: true,
+  },
+  {
+    cmd: "/summarize",
+    usage: "/summarize",
+    desc: "Summarize the whole notebook here in chat",
+    icon: AlignLeft,
+    takesArgs: false,
+  },
+  {
+    cmd: "/flashcards",
+    usage: "/flashcards [8|12|24] [easy|medium|hard] [focus]",
+    desc: "Active-recall deck — saved to Studio",
+    icon: Layers,
+    takesArgs: true,
+  },
+  {
+    cmd: "/quiz",
+    usage: "/quiz [4|8|15] [easy|medium|hard] [focus]",
+    desc: "Multiple-choice questions — saved to Studio",
+    icon: GraduationCap,
+    takesArgs: true,
+  },
+  {
+    cmd: "/mindmap",
+    usage: "/mindmap [focus]",
+    desc: "Hierarchical outline of key ideas — saved to Studio",
+    icon: Network,
+    takesArgs: true,
+  },
+  {
+    cmd: "/audio",
+    usage: "/audio [format] [length] [focus]",
+    desc: "Two-host podcast — deep-dive|brief|debate|critique · short|standard|long",
+    icon: AudioLines,
+    takesArgs: true,
+  },
+  {
+    cmd: "/report",
+    usage: "/report [summary|study-guide|briefing|faq|timeline|analysis|custom]",
+    desc: "Grounded markdown document — saved to Studio",
+    icon: FileText,
+    takesArgs: true,
+  },
+  {
+    cmd: "/research",
+    usage: "/research <topic>",
+    desc: "Web-powered cited report — saved to Studio",
+    icon: Telescope,
+    takesArgs: true,
+  },
+  {
+    cmd: "/queue",
+    usage: "/queue <prompt or command>",
+    desc: "Line up a prompt/command to run when the current task finishes",
+    icon: ListPlus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/rename",
+    usage: "/rename <title>",
+    desc: "Rename this chat thread",
+    icon: Pencil,
     takesArgs: true,
   },
 ];
@@ -108,10 +254,31 @@ One click turns your sources into study materials. Every result is saved as an *
 | Deep research | Plans search queries, browses the web, writes a cited report |
 
 ## 6. Chat commands
-Type \`/\` in the composer to browse them (arrow keys + Enter):
+Type \`/\` in the composer to browse them (arrow keys + Enter).
+
+**App actions** (run locally — no AI tokens):
 - \`/help\` — shows this guide.
 - \`/move <folder>\` — files this notebook into a folder (folder names autocomplete); \`/move out\` returns it to the homepage root.
-Commands run locally — they never use AI tokens.
+- \`/theme <name>\` — switches the app theme instantly (names autocomplete). Available: ${THEMES.map((t) => t.name).join(", ")}. Also changeable in Settings.
+- \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
+- \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
+- \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
+- \`/return\` — goes back to the homepage (everything is saved).
+- \`/clear\` — deletes this chat thread entirely and starts fresh (unlike \`/new\`, which keeps it).
+- \`/note <text>\` — pastes text straight into your Sources panel (great for lecture notes) and @-mentions it.
+- \`/url <link>\` — fetches a webpage into your Sources panel and @-mentions it.
+- \`/rename <title>\` — renames this chat thread, e.g. \`/rename "Math notes wk 4"\`.
+- \`/queue <prompt or command>\` — lines up work while the AI is busy. Stackable: \`/queue /url <link>\` then \`/queue /summarize\` then \`/queue "Explain Bayes' theorem"\` run one after another, in order. Remove items from the queue bar that appears above the composer.
+
+**AI actions** (use your provider):
+- \`/summarize\` — a well-structured summary of the whole notebook, right here in chat.
+- \`/flashcards [8|12|24] [easy|medium|hard] [focus]\` — e.g. \`/flashcards 24 hard photosynthesis\`.
+- \`/quiz [4|8|15] [easy|medium|hard] [focus]\` — e.g. \`/quiz 15 easy\`.
+- \`/mindmap [focus]\` — hierarchical outline of the key ideas.
+- \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`.
+- \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
+- \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
+AI Studio results are saved as artifacts in the Studio panel (right) — reopen, download, or add them back as sources from there. No arguments = the same defaults as clicking the tool card. Queued AI actions consume tokens when they run.
 
 ## Privacy
 API keys, sources, chats and artifacts all live in a local database on your machine. No account, no cloud sync. Organizing works offline; only AI calls need a network.`;
@@ -219,6 +386,14 @@ export default function ChatPanel({
   onChatActivity,
   onAddFiles,
   onNotebookMoved,
+  onNewChat,
+  onAddNote,
+  onAddLink,
+  onClearChat,
+  onReturnHome,
+  onSettingsChanged,
+  onStudioCommand,
+  notebookStarred,
 }: {
   notebookId: string;
   chatId: string | null;
@@ -235,6 +410,22 @@ export default function ChatPanel({
   onAddFiles: (files: FileList | File[]) => Promise<IngestResult>;
   /** Folder reassignment happened via /move — App refreshes notebook/folder state. */
   onNotebookMoved: () => void;
+  /** /new command — NotebookView creates + selects a fresh chat. */
+  onNewChat: () => void | Promise<void>;
+  /** /note command — NotebookView saves the text as a source; returns it. */
+  onAddNote: (text: string) => Promise<Source>;
+  /** /url command — NotebookView fetches + saves the page as a link source. */
+  onAddLink: (url: string) => Promise<Source>;
+  /** /clear command — NotebookView deletes the active chat thread. */
+  onClearChat: () => void | Promise<void>;
+  /** /return command — NotebookView exits to the homepage. */
+  onReturnHome: () => void;
+  /** /model command — App reloads the persisted settings object. */
+  onSettingsChanged: () => void;
+  /** Studio tool commands — StudioPanel's imperative run(); result string for chat. */
+  onStudioCommand: (cmd: StudioCommand) => Promise<string>;
+  /** Live starred flag so /star can toggle it. */
+  notebookStarred: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -243,6 +434,12 @@ export default function ChatPanel({
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
+  const [themeQuery, setThemeQuery] = useState<{ query: string; active: number } | null>(null);
+  const [modelQuery, setModelQuery] = useState<{ query: string; active: number } | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  // Mirror of settings.theme so "/theme" updates the "current" marker instantly.
+  const [theme, setTheme] = useState(settings.theme);
+  useEffect(() => setTheme(settings.theme), [settings.theme]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -326,12 +523,14 @@ export default function ChatPanel({
   }, [cmdQuery]);
   const cmdActiveIdx = Math.min(cmdQuery?.active ?? 0, Math.max(cmdHits.length - 1, 0));
 
-  /** Insert the picked command; `/move` continues into folder autocomplete, `/help` sends. */
+  /** Insert the picked command; arg-commands continue into their own flow. */
   const acceptCommand = (c: ChatCommand) => {
     setCmdQuery(null);
     if (c.takesArgs) {
       setDraft(`${c.cmd} `);
-      setMoveQuery({ query: "", active: 0 });
+      if (c.cmd === "/move") setMoveQuery({ query: "", active: 0 });
+      if (c.autocomplete === "theme") setThemeQuery({ query: "", active: 0 });
+      if (c.autocomplete === "model") setModelQuery({ query: "", active: 0 });
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (!ta) return;
@@ -342,6 +541,122 @@ export default function ChatPanel({
     } else {
       void send(c.cmd);
     }
+  };
+
+  /* ----------------------------- /model command ----------------------------- */
+
+  // Mirror of settings.model so /model updates the composer footer instantly.
+  const [model, setModel] = useState(settings.model);
+  useEffect(() => setModel(settings.model), [settings.model]);
+
+  /** `/model`, `/model gpt-4o` at the start of the draft. */
+  const detectModel = (value: string): string | null => {
+    const m = /^\/model(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+    if (!m) return null;
+    return m[2] ?? "";
+  };
+
+  const modelHits = useMemo(() => {
+    if (modelQuery === null) return [];
+    const q = modelQuery.query.trim().toLowerCase();
+    const hits = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+    return hits.slice(0, 8);
+  }, [modelQuery, models]);
+  const modelActiveIdx = Math.min(modelQuery?.active ?? 0, Math.max(modelHits.length - 1, 0));
+
+  useEffect(() => {
+    if (modelQuery !== null) void loadModelList(settings.provider).then(setModels);
+  }, [modelQuery, settings.provider]);
+
+  const acceptModel = (id: string) => {
+    setDraft(`/model "${id}" `);
+    setModelQuery(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      autoSize(ta);
+    });
+  };
+
+  /** Execute /model locally (no LLM) — swap the model and persist it. */
+  const runModelCommand = async (text: string): Promise<void> => {
+    const m = /^\/model(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    const raw = (m?.[2] ?? "").trim();
+    let reply: string;
+    if (!raw) {
+      const list = await loadModelList(settings.provider);
+      reply = `Current model: \`${model}\`. Your ${settings.provider} models: ${list.map((x) => `\`${x}\``).join(", ")}.`;
+    } else {
+      await setSetting("model", raw);
+      setModel(raw);
+      // A genuinely new id also joins the editable Settings list.
+      const list = await loadModelList(settings.provider);
+      if (!list.includes(raw)) {
+        const next = [...list, raw];
+        await saveModelList(settings.provider, next);
+        setModels(next);
+      }
+      onSettingsChanged();
+      reply = `Model set to \`${raw}\`.`;
+    }
+    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
+    setMsgs((prev) => [...prev, replyMsg]);
+  };
+
+  /* ----------------------------- /theme command ----------------------------- */
+
+  /** `/theme`, `/theme wine` at the start of the draft. */
+  const detectTheme = (value: string): string | null => {
+    const m = /^\/theme(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+    if (!m) return null;
+    return m[2] ?? "";
+  };
+
+  const themeHits = useMemo(() => {
+    if (themeQuery === null) return [];
+    const q = themeQuery.query.trim().toLowerCase();
+    const hits = q ? THEMES.filter((t) => t.name.toLowerCase().includes(q)) : THEMES;
+    return hits.slice(0, 8);
+  }, [themeQuery]);
+  const themeActiveIdx = Math.min(themeQuery?.active ?? 0, Math.max(themeHits.length - 1, 0));
+
+  const acceptTheme = (name: string) => {
+    setDraft(`/theme "${name}" `);
+    setThemeQuery(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      autoSize(ta);
+    });
+  };
+
+  /** Execute /theme locally (no LLM). Returns true when `text` was a command. */
+  const runThemeCommand = async (text: string): Promise<boolean> => {
+    const m = /^\/theme(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    if (!m) return false;
+    const raw = (m[2] ?? "").trim();
+    let reply: string;
+    if (!raw) {
+      reply = `Current theme: **${THEMES.find((t) => t.id === theme)?.name ?? theme}**. Pick one: ${THEMES.map((t) => `\`/theme ${t.name}\``).join(" · ")}`;
+    } else {
+      const hit = THEMES.find(
+        (t) => t.name.toLowerCase() === raw.toLowerCase() || t.id === raw.toLowerCase()
+      );
+      if (hit) {
+        await chooseTheme(hit.id);
+        setTheme(hit.id);
+        reply = `Theme set to **${hit.name}** — ${hit.blurb}.`;
+      } else {
+        reply = `No theme named “${raw}”. Available: ${THEMES.map((t) => t.name).join(", ")}.`;
+      }
+    }
+    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
+    setMsgs((prev) => [...prev, replyMsg]);
+    return true;
   };
 
   /* ------------------------------ /move command ------------------------------ */
@@ -419,18 +734,64 @@ export default function ChatPanel({
       }
     }
     const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
-    setMessages((prev) => [...prev, replyMsg]);
+    setMsgs((prev) => [...prev, replyMsg]);
     return true;
   };
 
   useEffect(() => {
     if (!chatId) {
-      setMessages([]);
+      setMsgs([]);
       return;
     }
     import("../lib/db").then(({ listMessages }) =>
       listMessages(chatId).then(setMessages)
     );
+  }, [chatId]);
+
+  /* ------------------------------ /queue state ------------------------------ */
+
+  /** FIFO of queued prompts/commands. Ref mirrors state for drain loops. */
+  const queueRef = useRef<string[]>([]);
+  const [queue, setQueue] = useState<string[]>([]);
+  /** Mirrors `streaming` state synchronously so chained sends aren't blocked by a stale closure. */
+  const streamingRef = useRef(false);
+  const drainingRef = useRef(false);
+  /** Controller for the in-flight LLM stream; the stop button aborts it. */
+  const abortRef = useRef<AbortController | null>(null);
+  /** Latest messages — drainQueue needs fresh history, not the stale render closure. */
+  const messagesRef = useRef<ChatMessage[]>([]);
+
+  /** Update messages state AND the ref atomically (value or updater form). */
+  const setMsgs = (
+    next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])
+  ) => {
+    messagesRef.current =
+      typeof next === "function" ? next(messagesRef.current) : next;
+    setMessages(messagesRef.current);
+  };
+
+  /** Strip one pair of matching outer quotes: /queue "…" / /rename "…". */
+  const stripOuterQuotes = (s: string): string => {
+    if (s.length >= 2 && ((s[0] === '"' && s.endsWith('"')) || (s[0] === '"' && s.endsWith('"')))) {
+      return s.slice(1, -1).trim();
+    }
+    return s;
+  };
+
+  const removeFromQueue = (i: number) => {
+    queueRef.current.splice(i, 1);
+    setQueue([...queueRef.current]);
+  };
+
+  const clearQueue = () => {
+    queueRef.current = [];
+    setQueue([]);
+  };
+
+  // The queue is per-chat: switching threads drops pending items.
+  useEffect(() => {
+    queueRef.current = [];
+    setQueue([]);
   }, [chatId]);
 
   useEffect(() => {
@@ -445,24 +806,28 @@ export default function ChatPanel({
 
   const keyed = activeKey(settings);
 
-  const send = async (direct?: string) => {
-    const text = (direct ?? draft).trim();
-    if (!text || streaming !== null || !chatId) return;
+  /**
+   * Send one payload end-to-end (command or chat message). The /queue drain
+   * loop calls this in sequence; `streamingRef` mirrors the LLM busy state
+   * synchronously so a chained runSend never hits a stale-closure block.
+   */
+  const runSend = async (text: string): Promise<void> => {
+    if (!text || streamingRef.current || !chatId) return;
     setError(null);
-    setDraft("");
-    setMention(null);
-    setCmdQuery(null);
-    setMoveQuery(null);
-    const isFirst = messages.length === 0;
+    // First "real" user message = first that isn't a /queue command — lets a
+    // queued payload (not the "/queue …" wrapper) auto-title a fresh chat.
+    const isFirst = !messagesRef.current.some(
+      (m) => m.role === "user" && !/^\/queue(\s|$)/i.test(m.content)
+    );
 
     const userMsg = await addMessage(chatId, notebookId, "user", text);
-    const history = [...messages, userMsg];
-    setMessages(history);
+    const history = [...messagesRef.current, userMsg];
+    setMsgs(history);
 
     // /help is a local app command — post the guide, no LLM call.
     if (/^\/help(\s|$)/i.test(text)) {
       const replyMsg = await addMessage(chatId, notebookId, "assistant", HELP_TEXT);
-      setMessages((prev) => [...prev, replyMsg]);
+      setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, isFirst ? text : undefined);
       textareaRef.current?.focus();
       return;
@@ -476,7 +841,179 @@ export default function ChatPanel({
       return;
     }
 
+    // /theme is a local app command — switch the palette, no LLM call.
+    if (/^\/theme(\s|$)/i.test(text)) {
+      await runThemeCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /new — save this chat and start a fresh one.
+    if (/^\/new(\s|$)/i.test(text)) {
+      const replyMsg = await addMessage(
+        chatId,
+        notebookId,
+        "assistant",
+        "Started a fresh chat. This conversation is saved in the Chats panel on the left."
+      );
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId);
+      await onNewChat();
+      return;
+    }
+
+    // /note — paste text straight into the Sources panel.
+    if (/^\/note(\s|$)/i.test(text)) {
+      const body = text.replace(/^\/note\s*/i, "").trim();
+      if (!body) {
+        const replyMsg = await addMessage(
+          chatId,
+          notebookId,
+          "assistant",
+          "Paste your note right after the command, e.g. `/note today's lecture covered…`"
+        );
+        setMsgs((prev) => [...prev, replyMsg]);
+      } else {
+        const src = await onAddNote(body);
+        const replyMsg = await addMessage(
+          chatId,
+          notebookId,
+          "assistant",
+          `Saved “${src.title}” as a source — it's in the Sources panel on the left, and the AI can now ground answers in it.`
+        );
+        setMsgs((prev) => [...prev, replyMsg]);
+        insertMentions([src.title]);
+        onChatActivity?.(chatId, isFirst ? `Note: ${src.title}` : undefined);
+        textareaRef.current?.focus();
+        return;
+      }
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /rename <title> — rename this chat thread.
+    if (/^\/rename(\s|$)/i.test(text)) {
+      const raw = stripOuterQuotes(text.replace(/^\/rename\s*/i, "").trim());
+      let reply: string;
+      if (!raw) {
+        reply = `Give me the new title, e.g. \`/rename "Chat About Mathematic Notes"\`.`;
+      } else {
+        const title = raw.slice(0, 80);
+        await renameChat(chatId, title);
+        // touchChat refreshes ChatsPanel + header; no-op otherwise.
+        onChatActivity?.(chatId);
+        reply = `Renamed this chat to “${title}”.`;
+      }
+      const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /model is a local app command — swap the model, no LLM call.
+    if (/^\/model(\s|$)/i.test(text)) {
+      await runModelCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /star — toggle the notebook's star (pinned order on the homepage).
+    if (/^\/star(\s|$)/i.test(text)) {
+      await setNotebookStarred(notebookId, !notebookStarred);
+      onNotebookMoved();
+      const replyMsg = await addMessage(
+        chatId,
+        notebookId,
+        "assistant",
+        notebookStarred
+          ? `Un-starred “${notebookTitle}”.`
+          : `Starred “${notebookTitle}” — it's pinned near the top of the homepage.`
+      );
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /clear — delete this thread entirely (unlike /new, which saves it).
+    if (/^\/clear(\s|$)/i.test(text)) {
+      await onClearChat();
+      return;
+    }
+
+    // /return — exit to the homepage; the chat stays saved in the Chats panel.
+    if (/^\/return(\s|$)/i.test(text)) {
+      abortRef.current?.abort(); // stop any in-flight generation on the way out
+      onReturnHome();
+      return;
+    }
+
+    // /url <link> — fetch a webpage into the Sources panel.
+    if (/^\/url(\s|$)/i.test(text)) {
+      const raw = text.replace(/^\/url\s*/i, "").trim();
+      let reply: string | null = null;
+      if (!raw) {
+        reply = "Give me a link to add, e.g. `/url https://en.wikipedia.org/wiki/Photosynthesis`";
+      } else if (!/^https?:\/\//i.test(raw)) {
+        reply = "Links need to start with http:// or https:// — try again with the full URL.";
+      } else {
+        try {
+          const src = await onAddLink(raw);
+          const replyMsg = await addMessage(
+            chatId,
+            notebookId,
+            "assistant",
+            `Saved “${src.title}” as a source — it's in the Sources panel on the left, and the AI can now ground answers in it.`
+          );
+          setMsgs((prev) => [...prev, replyMsg]);
+          insertMentions([src.title]);
+          onChatActivity?.(chatId, isFirst ? `Link: ${src.title}` : undefined);
+          textareaRef.current?.focus();
+          return;
+        } catch (e) {
+          reply = `Couldn't fetch that link: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+      const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // Studio tool commands — run in the Studio panel, confirm here.
+    const studioMatch = /^\/(flashcards|quiz|mindmap|audio|report|research)(\s|$)/i.exec(text);
+    if (studioMatch) {
+      const parsed = parseStudioCommand(text);
+      if (typeof parsed === "string") {
+        const replyMsg = await addMessage(chatId, notebookId, "assistant", parsed);
+        setMsgs((prev) => [...prev, replyMsg]);
+      } else {
+        const notice = await addMessage(chatId, notebookId, "assistant", parsed.notice);
+        setMsgs((prev) => [...prev, notice]);
+        const result = await onStudioCommand(parsed.cmd);
+        const doneMsg = await addMessage(chatId, notebookId, "assistant", result);
+        setMsgs((prev) => [...prev, doneMsg]);
+      }
+      onChatActivity?.(
+        chatId,
+        isFirst ? (typeof parsed === "string" ? text : parsed.title) : undefined
+      );
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /summarize — LLM call, but with a dedicated notebook-wide prompt.
+    const isSummarize = /^\/summarize(\s|$)/i.test(text);
+
+    streamingRef.current = true;
     setStreaming("");
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
 
     // Mentions from recent user turns keep their priority across follow-ups.
     const mentioned = resolveMentions(
@@ -489,7 +1026,14 @@ export default function ChatPanel({
     );
     const llmMessages: LlmMessage[] = [
       { role: "system", content: buildSystemPrompt(sources, mentioned) },
-      ...history.slice(-HISTORY_LIMIT).map((m) => ({ role: m.role, content: m.content })),
+      ...history.slice(-HISTORY_LIMIT).map((m, i, arr) => ({
+        role: m.role,
+        // The visible bubble says "/summarize"; the model gets the real prompt.
+        content:
+          isSummarize && i === arr.length - 1 && m.role === "user"
+            ? `Write a clear, well-structured summary of this whole notebook: the core ideas, why they matter, and the key details worth remembering. Cover every source.`
+            : m.content,
+      })),
     ];
 
     let acc = "";
@@ -499,25 +1043,108 @@ export default function ChatPanel({
         apiKey: keyed,
         model: settings.model,
         messages: llmMessages,
+        signal: ctrl.signal,
       })) {
         acc += delta;
         setStreaming(acc);
       }
+      // Cancelled right at the tail? Discard rather than save a cut-off answer.
+      if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
       const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc || "(no response)");
-      setMessages([...history, assistantMsg]);
+      setMsgs((prev) => [...prev, assistantMsg]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      if (acc) {
-        const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc);
-        setMessages([...history, assistantMsg]);
+      if (!(isAbortError(e) || ctrl.signal.aborted)) {
+        setError(e instanceof Error ? e.message : String(e));
+        if (acc) {
+          const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc);
+          setMsgs((prev) => [...prev, assistantMsg]);
+        }
       }
+      // aborted → discard the partial answer entirely (user pressed stop)
     } finally {
+      abortRef.current = null;
+      streamingRef.current = false;
       setStreaming(null);
       textareaRef.current?.focus();
     }
-    onChatActivity?.(chatId, isFirst ? text : undefined);
+    onChatActivity?.(chatId, isFirst ? (isSummarize ? "Notebook summary" : text) : undefined);
   };
 
+  /** Drain the FIFO queue — one payload at a time, continuing after LLM streams. */
+  const drainQueue = async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    try {
+      while (queueRef.current.length > 0 && !streamingRef.current) {
+        const next = queueRef.current.shift()!;
+        setQueue([...queueRef.current]);
+        // runSend resets streamingRef synchronously when an LLM stream starts,
+        // so the loop naturally waits for it before the next item.
+        await runSend(next);
+      }
+    } finally {
+      drainingRef.current = false;
+    }
+  };
+
+  /** Stop the in-flight LLM generation; the partial answer is discarded. */
+  const stopGenerating = () => {
+    abortRef.current?.abort();
+  };
+
+  /** Composer entry: /queue enqueues while busy, everything else sends (then drains). */
+  const send = async (direct?: string) => {
+    const text = (direct ?? draft).trim();
+    if (!text || !chatId) return;
+
+    const queueMatch = /^\/queue\s*([\s\S]*)$/i.exec(text);
+    if (queueMatch) {
+      setMention(null);
+      setCmdQuery(null);
+      setMoveQuery(null);
+      setThemeQuery(null);
+      setModelQuery(null);
+      setDraft("");
+      const payload = stripOuterQuotes(queueMatch[1].trim());
+      if (!payload) {
+        const replyMsg = await addMessage(
+          chatId,
+          notebookId,
+          "assistant",
+          "Queue what? e.g. `/queue /summarize`, `/queue /url <link>`, or `/queue \"Explain Bayes' theorem\"`."
+        );
+        setMsgs((prev) => [...prev, replyMsg]);
+        textareaRef.current?.focus();
+        return;
+      }
+      queueRef.current.push(payload);
+      setQueue([...queueRef.current]);
+      const pos = queueRef.current.length;
+      const replyMsg = await addMessage(
+        chatId,
+        notebookId,
+        "assistant",
+        `Queued **${payload.length > 60 ? payload.slice(0, 60).trimEnd() + "…" : payload}** (position ${pos}).${streamingRef.current ? " I'll run it when the current task finishes." : ""}`
+      );
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, messagesRef.current.length === 0 ? "Queued work" : undefined);
+      textareaRef.current?.focus();
+      void drainQueue();
+      return;
+    }
+
+    if (streaming !== null) return;
+    setError(null);
+    setDraft("");
+    setMention(null);
+    setCmdQuery(null);
+    setMoveQuery(null);
+    setThemeQuery(null);
+    setModelQuery(null);
+    // modelQuery cleared above
+    await runSend(text);
+    void drainQueue();
+  };
   return (
     <section
       className="relative flex h-full min-w-0 flex-1 flex-col bg-canvas"
@@ -570,7 +1197,7 @@ export default function ChatPanel({
             onClick={async () => {
               if (!chatId) return;
               await clearMessages(chatId);
-              setMessages([]);
+              setMsgs([]);
             }}
             label="Clear chat"
           >
@@ -626,6 +1253,41 @@ export default function ChatPanel({
 
       {/* input */}
       <div className="shrink-0 px-5 pb-5 pt-2">
+        {/* queue bar (in flow, above the composer; autocomplete popups layer above it) */}
+        {queue.length > 0 && (
+          <div className="mx-auto mb-2 max-w-2xl overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+            <div className="flex items-center gap-2 border-b border-edge-soft px-3 py-1.5">
+              <ListPlus size={12} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+              <span className="flex-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+                Queue · {queue.length}
+              </span>
+              <button
+                onClick={clearQueue}
+                className="text-[10.5px] font-medium text-ink-3 transition-colors hover:text-danger"
+              >
+                Clear all
+              </button>
+            </div>
+            <div className="max-h-28 overflow-y-auto py-1">
+              {queue.map((q, i) => (
+                <div key={`${i}-${q}`} className="group flex w-full items-center gap-2.5 px-3 py-1.5">
+                  <span className="shrink-0 font-mono text-[10px] text-ink-3">{i + 1}.</span>
+                  <span className="min-w-0 flex-1 truncate text-[12.5px]">{q}</span>
+                  <button
+                    onClick={() => removeFromQueue(i)}
+                    title="Remove from queue"
+                    className="shrink-0 rounded p-0.5 text-ink-3 opacity-0 transition-all hover:text-danger group-hover:opacity-100"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+              Runs in order when the current task finishes · cleared if you switch chats
+            </p>
+          </div>
+        )}
         <div className="relative mx-auto max-w-2xl">
           {/* / command palette */}
           {cmdQuery !== null && cmdHits.length > 0 && (
@@ -654,6 +1316,72 @@ export default function ChatPanel({
               </div>
               <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
                 ↑↓ navigate · Enter to pick · Esc to dismiss · /help for the full guide
+              </p>
+            </div>
+          )}
+          {/* /model suggestions */}
+          {modelQuery !== null && modelHits.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {modelHits.map((m, i) => (
+                  <button
+                    key={m}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptModel(m);
+                    }}
+                    onMouseEnter={() => setModelQuery((q) => (q ? { ...q, active: i } : q))}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                      i === modelActiveIdx ? "bg-hover" : ""
+                    }`}
+                  >
+                    <Settings2 size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{m}</span>
+                    {model === m && (
+                      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                        current
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to pick · Esc to dismiss · a new id is added to your list
+              </p>
+            </div>
+          )}
+          {/* /theme suggestions */}
+          {themeQuery !== null && themeHits.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {themeHits.map((t, i) => (
+                  <button
+                    key={t.id}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptTheme(t.name);
+                    }}
+                    onMouseEnter={() => setThemeQuery((q) => (q ? { ...q, active: i } : q))}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                      i === themeActiveIdx ? "bg-hover" : ""
+                    }`}
+                  >
+                    <span
+                      className="h-3.5 w-3.5 shrink-0 rounded-full border border-edge"
+                      style={{ background: t.swatch.accent }}
+                    />
+                    <span className="shrink-0 text-[13px] font-medium">{t.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{t.blurb}</span>
+                    {theme === t.id && (
+                      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                        current
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to pick · Esc to dismiss
               </p>
             </div>
           )}
@@ -773,18 +1501,27 @@ export default function ChatPanel({
                 autoSize(e.target);
                 const mv = detectMove(e.target.value);
                 const cmd = mv === null ? detectCommand(e.target.value) : null;
+                const th = mv === null && cmd === null ? detectTheme(e.target.value) : null;
+                const md = mv === null && cmd === null && th === null ? detectModel(e.target.value) : null;
+                setCmdQuery(null);
+                setMoveQuery(null);
+                setThemeQuery(null);
+                setModelQuery(null);
                 if (cmd !== null) {
                   setCmdQuery({ query: cmd, active: 0 });
-                  setMoveQuery(null);
                   setMention(null);
                   return;
                 }
-                setCmdQuery(null);
                 if (mv !== null) {
                   setMoveQuery({ query: mv, active: 0 });
                   setMention(null);
+                } else if (th !== null) {
+                  setThemeQuery({ query: th, active: 0 });
+                  setMention(null);
+                } else if (md !== null) {
+                  setModelQuery({ query: md, active: 0 });
+                  setMention(null);
                 } else {
-                  setMoveQuery(null);
                   const hit = detectMention(e.target.value, e.target.selectionStart);
                   setMention(hit ? { ...hit, active: 0 } : null);
                 }
@@ -817,6 +1554,52 @@ export default function ChatPanel({
                   if (e.key === "Escape") {
                     e.preventDefault();
                     setCmdQuery(null);
+                    return;
+                  }
+                }
+                if (themeQuery !== null) {
+                  const count = themeHits.length;
+                  if (e.key === "ArrowDown" && count > 0) {
+                    e.preventDefault();
+                    setThemeQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) + 1) % count });
+                    return;
+                  }
+                  if (e.key === "ArrowUp" && count > 0) {
+                    e.preventDefault();
+                    setThemeQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) - 1 + count) % count });
+                    return;
+                  }
+                  if ((e.key === "Enter" || e.key === "Tab") && count > 0) {
+                    e.preventDefault();
+                    acceptTheme(themeHits[themeActiveIdx].name);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setThemeQuery(null);
+                    return;
+                  }
+                }
+                if (modelQuery !== null) {
+                  const count = modelHits.length;
+                  if (e.key === "ArrowDown" && count > 0) {
+                    e.preventDefault();
+                    setModelQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) + 1) % count });
+                    return;
+                  }
+                  if (e.key === "ArrowUp" && count > 0) {
+                    e.preventDefault();
+                    setModelQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) - 1 + count) % count });
+                    return;
+                  }
+                  if ((e.key === "Enter" || e.key === "Tab") && count > 0) {
+                    e.preventDefault();
+                    acceptModel(modelHits[modelActiveIdx]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setModelQuery(null);
                     return;
                   }
                 }
@@ -885,16 +1668,21 @@ export default function ChatPanel({
               className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3"
             />
             <button
-              onClick={() => send()}
-              disabled={!draft.trim() || streaming !== null}
+              onClick={() => (streaming !== null ? stopGenerating() : send())}
+              disabled={streaming === null && !draft.trim()}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink transition-opacity hover:opacity-85 disabled:opacity-25"
-              aria-label="Send message"
+              aria-label={streaming !== null ? "Stop generating" : "Send message"}
+              title={streaming !== null ? "Stop generating" : "Send"}
             >
-              <ArrowUp size={16} strokeWidth={2.2} />
+              {streaming !== null ? (
+                <Square size={12} strokeWidth={2.4} fill="currentColor" />
+              ) : (
+                <ArrowUp size={16} strokeWidth={2.2} />
+              )}
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
-            {settings.model} · via {settings.provider === "openrouter" ? "OpenRouter" : settings.provider}
+            {model} · via {settings.provider === "openrouter" ? "OpenRouter" : settings.provider}
           </p>
         </div>
       </div>

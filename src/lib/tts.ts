@@ -74,13 +74,26 @@ interface OpenRouterAudio {
   transcript: string;
 }
 
+/** Options for a long-running synthesis — cooperative cancellation + progress. */
+export interface SynthesizeOptions {
+  signal?: AbortSignal;
+  onProgress?: (done: number, total: number) => void;
+}
+
+/** Throws a recognisable AbortError so callers can tell cancel from failure. */
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
 async function requestOpenRouterAudio(
   key: string,
   model: string,
   voice: string,
   text: string,
-  strict: boolean
+  strict: boolean,
+  signal?: AbortSignal
 ): Promise<OpenRouterAudio> {
+  throwIfAborted(signal);
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -97,6 +110,7 @@ async function requestOpenRouterAudio(
       audio: { voice, format: "pcm16" },
       messages: [{ role: "user", content: (strict ? OR_TTS_ASK_STRICT : OR_TTS_ASK)(text) }],
     }),
+    signal,
   });
   if (!resp.ok) {
     const raw = await resp.text();
@@ -140,11 +154,13 @@ async function speakScriptLine(
   key: string,
   model: string,
   voice: string,
-  text: string
+  text: string,
+  signal?: AbortSignal
 ): Promise<Float32Array> {
   let lastTranscript = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { pcm, transcript } = await requestOpenRouterAudio(key, model, voice, text, attempt === 1);
+    throwIfAborted(signal);
+    const { pcm, transcript } = await requestOpenRouterAudio(key, model, voice, text, attempt === 1, signal);
     if (speechMatches(text, transcript)) return pcm;
     lastTranscript = transcript;
   }
@@ -203,12 +219,15 @@ export function chunksToBase64(chunks: Uint8Array[]): string {
  * Turn a two-host script into one concatenated mp3, using the TTS provider
  * configured in Settings → Audio voices. Returns a note (not an error) when
  * synthesis is unavailable, so the caller can still keep the script.
+ * `opts.signal` cancels mid-synthesis (an AbortError propagates).
  */
 export async function synthesizeScript(
   turns: ScriptTurn[],
   settings: Settings,
-  onProgress?: (done: number, total: number) => void
+  opts: SynthesizeOptions = {}
 ): Promise<TtsResult> {
+  const { signal, onProgress } = opts;
+  throwIfAborted(signal);
   switch (settings.ttsProvider) {
     case "system":
       return {
@@ -227,6 +246,7 @@ export async function synthesizeScript(
       const instructions = settings.ttsInstructions.trim();
       const parts: Uint8Array[] = [];
       for (let i = 0; i < turns.length; i++) {
+        throwIfAborted(signal);
         onProgress?.(i, turns.length);
         const resp = await fetch("https://api.openai.com/v1/audio/speech", {
           method: "POST",
@@ -241,6 +261,7 @@ export async function synthesizeScript(
             response_format: "mp3",
             ...(instructions ? { instructions } : {}),
           }),
+          signal,
         });
         if (!resp.ok)
           throw new Error(`OpenAI TTS HTTP ${resp.status}: ${(await resp.text()).slice(0, 140)}`);
@@ -266,8 +287,9 @@ export async function synthesizeScript(
       };
       const clips: Float32Array[] = [];
       for (let i = 0; i < turns.length; i++) {
+        throwIfAborted(signal);
         onProgress?.(i, turns.length);
-        clips.push(await speakScriptLine(key, model, voices[turns[i].speaker], turns[i].text));
+        clips.push(await speakScriptLine(key, model, voices[turns[i].speaker], turns[i].text, signal));
       }
       const total = clips.reduce((n, c) => n + c.length, 0);
       const merged = new Float32Array(total);
@@ -291,6 +313,7 @@ export async function synthesizeScript(
       const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.elevenlabs;
       const parts: Uint8Array[] = [];
       for (let i = 0; i < turns.length; i++) {
+        throwIfAborted(signal);
         onProgress?.(i, turns.length);
         const voiceId = voices[turns[i].speaker];
         const resp = await tauriFetch(

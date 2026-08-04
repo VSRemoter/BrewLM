@@ -93,6 +93,7 @@ export default function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           onRenamed={refresh}
           onNotebookMoved={refresh}
+          onSettingsChanged={reloadSettings}
         />
       ) : (
         <Home
