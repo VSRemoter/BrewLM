@@ -3,6 +3,11 @@ import { activeKey } from "./settings";
 import { fetchLinkContent } from "./source";
 import type { Settings } from "./types";
 
+/** Throws a recognisable AbortError so the caller can tell cancel from failure. */
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
 export interface WebHit {
   title: string;
   url: string;
@@ -37,7 +42,8 @@ interface UrlCitation {
 async function searchOpenRouter(
   query: string,
   apiKey: string,
-  model: string
+  model: string,
+  signal?: AbortSignal
 ): Promise<WebHit[]> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -57,6 +63,7 @@ async function searchOpenRouter(
         },
       ],
     }),
+    signal,
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
@@ -64,7 +71,7 @@ async function searchOpenRouter(
 }
 
 /** OpenAI: search-preview model emits url_citation annotations. */
-async function searchOpenAI(query: string, apiKey: string): Promise<WebHit[]> {
+async function searchOpenAI(query: string, apiKey: string, signal?: AbortSignal): Promise<WebHit[]> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -80,6 +87,7 @@ async function searchOpenAI(query: string, apiKey: string): Promise<WebHit[]> {
         },
       ],
     }),
+    signal,
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
@@ -102,7 +110,8 @@ function collectCitations(annotations: unknown): WebHit[] {
 async function searchAnthropic(
   query: string,
   apiKey: string,
-  model: string
+  model: string,
+  signal?: AbortSignal
 ): Promise<WebHit[]> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -118,6 +127,7 @@ async function searchAnthropic(
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
       messages: [{ role: "user", content: `Search the web for: ${query}` }],
     }),
+    signal,
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
@@ -141,13 +151,13 @@ async function searchAnthropic(
   return out;
 }
 
-async function searchWeb(query: string, settings: Settings): Promise<WebHit[]> {
+async function searchWeb(query: string, settings: Settings, signal?: AbortSignal): Promise<WebHit[]> {
   if (settings.provider === "anthropic" && settings.anthropicKey)
-    return searchAnthropic(query, settings.anthropicKey, settings.model);
+    return searchAnthropic(query, settings.anthropicKey, settings.model, signal);
   if (settings.provider === "openai" && settings.openaiKey)
-    return searchOpenAI(query, settings.openaiKey);
+    return searchOpenAI(query, settings.openaiKey, signal);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return searchOpenRouter(query, settings.openrouterKey, settings.model);
+    return searchOpenRouter(query, settings.openrouterKey, settings.model, signal);
   return [];
 }
 
@@ -169,8 +179,10 @@ export async function deepResearch(opts: {
   title: string;
   description: string;
   onPhase?: (phase: string) => void;
+  /** Cancel mid-pipeline — an AbortError propagates to the caller. */
+  signal?: AbortSignal;
 }): Promise<ResearchOutcome> {
-  const { settings, title, description, onPhase = () => {} } = opts;
+  const { settings, title, description, signal, onPhase = () => {} } = opts;
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key first.");
 
@@ -180,6 +192,7 @@ export async function deepResearch(opts: {
       apiKey: key,
       model: settings.model,
       maxTokens: 4096,
+      signal,
       messages: [
         ...(system ? [{ role: "system" as const, content: system }] : []),
         { role: "user" as const, content: prompt },
@@ -205,8 +218,9 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
         .map((q) => q.trim())
         .slice(0, MAX_QUERIES);
     }
-  } catch {
-    /* planning fell through — fall back to the topic itself */
+  } catch (e) {
+    /* planning fell through — fall back to the topic itself; a cancel must propagate */
+    if (e instanceof Error && e.name === "AbortError") throw e;
   }
   if (queries.length === 0) queries = [title];
 
@@ -214,16 +228,18 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
   const seen = new Set<string>();
   const hits: WebHit[] = [];
   for (let i = 0; i < queries.length; i++) {
+    throwIfAborted(signal);
     onPhase(`Searching ${i + 1}/${queries.length}: ${queries[i]}`);
     try {
-      for (const h of await searchWeb(queries[i], settings)) {
+      for (const h of await searchWeb(queries[i], settings, signal)) {
         const u = normalizeUrl(h.url);
         if (!u || seen.has(u)) continue;
         seen.add(u);
         hits.push({ title: h.title || u, url: u });
       }
-    } catch {
-      /* one failing query shouldn't sink the run */
+    } catch (e) {
+      /* one failing query shouldn't sink the run — but a cancel should */
+      if (e instanceof Error && e.name === "AbortError") throw e;
     }
   }
   if (hits.length === 0)
@@ -235,6 +251,7 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
   const pages: ReadPage[] = [];
   const targets = hits.slice(0, MAX_PAGES);
   for (let i = 0; i < targets.length; i++) {
+    throwIfAborted(signal);
     onPhase(`Reading ${i + 1}/${targets.length}: ${targets[i].title}`);
     try {
       const { title: t, text } = await fetchLinkContent(targets[i].url);
@@ -261,6 +278,7 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
           .map((h, i) => `### [${i + 1}] ${h.title}\nURL: ${h.url}`)
           .join("\n\n---\n\n");
 
+  throwIfAborted(signal);
   onPhase("Writing report…");
   const markdown = (
     await ask(

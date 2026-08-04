@@ -12,6 +12,16 @@ interface StreamOptions {
   messages: LlmMessage[];
   maxTokens?: number;
   jsonMode?: boolean;
+  /** Abort mid-request to cancel generation; fetch + stream stop promptly. */
+  signal?: AbortSignal;
+}
+
+/** True when an error came from an intentional AbortController cancel. */
+export function isAbortError(e: unknown): boolean {
+  return (
+    e instanceof Error &&
+    (e.name === "AbortError" || e.message === "The operation was aborted.")
+  );
 }
 
 /**
@@ -63,7 +73,12 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     body.modalities = ["image", "text"];
   }
 
-  const res = await fetch(base, { method: "POST", headers, body: JSON.stringify(body) });
+  const res = await fetch(base, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
   if (!res.ok) throw new Error(await apiError(res));
   if (!res.body) throw new Error("Empty response body");
 
@@ -131,6 +146,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       system: system.map((m) => m.content).join("\n\n") || undefined,
       messages: rest.map((m) => ({ role: m.role, content: m.content })),
     }),
+    signal: opts.signal,
   });
   if (!res.ok) throw new Error(await apiError(res));
   if (!res.body) throw new Error("Empty response body");
@@ -174,6 +190,12 @@ export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerato
       yield buffer.trim().slice(5).trim();
     }
   } finally {
+    // Close the network stream when iteration ends early (break or abort).
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
     reader.releaseLock();
   }
 }

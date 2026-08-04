@@ -1,6 +1,7 @@
 import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
+  addSource,
   createChat,
   deleteChat,
   listArtifacts,
@@ -11,11 +12,12 @@ import {
   touchChat,
 } from "../lib/db";
 import { ingestFiles } from "../lib/ingest";
+import { fetchLinkContent } from "../lib/source";
 import type { Artifact, Chat, Notebook, Settings, Source } from "../lib/types";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
 import SourcesPanel from "./SourcesPanel";
-import StudioPanel from "./StudioPanel";
+import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
 import { IconButton } from "./ui";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
@@ -32,6 +34,7 @@ export default function NotebookView({
   onOpenSettings,
   onRenamed,
   onNotebookMoved,
+  onSettingsChanged,
 }: {
   notebook: Notebook;
   settings: Settings;
@@ -40,6 +43,8 @@ export default function NotebookView({
   onRenamed: () => void;
   /** Folder changes via /move in chat — App refreshes notebooks+folders. */
   onNotebookMoved: () => void;
+  /** Settings mutated via /model in chat — App reloads the settings object. */
+  onSettingsChanged: () => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -50,6 +55,7 @@ export default function NotebookView({
   const [rightW, setRightW] = useState(() => clamp(240, 620, num(LS.right, 288)));
   const [split, setSplit] = useState(() => clamp(0.25, 0.8, num(LS.split, 0.62)));
   const leftColRef = useRef<HTMLDivElement>(null);
+  const studioRef = useRef<StudioPanelHandle>(null);
 
   // persist layout preferences
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
@@ -95,6 +101,29 @@ export default function NotebookView({
       const result = await ingestFiles(notebook.id, files);
       refreshSources();
       return result;
+    },
+    [notebook.id, refreshSources]
+  );
+
+  /** `/note <text>` in chat — save pasted text as a source. */
+  const handleAddNote = useCallback(
+    async (text: string) => {
+      const flat = text.replace(/\s+/g, " ").trim();
+      const title = flat.length > 42 ? flat.slice(0, 42).trimEnd() + "…" : flat || "Pasted note";
+      const src = await addSource(notebook.id, "text", title, text);
+      refreshSources();
+      return src;
+    },
+    [notebook.id, refreshSources]
+  );
+
+  /** `/url <link>` in chat — fetch a web page and save it as a link source. */
+  const handleAddLink = useCallback(
+    async (url: string) => {
+      const { title, text } = await fetchLinkContent(url);
+      const src = await addSource(notebook.id, "link", title, text, url);
+      refreshSources();
+      return src;
     },
     [notebook.id, refreshSources]
   );
@@ -167,6 +196,12 @@ export default function NotebookView({
         setActiveChatId(fresh.id);
       }
     }
+  };
+
+  /** `/clear` in chat — delete the active thread; a fresh one is auto-selected. */
+  const handleClearChat = async () => {
+    if (!activeChatId) return;
+    await handleDeleteChat(activeChatId);
   };
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
@@ -251,6 +286,14 @@ export default function NotebookView({
           onChatActivity={handleChatActivity}
           onAddFiles={handleChatFiles}
           onNotebookMoved={onNotebookMoved}
+          onNewChat={newChat}
+          onAddNote={handleAddNote}
+          onAddLink={handleAddLink}
+          onClearChat={handleClearChat}
+          onReturnHome={onBack}
+          onSettingsChanged={onSettingsChanged}
+          onStudioCommand={(cmd) => studioRef.current!.run(cmd)}
+          notebookStarred={notebook.starred === 1}
         />
         <div
           role="separator"
@@ -262,6 +305,7 @@ export default function NotebookView({
           className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
         />
         <StudioPanel
+          ref={studioRef}
           notebookId={notebook.id}
           width={rightW}
           sources={sources}

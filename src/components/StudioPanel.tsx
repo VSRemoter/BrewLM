@@ -9,17 +9,16 @@ import {
   StickyNote,
   Telescope,
   Trash2,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { addArtifact, addSource, deleteArtifact } from "../lib/db";
-import { complete, extractJson } from "../lib/llm";
+import { complete, extractJson, isAbortError } from "../lib/llm";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
 import { formatTime } from "../lib/source";
 import {
-  PROMPT_BRIEFING,
-  PROMPT_STUDY_GUIDE,
-  REPORT_RULES,
+  REPORT_FORMATS,
   REPORT_TYPE_LABELS,
   buildAudioPrompt,
   buildFlashcardsPrompt,
@@ -29,6 +28,7 @@ import {
   type AudioOptions,
   type ReportOptions,
 } from "../lib/studio";
+import type { StudioCommand } from "../lib/studioCommands";
 import { synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
@@ -87,41 +87,6 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
   research: Telescope,
 };
 
-/* --------------------------------- Report --------------------------------- */
-
-const REPORT_FORMATS: { id: string; label: string; desc: string; prompt: string }[] = [
-  {
-    id: "summary",
-    label: "Summary",
-    desc: "Concise overview of the material",
-    prompt: `Write a concise, well-structured summary of my sources: the core ideas, why they matter, and the key details worth remembering. ${REPORT_RULES}`,
-  },
-  {
-    id: "study-guide",
-    label: "Study guide",
-    desc: "Concepts, terms & review questions",
-    prompt: PROMPT_STUDY_GUIDE,
-  },
-  {
-    id: "faq",
-    label: "FAQ",
-    desc: "Likely questions, grounded answers",
-    prompt: `Create a FAQ for my sources: 8–12 questions a learner would likely ask, each answered clearly and specifically. Put each question in a ### heading and its answer below it. ${REPORT_RULES}`,
-  },
-  {
-    id: "timeline",
-    label: "Timeline",
-    desc: "Chronological key events",
-    prompt: `Build a chronological timeline of the events, dates, steps, or developments in my sources. Use a markdown table with | When | Event | Why it matters | columns. If the sources contain little temporal information, say so in one sentence and instead outline the logical progression of ideas. ${REPORT_RULES}`,
-  },
-  {
-    id: "briefing",
-    label: "Briefing doc",
-    desc: "Themes, insights & key quotes",
-    prompt: PROMPT_BRIEFING,
-  },
-];
-
 /* ---------------------------------- Audio --------------------------------- */
 
 const AUDIO_PROMPT = `You are writing a podcast-style "audio overview" of my sources, performed by two hosts: Alex (curious explainer) and Sam (engaged co-host).
@@ -154,7 +119,24 @@ function parseScript(raw: string): ScriptTurn[] {
 /** Tools with a customize modal (deep research already opens its own). */
 type CustomizeKind = "flashcards" | "quiz" | "mindmap" | "audio" | "report";
 
-export default function StudioPanel({
+/** Imperative API for chat-side Studio commands (exposed via ref). */
+export interface StudioPanelHandle {
+  run: (cmd: StudioCommand) => Promise<string>;
+}
+
+const StudioPanel = forwardRef<
+  StudioPanelHandle,
+  {
+    notebookId: string;
+    width?: number;
+    sources: Source[];
+    artifacts: Artifact[];
+    settings: Settings;
+    onArtifactsChanged: () => void;
+    onSourcesChanged?: () => void;
+    onOpenSettings: () => void;
+  }
+>(function StudioPanel({
   notebookId,
   width = 288,
   sources,
@@ -163,16 +145,7 @@ export default function StudioPanel({
   onArtifactsChanged,
   onSourcesChanged,
   onOpenSettings,
-}: {
-  notebookId: string;
-  width?: number;
-  sources: Source[];
-  artifacts: Artifact[];
-  settings: Settings;
-  onArtifactsChanged: () => void;
-  onSourcesChanged?: () => void;
-  onOpenSettings: () => void;
-}) {
+}, ref) {
   const [generating, setGenerating] = useState<ArtifactKind | null>(null);
   const [genPhase, setGenPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +153,41 @@ export default function StudioPanel({
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
+  /** Aborts the one in-flight generation (only one runs at a time). */
+  const abortRef = useRef<AbortController | null>(null);
+
+  /** The X on a running tool card: cancel the job, save nothing. */
+  const cancelGeneration = () => {
+    abortRef.current?.abort();
+  };
+
+  /** Abort-aware catch: user cancels are quiet, real errors go to the panel. */
+  const failMsg = (e: unknown, prefix: string, signal: AbortSignal): string => {
+    if (isAbortError(e) || signal.aborted) return "Cancelled — nothing was saved.";
+    const msg = e instanceof Error ? e.message : String(e);
+    setError(msg);
+    return `${prefix} failed: ${msg}`;
+  };
+
+  /** Running-status row shared by every tool card, with a cancel X. */
+  const runningRow = (label: string) => (
+    <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11px] text-ink-3">
+      <Loader2 size={11} className="shrink-0 animate-spin" />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          cancelGeneration();
+        }}
+        title="Cancel generation"
+        aria-label="Cancel generation"
+        className="pointer-events-auto shrink-0 rounded p-0.5 text-ink-3 transition-colors hover:text-danger"
+      >
+        <X size={12} strokeWidth={2.2} />
+      </button>
+    </span>
+  );
 
   const isTextSource = (s: Source) =>
     s.type !== "context" && s.content && !s.content.startsWith("data:");
@@ -213,24 +221,28 @@ export default function StudioPanel({
   const generate = async (
     tool: (typeof TOOLS)[number],
     opts?: { sourceIds?: string[]; prompt?: string }
-  ) => {
+  ): Promise<string> => {
     setError(null);
     if (!activeKey(settings)) {
       onOpenSettings();
-      return;
+      return "Add an API key in Settings first — I opened it for you.";
     }
     const usedSources = scopedSources(opts?.sourceIds);
     if (!usedSources.some(isTextSource)) {
-      setError("Select at least one text-based source (PDF, text, or link) first.");
-      return;
+      const msg = "Select at least one text-based source (PDF, text, or link) first.";
+      setError(msg);
+      return msg;
     }
     setGenerating(tool.kind);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        signal: ctrl.signal,
         messages: [
           { role: "system", content: buildSystemPrompt(usedSources) },
           { role: "user", content: opts?.prompt ?? tool.prompt },
@@ -238,6 +250,7 @@ export default function StudioPanel({
       });
 
       let data: string;
+      let count = 0;
       if (tool.kind === "mindmap") {
         // strip code fences the model may add
         data = raw
@@ -249,13 +262,20 @@ export default function StudioPanel({
         if (!Array.isArray(parsed) || parsed.length === 0)
           throw new Error("The model returned an unexpected format. Try again.");
         data = JSON.stringify(parsed);
+        count = parsed.length;
       }
 
       await addArtifact(notebookId, tool.kind, tool.name, data);
       onArtifactsChanged();
+      return tool.kind === "flashcards"
+        ? `Saved ${count} flashcards to Studio.`
+        : tool.kind === "quiz"
+          ? `Saved a ${count}-question quiz to Studio.`
+          : "Saved a mind map to Studio.";
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      return failMsg(e, tool.name, ctrl.signal);
     } finally {
+      abortRef.current = null;
       setGenerating(null);
     }
   };
@@ -283,22 +303,28 @@ export default function StudioPanel({
       opts.sourceIds
     );
 
-  const runReport = async (label: string, prompt: string, sourceIds?: string[]) => {
+  const runReport = async (label: string, prompt: string, sourceIds?: string[]): Promise<string> => {
     setReportOpen(false);
     setError(null);
     const blocked = canGenerate();
     if (blocked) {
-      if (blocked !== "no-key") setError(blocked);
-      return;
+      const msg = blocked === "no-key"
+        ? "Add an API key in Settings first — I opened it for you."
+        : blocked;
+      if (blocked !== "no-key") setError(msg);
+      return msg;
     }
     setGenerating("report");
     setGenPhase(`Writing ${label.toLowerCase()}…`);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        signal: ctrl.signal,
         messages: [
           { role: "system", content: buildSystemPrompt(scopedSources(sourceIds)) },
           { role: "user", content: prompt },
@@ -308,9 +334,11 @@ export default function StudioPanel({
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
       await addArtifact(notebookId, "report", label, doc);
       onArtifactsChanged();
+      return `Saved report “${label}” to Studio.`;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      return failMsg(e, "Report", ctrl.signal);
     } finally {
+      abortRef.current = null;
       setGenerating(null);
       setGenPhase(null);
     }
@@ -321,21 +349,27 @@ export default function StudioPanel({
    * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
    * system voices) decides how it's synthesized.
    */
-  const genAudio = async (opts?: AudioOptions) => {
+  const genAudio = async (opts?: AudioOptions): Promise<string> => {
     setError(null);
     const blocked = canGenerate();
     if (blocked) {
-      if (blocked !== "no-key") setError(blocked);
-      return;
+      const msg = blocked === "no-key"
+        ? "Add an API key in Settings first — I opened it for you."
+        : blocked;
+      if (blocked !== "no-key") setError(msg);
+      return msg;
     }
     setGenerating("audio");
     setGenPhase("Drafting script…");
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        signal: ctrl.signal,
         messages: [
           { role: "system", content: buildSystemPrompt(scopedSources(opts?.sourceIds)) },
           { role: "user", content: opts ? buildAudioPrompt(opts) : AUDIO_PROMPT },
@@ -349,12 +383,14 @@ export default function StudioPanel({
       let audio: string | null = null;
       let note: string | undefined;
       try {
-        const result = await synthesizeScript(turns, settings, (i, total) =>
-          setGenPhase(`Synthesizing audio ${i + 1}/${total}…`)
-        );
+        const result = await synthesizeScript(turns, settings, {
+          signal: ctrl.signal,
+          onProgress: (i, total) => setGenPhase(`Synthesizing audio ${i + 1}/${total}…`),
+        });
         audio = result.audio;
         note = result.note;
       } catch (e) {
+        if (isAbortError(e) || ctrl.signal.aborted) throw e;
         note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
       }
 
@@ -365,9 +401,11 @@ export default function StudioPanel({
         JSON.stringify({ audio, script: turns, note })
       );
       onArtifactsChanged();
+      return `Saved an audio overview to Studio — ${turns.length} turns${audio ? " · mp3 ready" : ""}${note ? ` · ${note}` : ""}.`;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      return failMsg(e, "Audio overview", ctrl.signal);
     } finally {
+      abortRef.current = null;
       setGenerating(null);
       setGenPhase(null);
     }
@@ -378,20 +416,23 @@ export default function StudioPanel({
    * finds pages, the app reads them directly, and a cited report is written.
    * Read pages are also imported as notebook sources for grounding.
    */
-  const genResearch = async (title: string, description: string) => {
+  const genResearch = async (title: string, description: string): Promise<string> => {
     setResearchOpen(false);
     setError(null);
     if (!activeKey(settings)) {
       onOpenSettings();
-      return;
+      return "Add an API key in Settings first — I opened it for you.";
     }
     setGenerating("research");
     setGenPhase("Planning searches…");
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const outcome = await deepResearch({
         settings,
         title,
         description,
+        signal: ctrl.signal,
         onPhase: setGenPhase,
       });
 
@@ -414,13 +455,55 @@ export default function StudioPanel({
       }
       onSourcesChanged?.();
       onArtifactsChanged();
+      return `Saved research “${title}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      return failMsg(e, "Deep research", ctrl.signal);
     } finally {
+      abortRef.current = null;
       setGenerating(null);
       setGenPhase(null);
     }
   };
+
+  /* ------------------- imperative run() for chat commands ------------------- */
+
+  useImperativeHandle(
+    ref,
+    (): StudioPanelHandle => ({
+      run: async (cmd) => {
+        if (generating !== null) {
+          return "Studio is already generating something — wait for it to finish first.";
+        }
+        switch (cmd.tool) {
+          case "flashcards": {
+            const tool = TOOLS.find((t) => t.kind === "flashcards");
+            if (!tool) return "Flashcards tool is unavailable.";
+            return generate(tool, { prompt: cmd.prompt });
+          }
+          case "quiz": {
+            const tool = TOOLS.find((t) => t.kind === "quiz");
+            if (!tool) return "Quiz tool is unavailable.";
+            return generate(tool, { prompt: cmd.prompt });
+          }
+          case "mindmap": {
+            const tool = TOOLS.find((t) => t.kind === "mindmap");
+            if (!tool) return "Mind map tool is unavailable.";
+            return generate(tool, { prompt: cmd.prompt });
+          }
+          case "report":
+            return runReport(cmd.label, cmd.prompt);
+          case "audio":
+            return genAudio(
+              cmd.opts
+                ? { ...cmd.opts, sourceIds: []}
+                : undefined
+            );
+          case "research":
+            return genResearch(cmd.title, "");
+        }
+      },
+    })
+  );
 
   const viewArtifact = (a: Artifact) => {
     // kind-specific data already stored; reopen latest copy from props
@@ -460,11 +543,7 @@ export default function StudioPanel({
               <t.icon size={16} strokeWidth={1.8} className="text-ink" />
               <span className="text-[12.5px] font-semibold leading-none">{t.name}</span>
               <span className="text-[11px] leading-tight text-ink-3">{t.desc}</span>
-              {generating === t.kind && (
-                <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-3">
-                  <Loader2 size={11} className="animate-spin" /> Generating…
-                </span>
-              )}
+              {generating === t.kind && runningRow("Generating…")}
             </div>
           ))}
           {/* Audio overview */}
@@ -487,11 +566,7 @@ export default function StudioPanel({
             <span className="text-[11px] leading-tight text-ink-3">
               Podcast-style conversation
             </span>
-            {generating === "audio" && (
-              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-3">
-                <Loader2 size={11} className="animate-spin" /> {genPhase ?? "Generating…"}
-              </span>
-            )}
+            {generating === "audio" && runningRow(genPhase ?? "Generating…")}
           </div>
           {/* Report */}
           <div
@@ -513,11 +588,7 @@ export default function StudioPanel({
             <span className="text-[11px] leading-tight text-ink-3">
               Study guide, summary, FAQ…
             </span>
-            {generating === "report" && (
-              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-3">
-                <Loader2 size={11} className="animate-spin" /> {genPhase ?? "Generating…"}
-              </span>
-            )}
+            {generating === "report" && runningRow(genPhase ?? "Generating…")}
           </div>
           {/* Deep research */}
           <button
@@ -530,12 +601,7 @@ export default function StudioPanel({
             <span className="text-[11px] leading-tight text-ink-3">
               Web-powered analysis with cited sources
             </span>
-            {generating === "research" && (
-              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] leading-snug text-ink-3">
-                <Loader2 size={11} className="animate-spin" />
-                <span className="min-w-0 truncate">{genPhase ?? "Researching…"}</span>
-              </span>
-            )}
+            {generating === "research" && runningRow(genPhase ?? "Researching…")}
           </button>
         </div>
 
@@ -702,7 +768,9 @@ export default function StudioPanel({
       )}
     </aside>
   );
-}
+});
+
+export default StudioPanel;
 
 /* ----------------------------- Research modal ----------------------------- */
 

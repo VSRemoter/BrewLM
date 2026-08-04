@@ -195,6 +195,40 @@ export const PROMPT_BRIEFING = `Write a briefing document on my sources with sec
 
 export const PROMPT_ANALYSIS = `Write a thorough analysis of my sources with sections: ## Overview, ## Detailed analysis (organized by theme), ## Evidence & evaluation, ## Contradictions & gaps, and ## Conclusions. Go deep — surface nuance, evaluate claims against the evidence, and don't shy away from length. ${REPORT_RULES}`;
 
+/** One-click report formats — also the choices for `/report <type>` in chat. */
+export const REPORT_FORMATS: { id: string; label: string; desc: string; prompt: string }[] = [
+  {
+    id: "summary",
+    label: "Summary",
+    desc: "Concise overview of the material",
+    prompt: `Write a concise, well-structured summary of my sources: the core ideas, why they matter, and the key details worth remembering. ${REPORT_RULES}`,
+  },
+  {
+    id: "study-guide",
+    label: "Study guide",
+    desc: "Concepts, terms & review questions",
+    prompt: PROMPT_STUDY_GUIDE,
+  },
+  {
+    id: "faq",
+    label: "FAQ",
+    desc: "Likely questions, grounded answers",
+    prompt: `Create a FAQ for my sources: 8–12 questions a learner would likely ask, each answered clearly and specifically. Put each question in a ### heading and its answer below it. ${REPORT_RULES}`,
+  },
+  {
+    id: "timeline",
+    label: "Timeline",
+    desc: "Chronological key events",
+    prompt: `Build a chronological timeline of the events, dates, steps, or developments in my sources. Use a markdown table with | When | Event | Why it matters | columns. If the sources contain little temporal information, say so in one sentence and instead outline the logical progression of ideas. ${REPORT_RULES}`,
+  },
+  {
+    id: "briefing",
+    label: "Briefing doc",
+    desc: "Themes, insights & key quotes",
+    prompt: PROMPT_BRIEFING,
+  },
+];
+
 const REPORT_TYPE_PROMPTS: Record<Exclude<ReportType, "custom">, string> = {
   "study-guide": PROMPT_STUDY_GUIDE,
   "briefing-doc": PROMPT_BRIEFING,
