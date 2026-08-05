@@ -20,6 +20,8 @@ export interface FlashcardsOptions {
   difficulty: Difficulty;
   sourceIds: string[];
   description: string;
+  /** Custom name for the saved artifact (falls back to the tool default). */
+  title?: string;
 }
 
 export interface QuizOptions {
@@ -27,11 +29,15 @@ export interface QuizOptions {
   difficulty: Difficulty;
   sourceIds: string[];
   description: string;
+  /** Custom name for the saved artifact (falls back to the tool default). */
+  title?: string;
 }
 
 export interface MindmapOptions {
   sourceIds: string[];
   description: string;
+  /** Custom name for the saved artifact (falls back to the tool default). */
+  title?: string;
 }
 
 export interface AudioOptions {
@@ -39,12 +45,16 @@ export interface AudioOptions {
   length: AudioLength;
   sourceIds: string[];
   description: string;
+  /** Custom name for the saved artifact (falls back to the tool default). */
+  title?: string;
 }
 
 export interface ReportOptions {
   type: ReportType;
   customPrompt: string;
   sourceIds: string[];
+  /** Custom name for the saved artifact (falls back to the report type label). */
+  title?: string;
 }
 
 /* ------------------------------ labels & counts ---------------------------- */

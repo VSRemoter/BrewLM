@@ -16,6 +16,7 @@ import {
   DIFFICULTY_LABELS,
   FLASHCARD_COUNTS,
   QUIZ_COUNTS,
+  REPORT_TYPE_LABELS,
   type Amount,
   type AudioFormat,
   type AudioLength,
@@ -112,9 +113,11 @@ function SourcePicker({
   );
 }
 
-/** Shared modal scaffold: fields + source picker + generate button. */
+/** Shared modal scaffold: name field + tool fields + source picker + generate button. */
 function CustomizeFrame({
   title,
+  name,
+  onNameChange,
   sources,
   selected,
   onSourcesChange,
@@ -125,6 +128,9 @@ function CustomizeFrame({
   children,
 }: {
   title: string;
+  /** Saved-artifact name (prefilled with the tool default). */
+  name: string;
+  onNameChange: (v: string) => void;
   sources: Source[];
   selected: string[];
   onSourcesChange: (ids: string[]) => void;
@@ -137,6 +143,14 @@ function CustomizeFrame({
   return (
     <Modal title={title} onClose={onClose}>
       <div className="flex flex-col gap-3.5">
+        <Field label="Save as">
+          <input
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            maxLength={80}
+            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+          />
+        </Field>
         {children}
         <SourcePicker sources={sources} selected={selected} onChange={onSourcesChange} />
         {selected.length === 0 && (
@@ -198,16 +212,19 @@ export function FlashcardsModal({
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
+  const [name, setName] = useState("Flashcards");
 
   return (
     <CustomizeFrame
       title="Customize flashcards"
+      name={name}
+      onNameChange={setName}
       sources={sources}
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
       onGenerate={() =>
-        onGenerate({ amount, difficulty, sourceIds, description: description.trim() })
+        onGenerate({ amount, difficulty, sourceIds, description: description.trim(), title: name.trim() || "Flashcards" })
       }
       generateLabel="Generate flashcards"
     >
@@ -249,16 +266,19 @@ export function QuizModal({
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
+  const [name, setName] = useState("Quiz");
 
   return (
     <CustomizeFrame
       title="Customize quiz"
+      name={name}
+      onNameChange={setName}
       sources={sources}
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
       onGenerate={() =>
-        onGenerate({ amount, difficulty, sourceIds, description: description.trim() })
+        onGenerate({ amount, difficulty, sourceIds, description: description.trim(), title: name.trim() || "Quiz" })
       }
       generateLabel="Generate quiz"
     >
@@ -298,15 +318,18 @@ export function MindmapModal({
 }) {
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
+  const [name, setName] = useState("Mind map");
 
   return (
     <CustomizeFrame
       title="Customize mind map"
+      name={name}
+      onNameChange={setName}
       sources={sources}
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
-      onGenerate={() => onGenerate({ sourceIds, description: description.trim() })}
+      onGenerate={() => onGenerate({ sourceIds, description: description.trim(), title: name.trim() || "Mind map" })}
       generateLabel="Generate mind map"
     >
       <DescriptionField
@@ -333,15 +356,18 @@ export function AudioModal({
   const [length, setLength] = useState<AudioLength>("standard");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
+  const [name, setName] = useState("Audio overview");
 
   return (
     <CustomizeFrame
       title="Customize audio overview"
+      name={name}
+      onNameChange={setName}
       sources={sources}
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
-      onGenerate={() => onGenerate({ format, length, sourceIds, description: description.trim() })}
+      onGenerate={() => onGenerate({ format, length, sourceIds, description: description.trim(), title: name.trim() || "Audio overview" })}
       generateLabel="Generate audio"
     >
       <Field label="Format">
@@ -384,15 +410,26 @@ export function ReportModal({
   const [type, setType] = useState<ReportType>("study-guide");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [customPrompt, setCustomPrompt] = useState("");
+  const [name, setName] = useState(REPORT_TYPE_LABELS["study-guide"]);
+
+  /** Switch report type; the saved name follows unless the user renamed it. */
+  const changeType = (t: ReportType) => {
+    setName((cur) => (REPORT_TYPES.some((rt) => REPORT_TYPE_LABELS[rt] === cur) ? REPORT_TYPE_LABELS[t] : cur));
+    setType(t);
+  };
 
   return (
     <CustomizeFrame
       title="Customize report"
+      name={name}
+      onNameChange={setName}
       sources={sources}
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
-      onGenerate={() => onGenerate({ type, customPrompt: customPrompt.trim(), sourceIds })}
+      onGenerate={() =>
+        onGenerate({ type, customPrompt: customPrompt.trim(), sourceIds, title: name.trim() || REPORT_TYPE_LABELS[type] })
+      }
       generateLabel="Generate report"
       disabled={type === "custom" && !customPrompt.trim()}
     >
@@ -400,7 +437,7 @@ export function ReportModal({
         <Segmented
           options={REPORT_TYPES.map((id) => ({ id, label: REPORT_TYPE_SHORT[id] }))}
           value={type}
-          onChange={setType}
+          onChange={changeType}
         />
       </Field>
       {type === "custom" && (

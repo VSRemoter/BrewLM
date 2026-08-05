@@ -5,6 +5,7 @@ import {
   Layers,
   Loader2,
   Network,
+  Pencil,
   SlidersHorizontal,
   StickyNote,
   Telescope,
@@ -12,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import { addArtifact, addSource, deleteArtifact } from "../lib/db";
+import { addArtifact, addSource, deleteArtifact, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
@@ -40,7 +41,7 @@ import {
   QuizModal,
   ReportModal,
 } from "./StudioCustomize";
-import { Modal, PrimaryButton } from "./ui";
+import { GhostButton, Modal, PrimaryButton, Spinner } from "./ui";
 
 const TOOLS: {
   kind: ArtifactKind;
@@ -153,6 +154,18 @@ const StudioPanel = forwardRef<
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
+  /** Quick-generation naming step: prefilled default + what to run on confirm. */
+  const [naming, setNaming] = useState<{
+    defaultTitle: string;
+    run: (title: string) => void;
+  } | null>(null);
+  /** Revise flow: the artifact being edited in the pencil modal. */
+  const [revising, setRevising] = useState<Artifact | null>(null);
+  const [reviseNote, setReviseNote] = useState("");
+  /** Audio-only toggle in the revise modal: re-run TTS on the revised script. */
+  const [reviseAudio, setReviseAudio] = useState(false);
+  /** Which modal action is busy (disables both buttons; shows the spinner). */
+  const [reviseBusy, setReviseBusy] = useState<"new" | "replace" | null>(null);
   /** Aborts the one in-flight generation (only one runs at a time). */
   const abortRef = useRef<AbortController | null>(null);
 
@@ -220,7 +233,7 @@ const StudioPanel = forwardRef<
 
   const generate = async (
     tool: (typeof TOOLS)[number],
-    opts?: { sourceIds?: string[]; prompt?: string }
+    opts?: { sourceIds?: string[]; prompt?: string; title?: string }
   ): Promise<string> => {
     setError(null);
     if (!activeKey(settings)) {
@@ -265,13 +278,14 @@ const StudioPanel = forwardRef<
         count = parsed.length;
       }
 
-      await addArtifact(notebookId, tool.kind, tool.name, data);
+      const title = opts?.title?.trim() || tool.name;
+      await addArtifact(notebookId, tool.kind, title, data);
       onArtifactsChanged();
       return tool.kind === "flashcards"
-        ? `Saved ${count} flashcards to Studio.`
+        ? `Saved ${count} flashcards to Studio as “${title}”.`
         : tool.kind === "quiz"
-          ? `Saved a ${count}-question quiz to Studio.`
-          : "Saved a mind map to Studio.";
+          ? `Saved a ${count}-question quiz to Studio as “${title}”.`
+          : `Saved a mind map to Studio as “${title}”.`;
     } catch (e) {
       return failMsg(e, tool.name, ctrl.signal);
     } finally {
@@ -291,17 +305,17 @@ const StudioPanel = forwardRef<
     return null;
   };
 
-  /** Report: grounded markdown document (summary, study guide, FAQ…). */
-  const genReport = (format: (typeof REPORT_FORMATS)[number]) =>
-    runReport(format.label, format.prompt);
-
   /** Customized report: named type (incl. Thorough Analysis) or user's own prompt. */
-  const genCustomReport = (opts: ReportOptions) =>
-    runReport(
-      opts.type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[opts.type],
+  const genCustomReport = (opts: ReportOptions) => {
+    const title =
+      opts.title?.trim() ||
+      (opts.type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[opts.type]);
+    return runReport(
+      title,
       buildReportPrompt(opts.type, opts.customPrompt),
       opts.sourceIds
     );
+  };
 
   const runReport = async (label: string, prompt: string, sourceIds?: string[]): Promise<string> => {
     setReportOpen(false);
@@ -349,7 +363,7 @@ const StudioPanel = forwardRef<
    * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
    * system voices) decides how it's synthesized.
    */
-  const genAudio = async (opts?: AudioOptions): Promise<string> => {
+  const genAudio = async (opts?: AudioOptions, saveTitle?: string): Promise<string> => {
     setError(null);
     const blocked = canGenerate();
     if (blocked) {
@@ -394,14 +408,15 @@ const StudioPanel = forwardRef<
         note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
       }
 
+      const title = saveTitle?.trim() || opts?.title?.trim() || "Audio overview";
       await addArtifact(
         notebookId,
         "audio",
-        "Audio overview",
+        title,
         JSON.stringify({ audio, script: turns, note })
       );
       onArtifactsChanged();
-      return `Saved an audio overview to Studio — ${turns.length} turns${audio ? " · mp3 ready" : ""}${note ? ` · ${note}` : ""}.`;
+      return `Saved an audio overview to Studio as “${title}” — ${turns.length} turns${audio ? " · mp3 ready" : ""}${note ? ` · ${note}` : ""}.`;
     } catch (e) {
       return failMsg(e, "Audio overview", ctrl.signal);
     } finally {
@@ -463,6 +478,152 @@ const StudioPanel = forwardRef<
       setGenerating(null);
       setGenPhase(null);
     }
+  };
+
+  /* ------------------------------- revise ------------------------------- */
+
+  /** Human-readable content of an artifact, fed to the model for revision. */
+  const reviseContent = (a: Artifact): string => {
+    if (a.kind === "flashcards" || a.kind === "quiz") {
+      try {
+        return JSON.stringify(JSON.parse(a.data));
+      } catch {
+        return a.data;
+      }
+    }
+    if (a.kind === "research" || a.kind === "audio") {
+      try {
+        const d = JSON.parse(a.data);
+        if (a.kind === "research") return d.md ?? a.data;
+        return (d.script ?? [])
+          .map((t: { speaker: string; text: string }) => `${t.speaker}: ${t.text}`)
+          .join("\n");
+      } catch {
+        return a.data;
+      }
+    }
+    return a.data; // mindmap, notes, report
+  };
+
+  /** "Return ONLY…" format contracts per kind — keeps revisions parseable. */
+  const REVISE_FORMAT: Record<ArtifactKind, string> = {
+    flashcards:
+      'Return ONLY the revised flashcards as a JSON array shaped exactly like: [{"front": "question or term", "back": "concise answer"}]',
+    quiz:
+      'Return ONLY the revised quiz as a JSON array shaped exactly like: [{"question": "...", "options": ["A", "B", "C", "D"], "answerIndex": 0, "explanation": "why the answer is correct"}]',
+    mindmap:
+      'Return ONLY the revised outline as markdown: "-" bullets, two-space indentation per nested level, each node under 8 words, 3-6 top-level branches, 2-4 levels deep.',
+    notes:
+      "Return ONLY the revised markdown notes — no preface, no commentary.",
+    report:
+      "Return ONLY the revised markdown report — no preface, no commentary.",
+    research:
+      "Return ONLY the revised markdown report — no preface, no commentary. Keep the existing citation style (sources by title/url).",
+    audio: `Respond with the revised script only: one turn per line, exactly "Alex: <line>" or "Sam: <line>", 14-18 turns alternating starting with Alex. Spoken language only: no markdown, no emojis, no stage directions.`,
+  };
+
+  /**
+   * One LLM pass over an artifact with the user's revision instructions,
+   * grounded in the notebook sources. replace=false saves a "(revised)" copy.
+   */
+  const reviseArtifact = async (
+    a: Artifact,
+    note: string,
+    replace: boolean,
+    reAudio: boolean
+  ) => {
+    setReviseBusy(replace ? "replace" : "new");
+    const ctrl = new AbortController();
+    try {
+      const raw = await complete({
+        provider: settings.provider,
+        apiKey: activeKey(settings),
+        model: settings.model,
+        maxTokens: 4096,
+        signal: ctrl.signal,
+        messages: [
+          { role: "system", content: buildSystemPrompt(sources) },
+          {
+            role: "user",
+            content: `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${REVISE_FORMAT[a.kind]}`,
+          },
+        ],
+      });
+
+      let data: string;
+      if (a.kind === "flashcards" || a.kind === "quiz") {
+        const parsed = JSON.parse(extractJson(raw));
+        if (!Array.isArray(parsed) || parsed.length === 0)
+          throw new Error("The model returned an unexpected format. Try again.");
+        data = JSON.stringify(parsed);
+      } else if (a.kind === "mindmap") {
+        data = raw
+          .replace(/```(?:markdown|md)?\s*\n?/g, "")
+          .replace(/```$/gm, "")
+          .trim();
+        if (!data) throw new Error("The revision came back empty — try again.");
+      } else if (a.kind === "audio") {
+        const turns = parseScript(raw);
+        if (turns.length < 4)
+          throw new Error("Couldn't produce a usable script — try again.");
+        let audio: string | null = null;
+        let ttsNote: string | undefined;
+        if (reAudio) {
+          try {
+            const result = await synthesizeScript(turns, settings, {
+              signal: ctrl.signal,
+            });
+            audio = result.audio;
+            ttsNote = result.note;
+          } catch (e) {
+            ttsNote = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
+          }
+        } else {
+          // script-only revision: keep any audio from the original artifact
+          try {
+            audio = JSON.parse(a.data).audio ?? null;
+          } catch {
+            /* no original audio */
+          }
+        }
+        data = JSON.stringify({ audio, script: turns, note: ttsNote });
+      } else if (a.kind === "research") {
+        const md = raw.trim();
+        if (md.length < 30) throw new Error("The revision came back empty — try again.");
+        let readSources: { title: string; url: string }[] = [];
+        try {
+          readSources = JSON.parse(a.data).sources ?? [];
+        } catch {
+          /* keep empty */
+        }
+        data = JSON.stringify({ md, sources: readSources });
+      } else {
+        // notes, report
+        const doc = raw.trim();
+        if (doc.length < 30) throw new Error("The revision came back empty — try again.");
+        data = doc;
+      }
+
+      const title = replace ? a.title : `${a.title} (revised)`;
+      if (replace) {
+        await updateArtifact(a.id, data);
+      } else {
+        await addArtifact(notebookId, a.kind, title, data);
+      }
+      onArtifactsChanged();
+      setRevising(null);
+      setReviseNote("");
+    } catch (e) {
+      setError(`Revision failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReviseBusy(null);
+    }
+  };
+
+  const openRevise = (a: Artifact) => {
+    setRevising(a);
+    setReviseNote("");
+    setReviseAudio(false);
   };
 
   /* ------------------- imperative run() for chat commands ------------------- */
@@ -529,9 +690,12 @@ const StudioPanel = forwardRef<
               key={t.kind}
               role="button"
               tabIndex={0}
-              onClick={() => generate(t)}
+              onClick={() =>
+                setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title }) })
+              }
               onKeyDown={(e) => {
-                if (e.key === "Enter") generate(t);
+                if (e.key === "Enter")
+                  setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title }) });
               }}
               className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
                 generating !== null
@@ -550,9 +714,12 @@ const StudioPanel = forwardRef<
           <div
             role="button"
             tabIndex={0}
-            onClick={() => genAudio()}
+            onClick={() =>
+              setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(undefined, title) })
+            }
             onKeyDown={(e) => {
-              if (e.key === "Enter") genAudio();
+              if (e.key === "Enter")
+                setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(undefined, title) });
             }}
             className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
               generating !== null
@@ -658,6 +825,14 @@ const StudioPanel = forwardRef<
                       </span>
                     </button>
                     <button
+                      onClick={() => openRevise(a)}
+                      className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
+                      title="Revise"
+                      aria-label={`Revise ${a.title}`}
+                    >
+                      <Pencil size={12.5} />
+                    </button>
+                    <button
                       onClick={async () => {
                         await deleteArtifact(a.id);
                         onArtifactsChanged();
@@ -684,7 +859,10 @@ const StudioPanel = forwardRef<
             {REPORT_FORMATS.map((f) => (
               <button
                 key={f.id}
-                onClick={() => genReport(f)}
+                onClick={() => {
+                  setReportOpen(false);
+                  setNaming({ defaultTitle: f.label, run: (title) => void runReport(title, f.prompt) });
+                }}
                 className="flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-hover-soft"
               >
                 <span className="text-[13px] font-medium">{f.label}</span>
@@ -699,6 +877,31 @@ const StudioPanel = forwardRef<
         <ResearchModal
           onClose={() => setResearchOpen(false)}
           onStart={genResearch}
+        />
+      )}
+
+      {naming && (
+        <NameModal
+          key={naming.defaultTitle}
+          defaultTitle={naming.defaultTitle}
+          onClose={() => setNaming(null)}
+          onConfirm={(title) => {
+            setNaming(null);
+            naming.run(title);
+          }}
+        />
+      )}
+
+      {revising && (
+        <ReviseModal
+          artifact={revising}
+          note={reviseNote}
+          onNoteChange={setReviseNote}
+          reAudio={reviseAudio}
+          onReAudioChange={setReviseAudio}
+          busy={reviseBusy}
+          onClose={() => reviseBusy === null && setRevising(null)}
+          onRun={(replace) => void reviseArtifact(revising, reviseNote, replace, reviseAudio)}
         />
       )}
 
@@ -827,6 +1030,126 @@ function ResearchModal({
           </PrimaryButton>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------ Revise modal ------------------------------ */
+
+/** Pencil-icon editor: describe a fix, then save as a copy or replace the original. */
+function ReviseModal({
+  artifact: a,
+  note,
+  onNoteChange,
+  reAudio,
+  onReAudioChange,
+  busy,
+  onClose,
+  onRun,
+}: {
+  artifact: Artifact;
+  note: string;
+  onNoteChange: (v: string) => void;
+  reAudio: boolean;
+  onReAudioChange: (v: boolean) => void;
+  busy: "new" | "replace" | null;
+  onClose: () => void;
+  onRun: (replace: boolean) => void;
+}) {
+  const placeholder: Partial<Record<ArtifactKind, string>> = {
+    flashcards: "e.g. make the cards harder, add one on mitosis",
+    quiz: "e.g. harder distractors, one question on photosynthesis",
+    mindmap: "e.g. add a branch on applications",
+    audio: "e.g. shorten to 10 turns and make it more casual",
+    report: "e.g. add a caveats section, tighten the intro",
+    research: "e.g. focus more on 2024 findings, trim the history",
+    notes: "e.g. condense to half the length",
+  };
+
+  return (
+    <Modal title={`Revise ${a.title}`} onClose={onClose}>
+      <div className="flex flex-col gap-3.5">
+        <p className="-mt-1 text-[12px] leading-relaxed text-ink-3">
+          Describe the change — the current output is rewritten with your sources as grounding.
+        </p>
+        <textarea
+          value={note}
+          onChange={(e) => onNoteChange(e.target.value)}
+          placeholder={placeholder[a.kind] ?? "What should change?"}
+          rows={3}
+          autoFocus
+          className="w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3"
+        />
+        {a.kind === "audio" && (
+          <label className="flex items-start gap-2.5 text-[12px] leading-snug text-ink-2">
+            <input
+              type="checkbox"
+              checked={reAudio}
+              onChange={(e) => onReAudioChange(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent"
+            />
+            <span>
+              Also re-generate the audio (slower — re-synthesizes every turn).{" "}
+              <span className="text-ink-3">Off keeps the current mp3.</span>
+            </span>
+          </label>
+        )}
+        <div className="flex items-center justify-end gap-2">
+          <GhostButton
+            onClick={() => onRun(false)}
+            disabled={busy !== null || !note.trim()}
+          >
+            {busy === "new" ? <Spinner size={13} /> : null}
+            Save as new copy
+          </GhostButton>
+          <PrimaryButton
+            onClick={() => onRun(true)}
+            disabled={busy !== null || !note.trim()}
+          >
+            {busy === "replace" ? <Spinner size={13} /> : null}
+            Replace original
+          </PrimaryButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------ Naming modal ------------------------------ */
+
+/** One-shot "name your output" step before one-click Studio generation. */
+function NameModal({
+  defaultTitle,
+  onClose,
+  onConfirm,
+}: {
+  defaultTitle: string;
+  onClose: () => void;
+  onConfirm: (title: string) => void;
+}) {
+  const [title, setTitle] = useState(defaultTitle);
+
+  return (
+    <Modal title="Name your output" onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onConfirm(title.trim() || defaultTitle);
+        }}
+        className="flex flex-col gap-3.5"
+      >
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          maxLength={80}
+          autoFocus
+          className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none focus:border-ink-3"
+        />
+        <div className="flex justify-end gap-2">
+          <PrimaryButton type="submit">Generate</PrimaryButton>
+        </div>
+      </form>
     </Modal>
   );
 }
