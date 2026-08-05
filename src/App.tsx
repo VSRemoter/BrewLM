@@ -3,6 +3,7 @@ import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import SettingsModal from "./components/SettingsModal";
 import {
+  cloneNotebook,
   createFolder,
   createNotebook,
   deleteFolder,
@@ -10,10 +11,13 @@ import {
   getDb,
   listFolders,
   listNotebooks,
+  listTrashedNotebooks,
   moveNotebookToFolder,
+  restoreNotebook,
   setFolderCover,
   setNotebookCover,
   setNotebookStarred,
+  trashNotebook,
   updateFolderDetails,
   updateNotebookDetails,
 } from "./lib/db";
@@ -25,14 +29,20 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [trashedNotebooks, setTrashedNotebooks] = useState<Notebook[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [nbs, fds] = await Promise.all([listNotebooks(), listFolders()]);
+    const [nbs, trash, fds] = await Promise.all([
+      listNotebooks(),
+      listTrashedNotebooks(),
+      listFolders(),
+    ]);
     setNotebooks(nbs);
+    setTrashedNotebooks(trash);
     setFolders(fds);
   }, []);
 
@@ -60,7 +70,7 @@ export default function App() {
       <div className="flex h-full items-center justify-center bg-canvas px-8">
         <div className="max-w-md text-center">
           <p className="text-[16px] font-semibold tracking-tight">
-            OpenMind couldn't load its database
+            BrewLM couldn't load its database
           </p>
           <p className="mt-2 text-[13px] leading-relaxed text-ink-3">
             Try relaunching the app. If it persists, the app data folder may need to be reset.
@@ -94,20 +104,51 @@ export default function App() {
           onRenamed={refresh}
           onNotebookMoved={refresh}
           onSettingsChanged={reloadSettings}
+          onOpenNotebook={async (id) => {
+            // Refresh first so `open` resolves before the id changes.
+            await refresh();
+            setOpenId(id);
+          }}
         />
       ) : (
         <Home
           notebooks={notebooks}
+          trashedNotebooks={trashedNotebooks}
           folders={folders}
           onOpen={setOpenId}
           onSettings={() => setSettingsOpen(true)}
-          onCreate={async (title, description, folderId) => {
+          onCreate={async (title, description, folderId, cover) => {
             const nb = await createNotebook(title, description, folderId);
+            if (cover) await setNotebookCover(nb.id, cover);
             await refresh();
             setOpenId(nb.id);
           }}
-          onDelete={async (id) => {
+          onTrash={async (id) => {
+            await trashNotebook(id);
+            await refresh();
+          }}
+          onRestore={async (id) => {
+            await restoreNotebook(id);
+            await refresh();
+          }}
+          onDeleteForever={async (id) => {
             await deleteNotebook(id);
+            await refresh();
+          }}
+          onMoveNotebookBulk={async (ids, folderId) => {
+            for (const id of ids) await moveNotebookToFolder(id, folderId);
+            await refresh();
+          }}
+          onTrashBulk={async (ids) => {
+            for (const id of ids) await trashNotebook(id);
+            await refresh();
+          }}
+          onRestoreBulk={async (ids) => {
+            for (const id of ids) await restoreNotebook(id);
+            await refresh();
+          }}
+          onDeleteForeverBulk={async (ids) => {
+            for (const id of ids) await deleteNotebook(id);
             await refresh();
           }}
           onUpdateDetails={async (id, title, description) => {
@@ -141,6 +182,12 @@ export default function App() {
           }}
           onDeleteFolder={async (id) => {
             await deleteFolder(id);
+            await refresh();
+          }}
+          onUseTemplate={async (id) => {
+            const src = notebooks.find((n) => n.id === id);
+            if (!src) return;
+            await cloneNotebook(id, `${src.title} (copy)`, { includeChats: false });
             await refresh();
           }}
         />

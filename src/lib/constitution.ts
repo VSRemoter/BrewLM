@@ -1,4 +1,4 @@
-export const CONSTITUTION_TITLE = "OpenMind-Context.md";
+export const CONSTITUTION_TITLE = "BrewLM-Context.md";
 
 /* ------------------------------------------------------------------ *
  * Notebook constitutions.
@@ -16,11 +16,11 @@ export interface ConstitutionTemplate {
   name: string;
   /** One-line description shown in the picker. */
   tagline: string;
-  /** Full markdown seeded as OpenMind-Context.md. */
+  /** Full markdown seeded as BrewLM-Context.md. */
   body: string;
 }
 
-const header = (persona: string) => `# OpenMind Context — Notebook Constitution: ${persona}
+const header = (persona: string) => `# BrewLM Context — Notebook Constitution: ${persona}
 
 This file governs how the AI behaves in THIS notebook. Edit it freely —
 your changes apply to the next message you send. Delete it to return to
@@ -75,7 +75,7 @@ const assemble = (
 const DEFAULT_BODY = assemble(
   "Default",
   `## 1. Identity
-- You are OpenMind, the study and research assistant living inside this notebook.
+- You are BrewLM, the study and research assistant living inside this notebook.
 - You are not a generic chatbot. Your job: help the user understand, retain,
   and build on *their* sources.`,
   `## 3. How to format answers

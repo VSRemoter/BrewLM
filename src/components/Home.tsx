@@ -8,9 +8,11 @@ import {
   FolderPlus,
   ImagePlus,
   LayoutGrid,
+  LayoutTemplate,
   List,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings as SettingsIcon,
   Star,
@@ -20,7 +22,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Folder, Notebook } from "../lib/types";
 import { fileToCoverDataUrl, formatTime } from "../lib/source";
-import { IconButton, Modal, PrimaryButton } from "./ui";
+import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
 
 const inputClass =
   "w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
@@ -63,10 +65,13 @@ function storedSort(): SortKey {
 
 export default function Home({
   notebooks,
+  trashedNotebooks,
   folders,
   onOpen,
   onCreate,
-  onDelete,
+  onTrash,
+  onRestore,
+  onDeleteForever,
   onUpdateDetails,
   onToggleStar,
   onSetCover,
@@ -75,13 +80,32 @@ export default function Home({
   onUpdateFolder,
   onSetFolderCover,
   onDeleteFolder,
+  onUseTemplate,
+  onMoveNotebookBulk,
+  onTrashBulk,
+  onRestoreBulk,
+  onDeleteForeverBulk,
   onSettings,
 }: {
   notebooks: Notebook[];
+  trashedNotebooks: Notebook[];
   folders: Folder[];
   onOpen: (id: string) => void;
-  onCreate: (title: string, description: string, folderId: string) => void;
-  onDelete: (id: string) => void;
+  onCreate: (title: string, description: string, folderId: string, cover: string) => void;
+  /** Move to Trash (soft delete — restorable). */
+  onTrash: (id: string) => void;
+  /** Restore from the Trash back to the homepage. */
+  onRestore: (id: string) => void;
+  /** Permanent delete from the Trash — irreversible. */
+  onDeleteForever: (id: string) => void;
+  /** Bulk move (homepage Select mode): one call per selected notebook. */
+  onMoveNotebookBulk: (ids: string[], folderId: string) => void;
+  /** Bulk trash (homepage Select mode). */
+  onTrashBulk: (ids: string[]) => void;
+  /** Bulk restore from the Trash. */
+  onRestoreBulk: (ids: string[]) => void;
+  /** Bulk permanent delete from the Trash. */
+  onDeleteForeverBulk: (ids: string[]) => void;
   onUpdateDetails: (id: string, title: string, description: string) => void;
   onToggleStar: (id: string, starred: boolean) => void;
   onSetCover: (id: string, cover: string) => void;
@@ -90,11 +114,15 @@ export default function Home({
   onUpdateFolder: (id: string, name: string, description: string) => void;
   onSetFolderCover: (id: string, cover: string) => void;
   onDeleteFolder: (id: string) => void;
+  /** Sources-only starter copy of a notebook ("Use as template" card action). */
+  onUseTemplate: (id: string) => void;
   onSettings: () => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [createCover, setCreateCover] = useState("");
+  const createCoverInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Notebook | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -108,11 +136,25 @@ export default function Home({
   const [folderCover, setFolderCover] = useState("");
   const folderCoverInputRef = useRef<HTMLInputElement>(null);
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  /** Trash view open (recycle-bin list) vs. normal notebooks view. */
+  const [trashOpen, setTrashOpen] = useState(false);
+  /** "Move to Trash?" confirmation for a notebook. */
+  const [trashing, setTrashing] = useState<Notebook | null>(null);
+  /** "Delete forever?" confirmation inside the Trash. */
+  const [purging, setPurging] = useState<Notebook | null>(null);
   const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [view, setView] = useState<View>(storedView);
   const [sort, setSort] = useState<SortKey>(storedSort);
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  /** Homepage selection mode (Select button) — click cards to toggle. */
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  /** Move-to-folder dropdown while selecting. */
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  /** Bulk confirm modals: trash N / purge N. */
+  const [bulkTrashing, setBulkTrashing] = useState(false);
+  const [bulkPurging, setBulkPurging] = useState(false);
 
   useEffect(() => { localStorage.setItem(LS_VIEW, view); }, [view]);
   useEffect(() => { localStorage.setItem(LS_SORT, sort); }, [sort]);
@@ -166,14 +208,32 @@ export default function Home({
     [visible, sort]
   );
 
+  /* ------------------------------ selection (Select mode) ------------------------------ */
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+
+  const exitSelect = () => {
+    setSelecting(false);
+    setSelectedIds([]);
+    setMoveMenuOpen(false);
+  };
+
+  /** Clicking a card in Select mode toggles it instead of opening. */
+  const handleCardClick = (id: string) => {
+    if (selecting) toggleSelect(id);
+    else onOpen(id);
+  };
+
   /* ------------------------------ actions ------------------------------ */
 
   const submit = () => {
     const t = title.trim();
     if (!t) return;
-    onCreate(t, description.trim(), viewing?.id ?? "");
+    onCreate(t, description.trim(), viewing?.id ?? "", createCover);
     setTitle("");
     setDescription("");
+    setCreateCover("");
     setCreating(false);
   };
 
@@ -201,10 +261,10 @@ export default function Home({
     setEditing(null);
   };
 
-  const pickCoverFile = async (file: File | undefined) => {
+  const pickCoverFile = async (set: (cover: string) => void, file: File | undefined) => {
     if (!file) return;
     try {
-      setEditCover(await fileToCoverDataUrl(file));
+      set(await fileToCoverDataUrl(file));
     } catch {
       /* non-image or unreadable — ignore */
     }
@@ -311,8 +371,11 @@ export default function Home({
 
   /* ------------------------------ shared bits ------------------------------ */
 
-  /** Star / edit / delete — the action cluster shared by cards and rows. */
-  const actionCluster = (nb: Notebook, iconSize: { star: number; pencil: number; trash: number }) => (
+  /** Star / template / edit / delete — the action cluster shared by cards and rows. */
+  const actionCluster = (
+    nb: Notebook,
+    iconSize: { star: number; pencil: number; template: number; trash: number }
+  ) => (
     <span className="flex shrink-0 items-center gap-0.5">
       <span
         className={`rounded-md p-1 transition-all hover:bg-hover-soft ${
@@ -343,14 +406,26 @@ export default function Home({
         <Pencil size={iconSize.pencil} strokeWidth={1.8} />
       </span>
       <span
+        className="rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-hover-soft hover:text-ink group-hover:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation();
+          onUseTemplate(nb.id);
+        }}
+        title="Use as template — new notebook with these sources (no chats)"
+        role="button"
+        aria-label={`Use ${nb.title} as template`}
+      >
+        <LayoutTemplate size={iconSize.template} strokeWidth={1.8} />
+      </span>
+      <span
         className="rounded-md p-1 text-ink-3 opacity-0 transition-all hover:bg-danger-bg hover:text-danger group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
-          onDelete(nb.id);
+          setTrashing(nb);
         }}
-        title="Delete notebook"
+        title="Move to Trash"
         role="button"
-        aria-label={`Delete ${nb.title}`}
+        aria-label={`Move ${nb.title} to Trash`}
       >
         <Trash2 size={iconSize.trash} strokeWidth={1.8} />
       </span>
@@ -359,17 +434,30 @@ export default function Home({
 
   /* ------------------------------ cards & rows ------------------------------ */
 
-  const renderCard = (nb: Notebook) => (
+  const renderCard = (nb: Notebook) => {
+    const selected = selecting && selectedIds.includes(nb.id);
+    return (
     <div
       key={nb.id}
-      onClick={() => onOpen(nb.id)}
-      draggable
-      onDragStart={(e) => nbDragStart(e, nb.id)}
+      onClick={() => handleCardClick(nb.id)}
+      draggable={!selecting}
+      onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}
-      className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border border-edge bg-panel transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+      className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
         draggingId === nb.id ? "opacity-50" : ""
-      }`}
+      } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
     >
+      {selecting && (
+        <span
+          className={`absolute right-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors ${
+            selected
+              ? "border-accent bg-accent text-accent-ink"
+              : "border-ink-3 bg-panel/80 opacity-0 text-transparent group-hover:opacity-100"
+          }`}
+        >
+          {selected && <Check size={11} strokeWidth={3} />}
+        </span>
+      )}
       {nb.cover && (
         <img
           src={nb.cover}
@@ -395,23 +483,35 @@ export default function Home({
         </div>
         <div className="flex items-center justify-between">
           <span className="text-[11.5px] text-ink-3">{formatTime(nb.updated_at)}</span>
-          {actionCluster(nb, { star: 13, pencil: 12.5, trash: 13 })}
+          {!selecting && actionCluster(nb, { star: 13, template: 12.5, pencil: 12.5, trash: 13 })}
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
-  const renderRow = (nb: Notebook) => (
+  const renderRow = (nb: Notebook) => {
+    const selected = selecting && selectedIds.includes(nb.id);
+    return (
     <div
       key={nb.id}
-      onClick={() => onOpen(nb.id)}
-      draggable
-      onDragStart={(e) => nbDragStart(e, nb.id)}
+      onClick={() => handleCardClick(nb.id)}
+      draggable={!selecting}
+      onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}
-      className={`group flex cursor-pointer items-center gap-3 rounded-lg border border-edge bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+      className={`group flex cursor-pointer items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
         draggingId === nb.id ? "opacity-50" : ""
-      }`}
+      } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
     >
+      {selecting && (
+        <span
+          className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
+            selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
+          }`}
+        >
+          {selected && <Check size={10} strokeWidth={3} />}
+        </span>
+      )}
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-canvas text-ink-2">
         <BookOpen size={14} strokeWidth={1.8} />
       </span>
@@ -422,9 +522,10 @@ export default function Home({
         )}
       </div>
       <span className="shrink-0 text-[11.5px] text-ink-3">{formatTime(nb.updated_at)}</span>
-      {actionCluster(nb, { star: 13.5, pencil: 13, trash: 13.5 })}
+      {!selecting && actionCluster(nb, { star: 13.5, template: 13, pencil: 13, trash: 13.5 })}
     </div>
-  );
+    );
+  };
 
   const renderFolderCard = (f: Folder) => {
     const count = folderCounts.get(f.id) ?? 0;
@@ -432,7 +533,10 @@ export default function Home({
     return (
       <div
         key={f.id}
-        onClick={() => setOpenFolderId(f.id)}
+        onClick={() => {
+          setOpenFolderId(f.id);
+          exitSelect();
+        }}
         {...dropZoneProps(f.id)}
         className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
           highlight ? "border-accent ring-2 ring-accent/30" : "border-edge"
@@ -474,7 +578,10 @@ export default function Home({
     return (
       <div
         key={f.id}
-        onClick={() => setOpenFolderId(f.id)}
+        onClick={() => {
+          setOpenFolderId(f.id);
+          exitSelect();
+        }}
         {...dropZoneProps(f.id)}
         className={`group flex cursor-pointer items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
           highlight ? "border-accent ring-2 ring-accent/30" : "border-edge"
@@ -557,7 +664,7 @@ export default function Home({
           <div className="flex h-6 w-6 items-center justify-center rounded-md bg-accent">
             <BookOpen size={13} strokeWidth={2.2} className="text-accent-ink" />
           </div>
-          <span className="text-[15px] font-semibold tracking-tight">OpenMind</span>
+          <span className="text-[15px] font-semibold tracking-tight">BrewLM</span>
         </div>
         <div className="relative mx-auto w-full max-w-md">
           <Search
@@ -583,6 +690,22 @@ export default function Home({
             </button>
           )}
         </div>
+        <IconButton
+          onClick={() => {
+            setTrashOpen((v) => !v);
+            exitSelect();
+          }}
+          label={trashOpen ? "Back to notebooks" : `Trash (${trashedNotebooks.length})`}
+        >
+          <span className="relative">
+            <Trash2 size={16} strokeWidth={1.8} />
+            {trashedNotebooks.length > 0 && (
+              <span className="absolute -right-2 -top-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold text-accent-ink">
+                {trashedNotebooks.length}
+              </span>
+            )}
+          </span>
+        </IconButton>
         <IconButton onClick={onSettings} label="Settings">
           <SettingsIcon size={16} strokeWidth={1.8} />
         </IconButton>
@@ -590,12 +713,126 @@ export default function Home({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-8">
+        {trashOpen ? (
+          <div className="mx-auto max-w-5xl">
+            <div className="mb-6 flex items-end justify-between">
+              <div>
+                <h1 className="text-[22px] font-semibold tracking-tight">Trash</h1>
+                <p className="mt-0.5 text-[13px] text-ink-3">
+                  Restore notebooks to bring them back, or delete them forever.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {selecting ? (
+                  <>
+                    <span className="text-[12.5px] font-medium text-ink-2">
+                      {selectedIds.length} selected
+                    </span>
+                    <button
+                      onClick={() => {
+                        onRestoreBulk(selectedIds);
+                        exitSelect();
+                      }}
+                      disabled={selectedIds.length === 0}
+                      className="flex items-center gap-1.5 rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+                    >
+                      <RotateCcw size={13} strokeWidth={1.8} />
+                      Restore
+                    </button>
+                    <button
+                      onClick={() => setBulkPurging(true)}
+                      disabled={selectedIds.length === 0}
+                      className="flex items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-40"
+                    >
+                      <Trash2 size={13} strokeWidth={1.8} />
+                      Delete forever
+                    </button>
+                    <GhostButton onClick={exitSelect}>Done</GhostButton>
+                  </>
+                ) : (
+                  trashedNotebooks.length > 0 && (
+                    <button
+                      onClick={() => setSelecting(true)}
+                      className="rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                    >
+                      Select
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+            {trashedNotebooks.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <Trash2 size={20} strokeWidth={1.8} className="text-ink-3" />
+                <p className="mt-3 text-[13.5px] font-medium">The Trash is empty</p>
+                <p className="mt-0.5 text-[12.5px] text-ink-3">
+                  Notebooks you delete will show up here first.
+                </p>
+              </div>
+            ) : (
+              <div className={listClass}>
+                {trashedNotebooks.map((nb) => {
+                  const selected = selecting && selectedIds.includes(nb.id);
+                  return (
+                  <div
+                    key={nb.id}
+                    onClick={() => selecting && toggleSelect(nb.id)}
+                    className={`group flex items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+                      selecting ? "cursor-pointer" : ""
+                    } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
+                  >
+                    {selecting && (
+                      <span
+                        className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
+                          selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
+                        }`}
+                      >
+                        {selected && <Check size={10} strokeWidth={3} />}
+                      </span>
+                    )}
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-canvas text-ink-2">
+                      <BookOpen size={14} strokeWidth={1.8} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13.5px] font-medium tracking-tight">{nb.title}</p>
+                      <p className="mt-0.5 truncate text-[11.5px] text-ink-3">
+                        Deleted {formatTime(nb.trashed_at)}
+                      </p>
+                    </div>
+                    {!selecting && (
+                      <>
+                        <button
+                          onClick={() => onRestore(nb.id)}
+                          className="flex shrink-0 items-center gap-1.5 rounded-full border border-edge bg-panel px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
+                        >
+                          <RotateCcw size={12} strokeWidth={1.8} />
+                          Restore
+                        </button>
+                        <button
+                          onClick={() => setPurging(nb)}
+                          className="flex shrink-0 items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3 py-1.5 text-[12px] font-medium text-danger transition-colors hover:opacity-80"
+                        >
+                          <Trash2 size={12} strokeWidth={1.8} />
+                          Delete forever
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
         <div className="mx-auto max-w-5xl">
           <div className="mb-6 flex items-end justify-between">
             <div className="flex items-center gap-3">
               {viewing && (
                 <button
-                  onClick={() => setOpenFolderId(null)}
+                  onClick={() => {
+                    setOpenFolderId(null);
+                    exitSelect();
+                  }}
                   {...dropZoneProps("root")}
                   className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
                     dropTarget === "root"
@@ -623,7 +860,84 @@ export default function Home({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Sort picker */}
+              {selecting ? (
+                <>
+                  <span className="text-[12.5px] font-medium text-ink-2">
+                    {selectedIds.length} selected
+                  </span>
+                  {/* Move to folder */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setMoveMenuOpen((v) => !v)}
+                      disabled={selectedIds.length === 0}
+                      className="flex items-center gap-1.5 rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+                      aria-haspopup="menu"
+                      aria-expanded={moveMenuOpen}
+                    >
+                      <FolderClosed size={13} strokeWidth={1.8} />
+                      Move to folder…
+                      <ChevronDown
+                        size={12}
+                        strokeWidth={2}
+                        className={`transition-transform ${moveMenuOpen ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    {moveMenuOpen && selectedIds.length > 0 && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10 cursor-default"
+                          onClick={() => setMoveMenuOpen(false)}
+                        />
+                        <div
+                          role="menu"
+                          className="anim-fade-up absolute right-0 z-20 mt-1.5 w-48 rounded-xl border border-edge bg-panel p-1 shadow-lg"
+                        >
+                          <button
+                            role="menuitem"
+                            onClick={() => {
+                              onMoveNotebookBulk(selectedIds, "");
+                              exitSelect();
+                            }}
+                            className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover-soft"
+                          >
+                            No folder (Notebooks)
+                          </button>
+                          {folders.map((f) => (
+                            <button
+                              key={f.id}
+                              role="menuitem"
+                              onClick={() => {
+                                onMoveNotebookBulk(selectedIds, f.id);
+                                exitSelect();
+                              }}
+                              className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover-soft"
+                            >
+                              {f.name}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setBulkTrashing(true)}
+                    disabled={selectedIds.length === 0}
+                    className="flex items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-40"
+                  >
+                    <Trash2 size={13} strokeWidth={1.8} />
+                    Move to Trash
+                  </button>
+                  <GhostButton onClick={exitSelect}>Done</GhostButton>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setSelecting(true)}
+                    className="rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                  >
+                    Select
+                  </button>
+                  {/* Sort picker */}
               <div className="relative">
                 <button
                   onClick={() => setSortMenuOpen((v) => !v)}
@@ -681,6 +995,8 @@ export default function Home({
                   <LayoutGrid size={15} strokeWidth={1.8} />
                 )}
               </IconButton>
+                </>
+              )}
             </div>
           </div>
 
@@ -722,9 +1038,105 @@ export default function Home({
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* ------------------------------ modals ------------------------------ */}
+
+      {/* Are-you-sure before a notebook heads to the Trash. */}
+      {trashing && (
+        <Modal title="Move to Trash?" onClose={() => setTrashing(null)}>
+          <p className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">
+            “{trashing.title}” and its sources, chats, and studio work will move to the
+            Trash. You can restore it from there anytime.
+          </p>
+          <div className="flex justify-end gap-2">
+            <GhostButton onClick={() => setTrashing(null)}>Cancel</GhostButton>
+            <PrimaryButton
+              onClick={() => {
+                const id = trashing.id;
+                setTrashing(null);
+                onTrash(id);
+              }}
+            >
+              Move to Trash
+            </PrimaryButton>
+          </div>
+        </Modal>
+      )}
+
+      {/* Bulk: move all selected notebooks to the Trash. */}
+      {bulkTrashing && (
+        <Modal title="Move selected to Trash?" onClose={() => setBulkTrashing(false)}>
+          <p className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">
+            {selectedIds.length === 1
+              ? "1 notebook"
+              : `${selectedIds.length} notebooks`}{" "}
+            will move to the Trash, sources, chats, and studio work included. You can
+            restore them from there anytime.
+          </p>
+          <div className="flex justify-end gap-2">
+            <GhostButton onClick={() => setBulkTrashing(false)}>Cancel</GhostButton>
+            <PrimaryButton
+              onClick={() => {
+                setBulkTrashing(false);
+                onTrashBulk(selectedIds);
+                exitSelect();
+              }}
+            >
+              Move to Trash
+            </PrimaryButton>
+          </div>
+        </Modal>
+      )}
+
+      {/* Bulk: permanently delete all selected from the Trash. */}
+      {bulkPurging && (
+        <Modal title="Delete selected forever?" onClose={() => setBulkPurging(false)}>
+          <p className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">
+            {selectedIds.length === 1
+              ? "1 notebook"
+              : `${selectedIds.length} notebooks`}{" "}
+            and everything in them will be permanently deleted. This can't be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <GhostButton onClick={() => setBulkPurging(false)}>Cancel</GhostButton>
+            <button
+              onClick={() => {
+                setBulkPurging(false);
+                onDeleteForeverBulk(selectedIds);
+                exitSelect();
+              }}
+              className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
+            >
+              Delete forever
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Permanent deletion — irreversible. */}
+      {purging && (
+        <Modal title="Delete forever?" onClose={() => setPurging(null)}>
+          <p className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">
+            “{purging.title}” and everything in it will be permanently deleted. This
+            can't be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <GhostButton onClick={() => setPurging(null)}>Cancel</GhostButton>
+            <button
+              onClick={() => {
+                const id = purging.id;
+                setPurging(null);
+                onDeleteForever(id);
+              }}
+              className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
+            >
+              Delete forever
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {creating && (
         <Modal
@@ -758,6 +1170,56 @@ export default function Home({
                 placeholder="What is this notebook about?"
                 rows={2}
                 className={`${inputClass} resize-none`}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
+                Cover image{" "}
+                <span className="font-normal text-ink-3">(optional — grid view only)</span>
+              </label>
+              {createCover ? (
+                <div className="flex items-start gap-3">
+                  <img
+                    src={createCover}
+                    alt="Cover preview"
+                    className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
+                  />
+                  <div className="flex flex-col gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => createCoverInputRef.current?.click()}
+                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCreateCover("")}
+                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-danger hover:text-danger"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => createCoverInputRef.current?.click()}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge px-3 py-3 text-[12.5px] font-medium text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
+                >
+                  <ImagePlus size={14} strokeWidth={1.8} />
+                  Choose a JPEG or PNG…
+                </button>
+              )}
+              <input
+                ref={createCoverInputRef}
+                type="file"
+                accept="image/png,image/jpeg"
+                className="hidden"
+                onChange={(e) => {
+                  void pickCoverFile(setCreateCover, e.target.files?.[0]);
+                  e.target.value = ""; // allow picking the same file twice in a row
+                }}
               />
             </div>
             <div className="flex justify-end gap-2">
@@ -859,7 +1321,7 @@ export default function Home({
                 accept="image/png,image/jpeg"
                 className="hidden"
                 onChange={(e) => {
-                  void pickCoverFile(e.target.files?.[0]);
+                  void pickCoverFile(setEditCover, e.target.files?.[0]);
                   e.target.value = ""; // allow picking the same file twice in a row
                 }}
               />

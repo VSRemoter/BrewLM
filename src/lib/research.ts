@@ -50,8 +50,8 @@ async function searchOpenRouter(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://openmind.app",
-      "X-Title": "OpenMind",
+      "HTTP-Referer": "https://brewlm.app",
+      "X-Title": "BrewLM",
     },
     body: JSON.stringify({
       model,

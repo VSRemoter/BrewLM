@@ -8,6 +8,8 @@ export interface Notebook {
   cover: string;
   /** Folder this notebook lives in ("" = homepage root). */
   folder_id: string;
+  /** 0 = live; otherwise the timestamp it was sent to the homepage Trash. */
+  trashed_at: number;
   created_at: number;
   updated_at: number;
 }

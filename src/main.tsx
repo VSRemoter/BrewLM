@@ -11,7 +11,7 @@ function showFatal(detail: string) {
   el.style.cssText =
     "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:var(--color-canvas,#fafafa);font-family:var(--font-sans,-apple-system,sans-serif);padding:32px;";
   el.innerHTML = `<div style="max-width:480px;text-align:center;">
-    <p style="font-size:16px;font-weight:600;color:var(--color-ink,#171717);margin:0 0 8px;">OpenMind hit a snag while starting</p>
+    <p style="font-size:16px;font-weight:600;color:var(--color-ink,#171717);margin:0 0 8px;">BrewLM hit a snag while starting</p>
     <p style="font-size:13px;color:var(--color-ink-3,#8a8a8a);margin:0 0 12px;">Please relaunch the app. If this keeps happening, share the message below.</p>
     <pre style="font-size:11px;color:var(--color-danger,#b91c1c);background:var(--color-danger-bg,#fef2f2);border:1px solid var(--color-danger-edge,#fecaca);border-radius:10px;padding:12px;text-align:left;white-space:pre-wrap;word-break:break-word;">${detail
       .replace(/&/g, "&amp;")

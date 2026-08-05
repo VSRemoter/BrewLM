@@ -4,6 +4,7 @@ import {
   ArrowUpFromLine,
   AudioLines,
   BookOpen,
+  Copy,
   FileText,
   FolderClosed,
   GraduationCap,
@@ -80,7 +81,7 @@ const COMMANDS: ChatCommand[] = [
   {
     cmd: "/help",
     usage: "/help",
-    desc: "How to use OpenMind — setup, tools & tips",
+    desc: "How to use BrewLM — setup, tools & tips",
     icon: BookOpen,
     takesArgs: false,
   },
@@ -113,6 +114,13 @@ const COMMANDS: ChatCommand[] = [
     desc: "Start a fresh chat — this one stays saved in the Chats panel",
     icon: MessageSquarePlus,
     takesArgs: false,
+  },
+  {
+    cmd: "/clone",
+    usage: "/clone [title] [yes|no]",
+    desc: "Make an exact copy of this notebook (yes = jump to it)",
+    icon: Copy,
+    takesArgs: true,
   },
   {
     cmd: "/return",
@@ -214,9 +222,9 @@ const COMMANDS: ChatCommand[] = [
   },
 ];
 
-const HELP_TEXT = `# OpenMind — quick start guide
+const HELP_TEXT = `# BrewLM — quick start guide
 
-OpenMind is a private, local-first study workspace: your documents stay on your computer, and the AI only sees the sources you share while chatting.
+BrewLM is a private, local-first study workspace: your documents stay on your computer, and the AI only sees the sources you share while chatting.
 
 ## 1. Connect a provider
 Open **Settings** (gear icon, top right of any notebook):
@@ -229,6 +237,7 @@ One key powers everything: chat, Studio tools, and web research.
 - Create a **notebook** per class, project, or topic. Edit its title, description and cover anytime.
 - **Folders** keep things tidy: create one with "New folder", then drag notebooks into it — or use the /move command from chat. Click a folder to enter it, **← Notebooks** to go back.
 - **Star** notebooks to pin them, switch between grid/list view, sort by date or name, and search by title.
+- **Reuse** your work: hover a notebook card and click **Use as template** to make a sources-only starter copy, or type /clone inside a notebook for an exact copy — chats included.
 
 ## 3. Add sources (left panel)
 Use **+** in the Sources panel to upload **PDFs, text, markdown, CSV, images or audio**, **paste text**, or add a **web link** (the page is fetched and cleaned automatically). PDF text is extracted locally, on your machine.
@@ -263,6 +272,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
+- \`/clone [title] [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). \`/clone\` or \`/clone no\` keeps you here; \`/clone "My copy" yes\` names the copy and takes you there. For a sources-only starter copy, use **Use as template** on the homepage cards.
 - \`/return\` — goes back to the homepage (everything is saved).
 - \`/clear\` — deletes this chat thread entirely and starts fresh (unlike \`/new\`, which keeps it).
 - \`/note <text>\` — pastes text straight into your Sources panel (great for lecture notes) and @-mentions it.
@@ -300,7 +310,7 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
       !mentionedSourceIds.has(s.id)
   );
 
-  const parts: string[] = ["You are OpenMind, a thoughtful study assistant."];
+  const parts: string[] = ["You are BrewLM, a thoughtful study assistant."];
 
   // Constitution: the notebook's governing document. It may override defaults.
   if (constitutions.length > 0) {
@@ -393,6 +403,7 @@ export default function ChatPanel({
   onReturnHome,
   onSettingsChanged,
   onStudioCommand,
+  onCloneNotebook,
   notebookStarred,
 }: {
   notebookId: string;
@@ -424,6 +435,8 @@ export default function ChatPanel({
   onSettingsChanged: () => void;
   /** Studio tool commands — StudioPanel's imperative run(); result string for chat. */
   onStudioCommand: (cmd: StudioCommand) => Promise<string>;
+  /** /clone command — NotebookView deep-copies the notebook; returns the clone title. */
+  onCloneNotebook: (title: string, jump: boolean) => Promise<string>;
   /** Live starred flag so /star can toggle it. */
   notebookStarred: boolean;
 }) {
@@ -860,6 +873,32 @@ export default function ChatPanel({
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId);
       await onNewChat();
+      return;
+    }
+
+    // /clone [title] [yes|no] — deep-copy this notebook; yes jumps to the copy.
+    if (/^\/clone(\s|$)/i.test(text)) {
+      const tokens = text.replace(/^\/clone\s*/i, "").trim().split(/\s+/).filter(Boolean);
+      let jump = false;
+      const flagIdx = tokens.findIndex((t) => /^(yes|no)$/i.test(t));
+      if (flagIdx >= 0) {
+        jump = tokens[flagIdx].toLowerCase() === "yes";
+        tokens.splice(flagIdx, 1);
+      }
+      const title = stripOuterQuotes(tokens.join(" ")).slice(0, 80) || `Copy of ${notebookTitle}`;
+      let reply: string;
+      try {
+        const name = await onCloneNotebook(title, jump);
+        reply = jump
+          ? `Cloned "${notebookTitle}" as "${name}" — everything came along: sources, chats, and studio work. Taking you there.`
+          : `Cloned "${notebookTitle}" as "${name}" — sources, chats, and studio work all included. You'll find it on the homepage.`;
+      } catch {
+        reply = "Couldn't clone this notebook — please try again.";
+      }
+      const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
       return;
     }
 

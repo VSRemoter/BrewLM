@@ -55,8 +55,8 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     Authorization: `Bearer ${opts.apiKey}`,
   };
   if (opts.provider === "openrouter") {
-    headers["HTTP-Referer"] = "https://openmind.app";
-    headers["X-Title"] = "OpenMind";
+    headers["HTTP-Referer"] = "https://brewlm.app";
+    headers["X-Title"] = "BrewLM";
   }
 
   const body: Record<string, unknown> = {

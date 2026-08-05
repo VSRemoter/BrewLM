@@ -2,6 +2,7 @@ import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
   addSource,
+  cloneNotebook,
   createChat,
   deleteChat,
   listArtifacts,
@@ -35,6 +36,7 @@ export default function NotebookView({
   onRenamed,
   onNotebookMoved,
   onSettingsChanged,
+  onOpenNotebook,
 }: {
   notebook: Notebook;
   settings: Settings;
@@ -45,6 +47,8 @@ export default function NotebookView({
   onNotebookMoved: () => void;
   /** Settings mutated via /model in chat — App reloads the settings object. */
   onSettingsChanged: () => void;
+  /** /clone yes — App switches to the cloned notebook. */
+  onOpenNotebook: (id: string) => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -167,6 +171,14 @@ export default function NotebookView({
     const chat = await createChat(notebook.id);
     await refreshChats();
     setActiveChatId(chat.id);
+  };
+
+  /** /clone command — exact copy of this notebook (sources, chats, studio). */
+  const handleClone = async (title: string, jump: boolean): Promise<string> => {
+    const clone = await cloneNotebook(notebook.id, title, { includeChats: true });
+    onNotebookMoved(); // App refreshes the homepage lists
+    if (jump) onOpenNotebook(clone.id);
+    return clone.title;
   };
 
   /** Called by ChatPanel whenever a message lands; auto-titles fresh chats. */
@@ -293,6 +305,7 @@ export default function NotebookView({
           onReturnHome={onBack}
           onSettingsChanged={onSettingsChanged}
           onStudioCommand={(cmd) => studioRef.current!.run(cmd)}
+          onCloneNotebook={handleClone}
           notebookStarred={notebook.starred === 1}
         />
         <div

@@ -99,8 +99,8 @@ async function requestOpenRouterAudio(
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://openmind.app",
-      "X-Title": "OpenMind",
+      "HTTP-Referer": "https://brewlm.app",
+      "X-Title": "BrewLM",
     },
     body: JSON.stringify({
       model,

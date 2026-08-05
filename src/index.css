@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ==========================================================================
-   OpenMind design tokens.
+   BrewLM design tokens.
    @theme emits the "Original" palette to :root; every other theme overrides
    the same vars beneath its [data-theme="…"] selector. All components use
    these tokens, so the whole app recolors instantly.

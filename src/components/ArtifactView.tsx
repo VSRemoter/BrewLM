@@ -12,7 +12,7 @@ import { Modal, GhostButton, IconButton } from "./ui";
 /** Filesystem-safe name for downloads. */
 function exportName(title: string, ext: string): string {
   const base = title.replace(/[/\\?%*:|"<>]/g, "").trim().slice(0, 60);
-  return `${base || "openmind-output"}.${ext}`;
+  return `${base || "brewlm-output"}.${ext}`;
 }
 
 export default function ArtifactView({

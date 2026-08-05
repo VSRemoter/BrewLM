@@ -50,7 +50,7 @@ export function ConstitutionPickerModal({
     <Modal title="Choose a constitution" onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="text-[12.5px] leading-relaxed text-ink-3">
-          Seeded as {`OpenMind-Context.md`} in your sources — edit or rewrite it anytime, and the
+          Seeded as {`BrewLM-Context.md`} in your sources — edit or rewrite it anytime, and the
           change applies to your next message.
         </p>
         <TemplateGrid selected={selected} onSelect={setSelected} />

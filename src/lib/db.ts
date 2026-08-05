@@ -9,7 +9,7 @@ let db: Database | null = null;
 
 export async function getDb(): Promise<Database> {
   if (db) return db;
-  db = await Database.load("sqlite:openmind.db");
+  db = await Database.load("sqlite:brewlm.db");
   await db.execute(`
     CREATE TABLE IF NOT EXISTS notebooks (
       id TEXT PRIMARY KEY,
@@ -99,6 +99,9 @@ export async function getDb(): Promise<Database> {
     )`);
   if (!nbCols.some((c) => c.name === "folder_id"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''");
+  // notebooks gain trashed_at (homepage Trash: soft delete before permanent).
+  if (!nbCols.some((c) => c.name === "trashed_at"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN trashed_at INTEGER NOT NULL DEFAULT 0");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -112,8 +115,28 @@ export async function getDb(): Promise<Database> {
 export async function listNotebooks(): Promise<Notebook[]> {
   const d = await getDb();
   return d.select<Notebook[]>(
-    "SELECT * FROM notebooks ORDER BY updated_at DESC"
+    "SELECT * FROM notebooks WHERE trashed_at = 0 ORDER BY updated_at DESC"
   );
+}
+
+/** Trash contents: soft-deleted notebooks, most recently trashed first. */
+export async function listTrashedNotebooks(): Promise<Notebook[]> {
+  const d = await getDb();
+  return d.select<Notebook[]>(
+    "SELECT * FROM notebooks WHERE trashed_at > 0 ORDER BY trashed_at DESC"
+  );
+}
+
+/** Soft delete: moves the notebook to the Trash (restorable). */
+export async function trashNotebook(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET trashed_at = $1 WHERE id = $2", [Date.now(), id]);
+}
+
+/** Recycle out of the Trash, back to where it was. */
+export async function restoreNotebook(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET trashed_at = 0 WHERE id = $1", [id]);
 }
 
 export async function createNotebook(
@@ -130,6 +153,7 @@ export async function createNotebook(
     starred: 0,
     cover: "",
     folder_id: folderId,
+    trashed_at: 0,
     created_at: now,
     updated_at: now,
   };
@@ -148,6 +172,74 @@ export async function renameNotebook(id: string, title: string): Promise<void> {
     Date.now(),
     id,
   ]);
+}
+
+/**
+ * Deep-copy a notebook: description/cover/star/folder + sources + artifacts
+ * always; chat threads and their messages only when includeChats (full clone
+ * vs. "Use as template", which skips conversation history).
+ */
+export async function cloneNotebook(
+  srcId: string,
+  title: string,
+  opts: { includeChats: boolean }
+): Promise<Notebook> {
+  const d = await getDb();
+  const [src] = await d.select<Notebook[]>("SELECT * FROM notebooks WHERE id = $1", [srcId]);
+  if (!src) throw new Error("Notebook not found");
+  const now = Date.now();
+  const nb: Notebook = {
+    id: uid(),
+    title,
+    description: src.description,
+    starred: src.starred,
+    cover: src.cover,
+    folder_id: src.folder_id,
+    trashed_at: 0,
+    created_at: now,
+    updated_at: now,
+  };
+  await d.execute(
+    "INSERT INTO notebooks (id, title, description, starred, cover, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.folder_id, nb.created_at, nb.updated_at]
+  );
+
+  for (const s of await listSources(srcId)) {
+    await d.execute(
+      "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [uid(), nb.id, s.type, s.title, s.content, s.mime, now]
+    );
+  }
+  for (const a of await d.select<Artifact[]>(
+    "SELECT * FROM artifacts WHERE notebook_id = $1",
+    [srcId]
+  )) {
+    await d.execute(
+      "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+      [uid(), nb.id, a.kind, a.title, a.data, now]
+    );
+  }
+  if (opts.includeChats) {
+    const chatIdMap = new Map<string, string>();
+    for (const c of await listChats(srcId)) {
+      const newId = uid();
+      chatIdMap.set(c.id, newId);
+      await d.execute(
+        "INSERT INTO chats (id, notebook_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+        [newId, nb.id, c.title, c.created_at, c.updated_at]
+      );
+    }
+    for (const m of await d.select<ChatMessage[]>(
+      "SELECT * FROM messages WHERE notebook_id = $1",
+      [srcId]
+    )) {
+      await d.execute(
+        "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [uid(), nb.id, m.chat_id ? chatIdMap.get(m.chat_id) ?? null : null, m.role, m.content, m.created_at]
+      );
+    }
+  }
+  return nb;
 }
 
 /** Edit title and description together (homepage edit modal). */
@@ -428,6 +520,12 @@ export async function addArtifact(
 export async function deleteArtifact(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM artifacts WHERE id = $1", [id]);
+}
+
+/** Rewrite an artifact's payload in place (Studio "Revise" → Replace original). */
+export async function updateArtifact(id: string, data: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [data, id]);
 }
 
 /* ------------------------------- Settings ------------------------------ */
