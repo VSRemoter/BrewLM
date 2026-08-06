@@ -189,14 +189,15 @@ export async function renameNotebook(id: string, title: string): Promise<void> {
 }
 
 /**
- * Deep-copy a notebook: description/cover/star/folder + sources + artifacts
- * always; chat threads and their messages only when includeChats (full clone
- * vs. "Use as template", which skips conversation history).
+ * Deep-copy a notebook: description/cover/star/folder + sources always.
+ * - includeArtifacts: studio outputs (flashcards, quizzes, audio, etc.)
+ * - includeChats: chat threads and their messages
+ * Full clone = both; "Use as template" = neither (sources-only starter copy).
  */
 export async function cloneNotebook(
   srcId: string,
   title: string,
-  opts: { includeChats: boolean }
+  opts: { includeChats: boolean; includeArtifacts?: boolean }
 ): Promise<Notebook> {
   const d = await getDb();
   const [src] = await d.select<Notebook[]>("SELECT * FROM notebooks WHERE id = $1", [srcId]);
@@ -226,14 +227,16 @@ export async function cloneNotebook(
       [uid(), nb.id, s.type, s.title, s.content, s.mime, now]
     );
   }
-  for (const a of await d.select<Artifact[]>(
-    "SELECT * FROM artifacts WHERE notebook_id = $1",
-    [srcId]
-  )) {
-    await d.execute(
-      "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-      [uid(), nb.id, a.kind, a.title, a.data, now]
-    );
+  if (opts.includeArtifacts ?? true) {
+    for (const a of await d.select<Artifact[]>(
+      "SELECT * FROM artifacts WHERE notebook_id = $1",
+      [srcId]
+    )) {
+      await d.execute(
+        "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [uid(), nb.id, a.kind, a.title, a.data, now]
+      );
+    }
   }
   if (opts.includeChats) {
     const chatIdMap = new Map<string, string>();
