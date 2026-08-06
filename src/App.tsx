@@ -187,7 +187,10 @@ export default function App() {
           onUseTemplate={async (id) => {
             const src = notebooks.find((n) => n.id === id);
             if (!src) return;
-            await cloneNotebook(id, `${src.title} (copy)`, { includeChats: false });
+            await cloneNotebook(id, `${src.title} (copy)`, {
+              includeChats: false,
+              includeArtifacts: false,
+            });
             await refresh();
           }}
         />

@@ -120,8 +120,8 @@ const COMMANDS: ChatCommand[] = [
   },
   {
     cmd: "/clone",
-    usage: "/clone [title] [yes|no]",
-    desc: "Make an exact copy of this notebook (yes = jump to it)",
+    usage: "/clone \"<title>\" [yes|no]",
+    desc: "Exact copy of this notebook (title in quotes; yes = jump to it)",
     icon: Copy,
     takesArgs: true,
   },
@@ -282,7 +282,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
-- \`/clone [title] [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). \`/clone\` or \`/clone no\` keeps you here; \`/clone "My copy" yes\` names the copy and takes you there. For a sources-only starter copy, use **Use as template** on the homepage cards.
+- \`/clone "<title>" [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). **The title must be in quotes.** \`/clone "My copy"\` or \`/clone "My copy" no\` keeps you here; \`/clone "My copy" yes\` takes you there. Because the title is quoted, a *yes* or *no* inside it can't be confused for the flag — \`/clone "Project yes" no\` clones "Project yes" and stays put. For a sources-only starter copy, use **Use as template** on the homepage cards.
 - \`/remove <sources|chats|studios> [type]\` — bulk delete. \`/remove sources\` wipes every source; \`/remove chats\` deletes all chat threads and starts fresh; \`/remove studios\` clears the Studio. Narrow it with a type, e.g. \`/remove sources links\` (text, links, pdf, images, audio, files) or \`/remove studios audios\` (flashcards, quizzes, mindmaps, audios, reports, research).
 - \`/return\` — goes back to the homepage (everything is saved).
 - \`/clear\` — deletes this chat thread entirely and starts fresh (unlike \`/new\`, which keeps it).
@@ -921,24 +921,28 @@ export default function ChatPanel({
       return;
     }
 
-    // /clone [title] [yes|no] — deep-copy this notebook; yes jumps to the copy.
+    // /clone "<title>" [yes|no] — deep-copy this notebook; yes jumps to the copy.
+    // The title MUST be in quotes, so a yes/no inside the title can't masquerade
+    // as the jump flag (e.g. /clone "Project yes" no → title "Project yes", stays).
     if (/^\/clone(\s|$)/i.test(text)) {
-      const tokens = text.replace(/^\/clone\s*/i, "").trim().split(/\s+/).filter(Boolean);
-      let jump = false;
-      const flagIdx = tokens.findIndex((t) => /^(yes|no)$/i.test(t));
-      if (flagIdx >= 0) {
-        jump = tokens[flagIdx].toLowerCase() === "yes";
-        tokens.splice(flagIdx, 1);
-      }
-      const title = stripOuterQuotes(tokens.join(" ")).slice(0, 80) || `Copy of ${notebookTitle}`;
+      const rest = text.replace(/^\/clone\s*/i, "").trim();
+      const m = /^"([^"]+)"(?:\s+(yes|no))?$/i.exec(rest);
       let reply: string;
-      try {
-        const name = await onCloneNotebook(title, jump);
-        reply = jump
-          ? `Cloned "${notebookTitle}" as "${name}" — everything came along: sources, chats, and studio work. Taking you there.`
-          : `Cloned "${notebookTitle}" as "${name}" — sources, chats, and studio work all included. You'll find it on the homepage.`;
-      } catch {
-        reply = "Couldn't clone this notebook — please try again.";
+      if (!m) {
+        reply =
+          `Wrap the copy's title in quotes, like \`/clone "My copy"\` — add \`yes\` after the quotes if you want me to take you to it. ` +
+          `Quoting matters: in \`/clone "Project yes" no\`, "yes" belongs to the title and "no" is the flag.`;
+      } else {
+        const title = m[1].slice(0, 80);
+        const jump = (m[2] ?? "").toLowerCase() === "yes";
+        try {
+          const name = await onCloneNotebook(title, jump);
+          reply = jump
+            ? `Cloned "${notebookTitle}" as "${name}" — everything came along: sources, chats, and studio work. Taking you there.`
+            : `Cloned "${notebookTitle}" as "${name}" — sources, chats, and studio work all included. You'll find it on the homepage.`;
+        } catch {
+          reply = "Couldn't clone this notebook — please try again.";
+        }
       }
       const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
       setMsgs((prev) => [...prev, replyMsg]);
