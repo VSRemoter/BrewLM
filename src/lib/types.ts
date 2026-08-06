@@ -6,6 +6,10 @@ export interface Notebook {
   starred: number;
   /** Data-URL banner image for the homepage grid card ("" = none). Not shown in list view. */
   cover: string;
+  /** Data-URL image behind the chat area ("" = none). */
+  chat_bg: string;
+  /** Readability overlay over chat_bg: 0–80 (percent of dark scrim). */
+  chat_bg_dim: number;
   /** Folder this notebook lives in ("" = homepage root). */
   folder_id: string;
   /** 0 = live; otherwise the timestamp it was sent to the homepage Trash. */

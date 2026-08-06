@@ -5,11 +5,18 @@ export function uid(): string {
   return crypto.randomUUID();
 }
 
-let db: Database | null = null;
+let dbPromise: Promise<Database> | null = null;
 
+/**
+ * Serializes init: concurrent callers share ONE migration pass (two passes
+ * would race on ALTERs — "duplicate column name").
+ */
 export async function getDb(): Promise<Database> {
-  if (db) return db;
-  db = await Database.load("sqlite:brewlm.db");
+  return (dbPromise ??= initDb());
+}
+
+async function initDb(): Promise<Database> {
+  const db = await Database.load("sqlite:brewlm.db");
   await db.execute(`
     CREATE TABLE IF NOT EXISTS notebooks (
       id TEXT PRIMARY KEY,
@@ -102,6 +109,11 @@ export async function getDb(): Promise<Database> {
   // notebooks gain trashed_at (homepage Trash: soft delete before permanent).
   if (!nbCols.some((c) => c.name === "trashed_at"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN trashed_at INTEGER NOT NULL DEFAULT 0");
+  // notebooks gain chat_bg (chat background image, data URL) + chat_bg_dim (dark overlay %).
+  if (!nbCols.some((c) => c.name === "chat_bg"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN chat_bg TEXT NOT NULL DEFAULT ''");
+  if (!nbCols.some((c) => c.name === "chat_bg_dim"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN chat_bg_dim INTEGER NOT NULL DEFAULT 55");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -152,6 +164,8 @@ export async function createNotebook(
     description,
     starred: 0,
     cover: "",
+    chat_bg: "",
+    chat_bg_dim: 55,
     folder_id: folderId,
     trashed_at: 0,
     created_at: now,
@@ -194,14 +208,16 @@ export async function cloneNotebook(
     description: src.description,
     starred: src.starred,
     cover: src.cover,
+    chat_bg: src.chat_bg,
+    chat_bg_dim: src.chat_bg_dim,
     folder_id: src.folder_id,
     trashed_at: 0,
     created_at: now,
     updated_at: now,
   };
   await d.execute(
-    "INSERT INTO notebooks (id, title, description, starred, cover, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.folder_id, nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.created_at, nb.updated_at]
   );
 
   for (const s of await listSources(srcId)) {
@@ -265,6 +281,21 @@ export async function setNotebookStarred(id: string, starred: boolean): Promise<
 export async function setNotebookCover(id: string, cover: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE notebooks SET cover = $1 WHERE id = $2", [cover, id]);
+}
+
+/** Set (or clear with "") the chat background image (JPEG data URL). */
+export async function setNotebookChatBg(id: string, bg: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET chat_bg = $1 WHERE id = $2", [bg, id]);
+}
+
+/** Readability overlay strength (0–80, percent of dark scrim over the chat background). */
+export async function setNotebookChatBgDim(id: string, dim: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET chat_bg_dim = $1 WHERE id = $2", [
+    Math.round(Math.max(0, Math.min(80, dim))),
+    id,
+  ]);
 }
 
 /** Moving a notebook between folders is organizational — don't bump updated_at. */
@@ -526,6 +557,34 @@ export async function deleteArtifact(id: string): Promise<void> {
 export async function updateArtifact(id: string, data: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [data, id]);
+}
+
+/* ------------------------------ Bulk delete (/remove) ------------------------------ */
+
+/** All of a notebook's sources, optionally one type. Returns rows removed. */
+export async function deleteSources(notebookId: string, type?: SourceType): Promise<number> {
+  const d = await getDb();
+  const res = type
+    ? await d.execute("DELETE FROM sources WHERE notebook_id = $1 AND type = $2", [notebookId, type])
+    : await d.execute("DELETE FROM sources WHERE notebook_id = $1", [notebookId]);
+  return res.rowsAffected;
+}
+
+/** Every chat thread + message of a notebook. Returns threads removed. */
+export async function deleteAllChats(notebookId: string): Promise<number> {
+  const d = await getDb();
+  await d.execute("DELETE FROM messages WHERE notebook_id = $1", [notebookId]);
+  const res = await d.execute("DELETE FROM chats WHERE notebook_id = $1", [notebookId]);
+  return res.rowsAffected;
+}
+
+/** All studio outputs, optionally one kind (flashcards, quiz, audio…). Returns rows removed. */
+export async function deleteArtifacts(notebookId: string, kind?: ArtifactKind): Promise<number> {
+  const d = await getDb();
+  const res = kind
+    ? await d.execute("DELETE FROM artifacts WHERE notebook_id = $1 AND kind = $2", [notebookId, kind])
+    : await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [notebookId]);
+  return res.rowsAffected;
 }
 
 /* ------------------------------- Settings ------------------------------ */

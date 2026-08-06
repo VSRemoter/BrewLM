@@ -1,20 +1,26 @@
 import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
+  addMessage,
   addSource,
   cloneNotebook,
   createChat,
+  deleteAllChats,
+  deleteArtifacts,
   deleteChat,
+  deleteSources,
   listArtifacts,
   listChats,
   listSources,
   renameChat,
   renameNotebook,
+  setNotebookChatBg,
+  setNotebookChatBgDim,
   touchChat,
 } from "../lib/db";
 import { ingestFiles } from "../lib/ingest";
 import { fetchLinkContent } from "../lib/source";
-import type { Artifact, Chat, Notebook, Settings, Source } from "../lib/types";
+import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
 import SourcesPanel from "./SourcesPanel";
@@ -181,6 +187,76 @@ export default function NotebookView({
     return clone.title;
   };
 
+  /**
+   * /remove command — bulk delete sources (optionally one type), all chats,
+   * or studio outputs (optionally one kind). Chats get replaced by a fresh one.
+   */
+  const handleRemove = async (
+    what: string,
+    filter?: string
+  ): Promise<{ reply: string; chatReplaced?: boolean }> => {
+    const SOURCE_TYPES: Record<string, SourceType> = {
+      text: "text", texts: "text",
+      link: "link", links: "link",
+      pdf: "pdf", pdfs: "pdf",
+      image: "image", images: "image",
+      audio: "audio", audios: "audio",
+      file: "file", files: "file",
+      context: "context",
+    };
+    const ARTIFACT_KINDS: Record<string, ArtifactKind> = {
+      flashcard: "flashcards", flashcards: "flashcards",
+      quiz: "quiz", quizzes: "quiz",
+      mindmap: "mindmap", mindmaps: "mindmap",
+      audio: "audio", audios: "audio",
+      report: "report", reports: "report",
+      research: "research",
+      note: "notes", notes: "notes",
+    };
+
+    if (what === "sources") {
+      const t = filter ? SOURCE_TYPES[filter] : undefined;
+      if (filter && !t) {
+        return { reply: `I don't know a source type "${filter}" — try text, links, pdf, images, audio, files, or context.` };
+      }
+      const n = await deleteSources(notebook.id, t);
+      refreshSources();
+      return {
+        reply: n === 0
+          ? `No sources${t ? ` of type ${t}` : ""} to remove.`
+          : `Removed ${n} ${t ? t + " " : ""}source${n === 1 ? "" : "s"}.`,
+      };
+    }
+
+    if (what === "chats") {
+      await deleteAllChats(notebook.id);
+      const fresh = await createChat(notebook.id);
+      await refreshChats();
+      setActiveChatId(fresh.id);
+      const reply = "Removed all chats — this is a fresh one.";
+      // The old chat (and the message this command ran in) is gone: post the
+      // confirmation into the fresh chat ourselves.
+      await addMessage(fresh.id, notebook.id, "assistant", reply);
+      return { reply, chatReplaced: true };
+    }
+
+    if (what === "studios") {
+      const k = filter ? ARTIFACT_KINDS[filter] : undefined;
+      if (filter && !k) {
+        return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, or notes.` };
+      }
+      const n = await deleteArtifacts(notebook.id, k);
+      refreshArtifacts();
+      return {
+        reply: n === 0
+          ? `No studio outputs${k ? ` of type ${k}` : ""} to remove.`
+          : `Removed ${n} ${k ? k + " " : ""}studio output${n === 1 ? "" : "s"}.`,
+      };
+    }
+
+    return { reply: "I didn't get that — try /remove sources, /remove chats, or /remove studios." };
+  };
+
   /** Called by ChatPanel whenever a message lands; auto-titles fresh chats. */
   const handleChatActivity = useCallback(
     async (chatId: string, firstUserText?: string) => {
@@ -306,8 +382,16 @@ export default function NotebookView({
           onSettingsChanged={onSettingsChanged}
           onStudioCommand={(cmd) => studioRef.current!.run(cmd)}
           onCloneNotebook={handleClone}
-          notebookStarred={notebook.starred === 1}
-        />
+          onRemove={handleRemove}
+           notebookStarred={notebook.starred === 1}
+           chatBg={notebook.chat_bg}
+           chatBgDim={notebook.chat_bg_dim}
+           onChatBgChange={async (bg, dim) => {
+             await setNotebookChatBg(notebook.id, bg);
+             await setNotebookChatBgDim(notebook.id, dim);
+             onNotebookMoved();
+           }}
+         />
         <div
           role="separator"
           aria-label="Resize studio panel"
