@@ -8,6 +8,7 @@ import {
   FileText,
   FolderClosed,
   GraduationCap,
+  Image,
   Layers,
   Link,
   ListPlus,
@@ -52,7 +53,9 @@ import {
   loadModelList,
   saveModelList,
 } from "../lib/settings";
-import { ACCEPT_STRING } from "../lib/source";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
+import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
@@ -120,6 +123,13 @@ const COMMANDS: ChatCommand[] = [
     usage: "/clone [title] [yes|no]",
     desc: "Make an exact copy of this notebook (yes = jump to it)",
     icon: Copy,
+    takesArgs: true,
+  },
+  {
+    cmd: "/remove",
+    usage: "/remove <sources|chats|studios> [type]",
+    desc: "Bulk delete sources, chats, or studio outputs",
+    icon: Trash2,
     takesArgs: true,
   },
   {
@@ -273,6 +283,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
 - \`/clone [title] [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). \`/clone\` or \`/clone no\` keeps you here; \`/clone "My copy" yes\` names the copy and takes you there. For a sources-only starter copy, use **Use as template** on the homepage cards.
+- \`/remove <sources|chats|studios> [type]\` — bulk delete. \`/remove sources\` wipes every source; \`/remove chats\` deletes all chat threads and starts fresh; \`/remove studios\` clears the Studio. Narrow it with a type, e.g. \`/remove sources links\` (text, links, pdf, images, audio, files) or \`/remove studios audios\` (flashcards, quizzes, mindmaps, audios, reports, research).
 - \`/return\` — goes back to the homepage (everything is saved).
 - \`/clear\` — deletes this chat thread entirely and starts fresh (unlike \`/new\`, which keeps it).
 - \`/note <text>\` — pastes text straight into your Sources panel (great for lecture notes) and @-mentions it.
@@ -404,7 +415,11 @@ export default function ChatPanel({
   onSettingsChanged,
   onStudioCommand,
   onCloneNotebook,
+  onRemove,
   notebookStarred,
+  chatBg,
+  chatBgDim,
+  onChatBgChange,
 }: {
   notebookId: string;
   chatId: string | null;
@@ -437,8 +452,16 @@ export default function ChatPanel({
   onStudioCommand: (cmd: StudioCommand) => Promise<string>;
   /** /clone command — NotebookView deep-copies the notebook; returns the clone title. */
   onCloneNotebook: (title: string, jump: boolean) => Promise<string>;
+  /** /remove command — NotebookView bulk-deletes sources/chats/studio outputs. */
+  onRemove: (what: string, filter?: string) => Promise<{ reply: string; chatReplaced?: boolean }>;
   /** Live starred flag so /star can toggle it. */
   notebookStarred: boolean;
+  /** Data-URL image behind the chat area ("" = none). */
+  chatBg: string;
+  /** Readability scrim over chatBg: 0–80 (percent). */
+  chatBgDim: number;
+  /** Set/clear (bg="") the chat background and/or its dim strength. */
+  onChatBgChange: (bg: string, dim: number) => void | Promise<void>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -456,6 +479,28 @@ export default function ChatPanel({
   const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  // Chat background popover; dimDraft mirrors chatBgDim for smooth live slider preview.
+  const [bgMenuOpen, setBgMenuOpen] = useState(false);
+  const [dimDraft, setDimDraft] = useState(chatBgDim);
+  useEffect(() => setDimDraft(chatBgDim), [chatBgDim]);
+  /** Native file picker → compress → save as chat background (webview <input type=file> is unreliable). */
+  const pickChatBg = async () => {
+    try {
+      const path = await openFileDialog({
+        multiple: false,
+        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"] }],
+      });
+      if (!path) return;
+      const data = await readFile(path as string);
+      const base = (path as string).split(/[\\/]/).pop() ?? "background";
+      const file = new File([data as unknown as BlobPart], base, { type: "image/*" });
+      const bg = await fileToCoverDataUrl(file, 1600, 0.8);
+      setBgMenuOpen(false);
+      await onChatBgChange(bg, dimDraft);
+    } catch {
+      setError("Couldn't read that image file.");
+    }
+  };
   const dragDepth = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -902,6 +947,32 @@ export default function ChatPanel({
       return;
     }
 
+    // /remove <sources|chats|studios> [type] — bulk delete notebook data.
+    if (/^\/remove(\s|$)/i.test(text)) {
+      const tokens = text.replace(/^\/remove\s*/i, "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const what = tokens[0] ?? "";
+      const filter = tokens[1];
+      const scope =
+        what === "sources" || what === "source"
+          ? "sources"
+          : what === "chats" || what === "chat"
+            ? "chats"
+            : what === "studios" || what === "studio" || what === "outputs"
+              ? "studios"
+              : null;
+      const result = scope
+        ? await onRemove(scope, filter)
+        : { reply: "Try `/remove sources`, `/remove chats`, or `/remove studios` — optionally with a type, e.g. `/remove sources links` or `/remove studios audios`." };
+      // /remove chats deletes this thread; NotebookView posts into the fresh one.
+      if (!result.chatReplaced) {
+        const replyMsg = await addMessage(chatId, notebookId, "assistant", result.reply);
+        setMsgs((prev) => [...prev, replyMsg]);
+        onChatActivity?.(chatId, isFirst ? text : undefined);
+      }
+      textareaRef.current?.focus();
+      return;
+    }
+
     // /note — paste text straight into the Sources panel.
     if (/^\/note(\s|$)/i.test(text)) {
       const body = text.replace(/^\/note\s*/i, "").trim();
@@ -1209,6 +1280,13 @@ export default function ChatPanel({
         handleFiles(e.dataTransfer.files);
       }}
     >
+      {/* chat background: object-cover re-crops on any zoom/resize; scrim keeps text legible */}
+      {chatBg && (
+        <div className="absolute inset-0" aria-hidden>
+          <img src={chatBg} alt="" className="h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-canvas" style={{ opacity: dimDraft / 100 }} />
+        </div>
+      )}
       {/* drop overlay */}
       {dragActive && (
         <div className="pointer-events-none absolute inset-0 z-40 m-3 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-accent bg-canvas/80">
@@ -1218,8 +1296,8 @@ export default function ChatPanel({
           </p>
         </div>
       )}
-      {/* header */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-edge-soft bg-panel px-4">
+      {/* header (z-20: above the chat surface so its popover menus stay clickable) */}
+      <div className="relative z-20 flex h-11 shrink-0 items-center justify-between border-b border-edge-soft bg-panel px-4">
         <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
           Chat{chatTitle ? ` · ${chatTitle}` : ""}
         </span>
@@ -1242,11 +1320,78 @@ export default function ChatPanel({
           >
             <Trash2 size={14} strokeWidth={1.8} />
           </IconButton>
+          {/* chat background */}
+          <div className="relative">
+            <IconButton
+              onClick={() => {
+                // No image yet: one click goes straight to the file picker.
+                // With an image: open the menu (replace / dim / remove).
+                if (chatBg) setBgMenuOpen((v) => !v);
+                else void pickChatBg();
+              }}
+              label="Chat background"
+            >
+              <Image size={14} strokeWidth={1.8} />
+            </IconButton>
+            {bgMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10 cursor-default" onClick={() => setBgMenuOpen(false)} />
+                <div className="anim-fade-up absolute right-0 z-20 mt-1.5 w-64 rounded-xl border border-edge bg-panel p-3 shadow-lg">
+                  <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+                    Chat background
+                  </p>
+                  {chatBg && (
+                    <img
+                      src={chatBg}
+                      alt=""
+                      className="mb-2.5 h-20 w-full rounded-lg border border-edge-soft object-cover"
+                    />
+                  )}
+                  <button
+                    onClick={() => void pickChatBg()}
+                    className="flex w-full items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-opacity hover:opacity-85"
+                  >
+                    <Upload size={13} strokeWidth={2} />
+                    Replace image
+                  </button>
+                  {chatBg && (
+                    <>
+                      <div className="mt-3 flex items-center justify-between text-[11.5px] text-ink-2">
+                        <span>Dim</span>
+                        <span className="text-ink-3">{dimDraft}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={80}
+                        value={dimDraft}
+                        onChange={(e) => setDimDraft(Number(e.target.value))}
+                        onMouseUp={() => onChatBgChange(chatBg, dimDraft)}
+                        onTouchEnd={() => onChatBgChange(chatBg, dimDraft)}
+                        onKeyUp={() => onChatBgChange(chatBg, dimDraft)}
+                        className="mt-1 w-full accent-accent"
+                      />
+                      <button
+                        onClick={async () => {
+                          setDimDraft(55);
+                          await onChatBgChange("", 55);
+                        }}
+                        className="mt-2 flex w-full items-center gap-2 rounded-lg border border-edge px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover"
+                      >
+                        <Trash2 size={13} strokeWidth={2} />
+                        Remove background
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto">
         {messages.length === 0 && streaming === null ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-accent">
@@ -1285,13 +1430,13 @@ export default function ChatPanel({
       </div>
 
       {error && (
-        <div className="shrink-0 border-t border-danger-edge bg-danger-bg px-5 py-2.5 text-[12px] leading-snug text-danger">
+        <div className="relative z-10 shrink-0 border-t border-danger-edge bg-danger-bg px-5 py-2.5 text-[12px] leading-snug text-danger">
           {error}
         </div>
       )}
 
       {/* input */}
-      <div className="shrink-0 px-5 pb-5 pt-2">
+      <div className="relative z-10 shrink-0 px-5 pb-5 pt-2">
         {/* queue bar (in flow, above the composer; autocomplete popups layer above it) */}
         {queue.length > 0 && (
           <div className="mx-auto mb-2 max-w-2xl overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
