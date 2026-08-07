@@ -22,12 +22,13 @@ import {
   type Amount,
   type AudioFormat,
   type AudioLength,
+  type AudioMode,
   type Difficulty,
 } from "./studio";
 
 /** Audio options without the source scoping (commands always use all sources). */
 export type AudioCommandOptions =
-  | { format: AudioFormat; length: AudioLength; description: string }
+  | { format: AudioFormat; length: AudioLength; mode: AudioMode; description: string }
   | null;
 
 export type StudioCommand =
@@ -76,7 +77,7 @@ const USAGE: Record<string, string> = {
   flashcards: "`/flashcards [8|12|24] [easy|medium|hard] [optional focus]`",
   quiz: "`/quiz [4|8|15] [easy|medium|hard] [optional focus]`",
   mindmap: "`/mindmap [optional focus]`",
-  audio: "`/audio [deep-dive|brief|debate|critique] [short|standard|long] [optional focus]`",
+  audio: "`/audio [solo] [deep-dive|brief|debate|critique] [short|standard|long] [optional focus]`",
   report: "`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]`",
   research: "`/research <topic>` — a topic is required",
 };
@@ -129,6 +130,7 @@ export function parseStudioCommand(raw: string): StudioParsed | string {
       }
       let format: AudioFormat = "deep-dive";
       let length: AudioLength = "standard";
+      let mode: AudioMode = "conversation";
       const knownFormat = Object.keys(AUDIO_FORMAT_LABELS) as AudioFormat[];
       const knownLength = Object.keys(AUDIO_LENGTH_LABELS) as AudioLength[];
       const focus: string[] = [];
@@ -136,12 +138,14 @@ export function parseStudioCommand(raw: string): StudioParsed | string {
         const t = tok.toLowerCase();
         if ((knownFormat as string[]).includes(t)) format = t as AudioFormat;
         else if ((knownLength as string[]).includes(t)) length = t as AudioLength;
+        else if (t === "solo") mode = "solo";
+        else if (t === "conversation" || t === "duo") mode = "conversation";
         else focus.push(tok);
       }
       const desc = focus.join(" ");
       return {
-        cmd: { tool, opts: { format, length, description: desc } },
-        notice: `Generating a ${AUDIO_LENGTH_LABELS[length].toLowerCase()} ${AUDIO_FORMAT_LABELS[format].toLowerCase()} audio overview${desc ? ` — focus: ${desc}` : ""}…`,
+        cmd: { tool, opts: { format, length, mode, description: desc } },
+        notice: `Generating a ${mode === "solo" ? "solo " : ""}${AUDIO_LENGTH_LABELS[length].toLowerCase()} ${AUDIO_FORMAT_LABELS[format].toLowerCase()} audio overview${desc ? ` — focus: ${desc}` : ""}…`,
         title: "Audio overview",
       };
     }

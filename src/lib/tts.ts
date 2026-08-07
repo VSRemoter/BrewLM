@@ -216,9 +216,10 @@ export function chunksToBase64(chunks: Uint8Array[]): string {
 }
 
 /**
- * Turn a two-host script into one concatenated mp3, using the TTS provider
- * configured in Settings → Audio voices. Returns a note (not an error) when
- * synthesis is unavailable, so the caller can still keep the script.
+ * Turn a script (solo narration or two-host conversation) into one
+ * concatenated audio file, using the TTS provider configured in Settings →
+ * Audio voices. Returns a note (not an error) when synthesis is unavailable,
+ * so the caller can still keep the script.
  * `opts.signal` cancels mid-synthesis (an AbortError propagates).
  */
 export async function synthesizeScript(
@@ -308,8 +309,8 @@ export async function synthesizeScript(
         Alex: settings.ttsVoiceAlex.trim(),
         Sam: settings.ttsVoiceSam.trim(),
       };
-      if (!voices.Alex || !voices.Sam)
-        return { audio: null, note: "Set both host voice IDs (Settings → Audio voices) — ElevenLabs needs a voice ID for Alex and Sam." };
+      if (!voices.Alex || (turns.some((t) => t.speaker === "Sam") && !voices.Sam))
+        return { audio: null, note: "Set the host voice IDs (Settings → Audio voices) — ElevenLabs needs a voice ID for every speaker in the script." };
       const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.elevenlabs;
       const parts: Uint8Array[] = [];
       for (let i = 0; i < turns.length; i++) {
