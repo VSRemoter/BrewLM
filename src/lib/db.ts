@@ -562,6 +562,12 @@ export async function updateArtifact(id: string, data: string): Promise<void> {
   await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [data, id]);
 }
 
+/** Rename an artifact in place (Studio "Revise" modal title field — saved on the fly). */
+export async function renameArtifact(id: string, title: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE artifacts SET title = $1 WHERE id = $2", [title, id]);
+}
+
 /* ------------------------------ Bulk delete (/remove) ------------------------------ */
 
 /** All of a notebook's sources, optionally one type. Returns rows removed. */

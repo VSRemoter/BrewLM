@@ -13,6 +13,8 @@ export type Amount = "compact" | "default" | "more";
 export type Difficulty = "easy" | "medium" | "hard";
 export type AudioFormat = "deep-dive" | "brief" | "debate" | "critique";
 export type AudioLength = "short" | "standard" | "long";
+/** Conversation = two hosts (Alex & Sam); Solo = a single narrator (Alex). */
+export type AudioMode = "conversation" | "solo";
 export type ReportType = "study-guide" | "briefing-doc" | "analysis" | "custom";
 
 export interface FlashcardsOptions {
@@ -43,6 +45,7 @@ export interface MindmapOptions {
 export interface AudioOptions {
   format: AudioFormat;
   length: AudioLength;
+  mode: AudioMode;
   sourceIds: string[];
   description: string;
   /** Custom name for the saved artifact (falls back to the tool default). */
@@ -101,6 +104,16 @@ export const AUDIO_LENGTH_LABELS: Record<AudioLength, string> = {
   short: "Short",
   standard: "Standard",
   long: "Long",
+};
+
+export const AUDIO_MODE_LABELS: Record<AudioMode, string> = {
+  conversation: "Conversation",
+  solo: "Solo",
+};
+
+export const AUDIO_MODE_DESCS: Record<AudioMode, string> = {
+  conversation: "Two hosts banter back and forth (voices: Alex & Sam).",
+  solo: "One narrator talks you through the material (voice: Alex).",
 };
 
 export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
@@ -174,7 +187,36 @@ const AUDIO_FORMAT_RULES: Record<AudioFormat, string> = {
     "The hosts critically analyze the material: what holds up, what's weak, hidden assumptions, gaps in coverage, and questionable claims — ending with an overall verdict.",
 };
 
+/** Single-narrator variants — debate/critique explicitly fold both sides into one voice. */
+const SOLO_FORMAT_RULES: Record<AudioFormat, string> = {
+  "deep-dive":
+    "Thoroughly explore the material: walk through the key ideas, explain why they matter, and unpack the most interesting examples.",
+  brief:
+    "Be tight and punchy: only the essentials, short lines, no digressions or tangents.",
+  debate:
+    "Weigh the material's central claims from opposing angles: argue the case for, then steelman the case against, concede the strongest counterpoints, and close on a synthesized view.",
+  critique:
+    "Critically analyze the material: what holds up, what's weak, hidden assumptions, gaps in coverage, and questionable claims — ending with an overall verdict.",
+};
+
 export function buildAudioPrompt(opts: AudioOptions): string {
+  if (opts.mode === "solo") {
+    return `You are writing a solo-narrated "audio overview" of my sources, voiced by a single narrator: Alex.
+
+Format: ${AUDIO_FORMAT_LABELS[opts.format]} — ${SOLO_FORMAT_RULES[opts.format]}
+Length: about ${AUDIO_LENGTH_TURNS[opts.length]} short spoken segments total.${
+      opts.description ? `\nFocus the narration especially on: ${opts.description}.` : ""
+    }
+
+Output EXACTLY one segment per line, in this exact format:
+Alex: <spoken line>
+
+Rules:
+- Spoken language only: no markdown, no headings, no bullet points, no emojis, no stage directions or sound-effects like [intro music].
+- Natural, engaging narration — like a knowledgeable friend talking you through the material.
+- Open by naming what this episode covers; close with the 2–3 biggest takeaways.
+- Stay strictly grounded in the sources — no fabricated facts.`;
+  }
   return `You are writing a podcast-style "audio overview" of my sources, performed by two hosts: Alex (curious explainer) and Sam (engaged co-host).
 
 Format: ${AUDIO_FORMAT_LABELS[opts.format]} — ${AUDIO_FORMAT_RULES[opts.format]}

@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import { addArtifact, addSource, deleteArtifact, updateArtifact } from "../lib/db";
+import { addArtifact, addSource, deleteArtifact, renameArtifact, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
@@ -162,6 +162,10 @@ const StudioPanel = forwardRef<
   /** Revise flow: the artifact being edited in the pencil modal. */
   const [revising, setRevising] = useState<Artifact | null>(null);
   const [reviseNote, setReviseNote] = useState("");
+  /** Editable title in the revise modal — auto-saves, no Replace/Copy needed. */
+  const [reviseTitle, setReviseTitle] = useState("");
+  /** Debounce handle for the title auto-save. */
+  const renameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Audio-only toggle in the revise modal: re-run TTS on the revised script. */
   const [reviseAudio, setReviseAudio] = useState(false);
   /** Which modal action is busy (disables both buttons; shows the spinner). */
@@ -522,6 +526,23 @@ const StudioPanel = forwardRef<
     audio: `Respond with the revised script only: one turn per line, exactly "Alex: <line>" or "Sam: <line>", 14-18 turns alternating starting with Alex. Spoken language only: no markdown, no emojis, no stage directions.`,
   };
 
+  /** Solo scripts rewrite with a single-voice contract, so Sam never comes back. */
+  const REVISE_FORMAT_AUDIO_SOLO = `Respond with the revised script only: one segment per line, exactly "Alex: <line>", 14-18 segments by a single narrator. Spoken language only: no markdown, no emojis, no stage directions.`;
+
+  /** A stored audio artifact is solo when every turn belongs to Alex. */
+  const isSoloAudio = (a: Artifact): boolean => {
+    try {
+      const script = JSON.parse(a.data)?.script;
+      return (
+        Array.isArray(script) &&
+        script.length > 0 &&
+        script.every((t: { speaker?: unknown }) => t?.speaker === "Alex")
+      );
+    } catch {
+      return false;
+    }
+  };
+
   /**
    * One LLM pass over an artifact with the user's revision instructions,
    * grounded in the notebook sources. replace=false saves a "(revised)" copy.
@@ -545,7 +566,7 @@ const StudioPanel = forwardRef<
           { role: "system", content: buildSystemPrompt(sources) },
           {
             role: "user",
-            content: `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${REVISE_FORMAT[a.kind]}`,
+            content: `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`,
           },
         ],
       });
@@ -620,8 +641,38 @@ const StudioPanel = forwardRef<
     }
   };
 
+  /** Persist a rename from the revise modal (skips empty/unchanged titles). */
+  const flushRename = async (a: Artifact, rawTitle: string) => {
+    const title = rawTitle.trim();
+    if (!title || title === a.title) return;
+    await renameArtifact(a.id, title);
+    setRevising((cur) => (cur && cur.id === a.id ? { ...cur, title } : cur));
+    onArtifactsChanged();
+  };
+
+  /** Title edits save on a short debounce — no Replace/Save-as-copy required. */
+  const queueTitleRename = (a: Artifact, title: string) => {
+    setReviseTitle(title);
+    if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
+    renameTimerRef.current = setTimeout(() => {
+      renameTimerRef.current = null;
+      void flushRename(a, title);
+    }, 500);
+  };
+
+  /** Cancel any pending debounce and save now. Returns the final title. */
+  const settleRename = async (a: Artifact, rawTitle: string): Promise<string> => {
+    if (renameTimerRef.current) {
+      clearTimeout(renameTimerRef.current);
+      renameTimerRef.current = null;
+    }
+    await flushRename(a, rawTitle);
+    return rawTitle.trim() || a.title;
+  };
+
   const openRevise = (a: Artifact) => {
     setRevising(a);
+    setReviseTitle(a.title);
     setReviseNote("");
     setReviseAudio(false);
   };
@@ -895,13 +946,25 @@ const StudioPanel = forwardRef<
       {revising && (
         <ReviseModal
           artifact={revising}
+          title={reviseTitle}
+          onTitleChange={(v) => queueTitleRename(revising, v)}
           note={reviseNote}
           onNoteChange={setReviseNote}
           reAudio={reviseAudio}
           onReAudioChange={setReviseAudio}
           busy={reviseBusy}
-          onClose={() => reviseBusy === null && setRevising(null)}
-          onRun={(replace) => void reviseArtifact(revising, reviseNote, replace, reviseAudio)}
+          onClose={() => {
+            if (reviseBusy !== null) return;
+            void settleRename(revising, reviseTitle);
+            setRevising(null);
+          }}
+          onRun={(replace) => {
+            void (async () => {
+              // settle the rename first so "(revised)" copies use the new title
+              const title = await settleRename(revising, reviseTitle);
+              await reviseArtifact({ ...revising, title }, reviseNote, replace, reviseAudio);
+            })();
+          }}
         />
       )}
 
@@ -1039,6 +1102,8 @@ function ResearchModal({
 /** Pencil-icon editor: describe a fix, then save as a copy or replace the original. */
 function ReviseModal({
   artifact: a,
+  title,
+  onTitleChange,
   note,
   onNoteChange,
   reAudio,
@@ -1048,6 +1113,8 @@ function ReviseModal({
   onRun,
 }: {
   artifact: Artifact;
+  title: string;
+  onTitleChange: (v: string) => void;
   note: string;
   onNoteChange: (v: string) => void;
   reAudio: boolean;
@@ -1069,17 +1136,31 @@ function ReviseModal({
   return (
     <Modal title={`Revise ${a.title}`} onClose={onClose}>
       <div className="flex flex-col gap-3.5">
-        <p className="-mt-1 text-[12px] leading-relaxed text-ink-3">
-          Describe the change — the current output is rewritten with your sources as grounding.
-        </p>
-        <textarea
-          value={note}
-          onChange={(e) => onNoteChange(e.target.value)}
-          placeholder={placeholder[a.kind] ?? "What should change?"}
-          rows={3}
-          autoFocus
-          className="w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3"
-        />
+        <div>
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+            Title
+          </label>
+          <input
+            value={title}
+            onChange={(e) => onTitleChange(e.target.value)}
+            maxLength={80}
+            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+          />
+          <p className="mt-1 text-[11px] text-ink-3">Renames save automatically.</p>
+        </div>
+        <div>
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+            Description
+          </label>
+          <textarea
+            value={note}
+            onChange={(e) => onNoteChange(e.target.value)}
+            placeholder={placeholder[a.kind] ?? "What should change?"}
+            rows={3}
+            autoFocus
+            className="w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3"
+          />
+        </div>
         {a.kind === "audio" && (
           <label className="flex items-start gap-2.5 text-[12px] leading-snug text-ink-2">
             <input

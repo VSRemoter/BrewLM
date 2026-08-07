@@ -360,7 +360,7 @@ export default function Home({
           e.stopPropagation();
           onDeleteFolder(f.id);
         }}
-        title="Delete folder (its notebooks move back to Notebooks)"
+        title="Delete folder (its notebooks move back to the Brewery)"
         role="button"
         aria-label={`Delete folder ${f.name}`}
       >
@@ -839,24 +839,24 @@ export default function Home({
                       ? "border-accent bg-panel text-accent ring-2 ring-accent/30"
                       : "border-edge bg-panel text-ink-2 hover:bg-hover-soft"
                   }`}
-                  title="Back to Notebooks — drop here to move a notebook out of this folder"
+                  title="Back to Brewery — drop here to move a notebook out of this folder"
                 >
                   <ArrowLeft size={13} strokeWidth={2} />
-                  Notebooks
+                  Brewery
                 </button>
               )}
               <div>
                 <h1 className="text-[22px] font-semibold tracking-tight">
-                  {viewing ? viewing.name : "Notebooks"}
+                  {viewing ? viewing.name : "Brewery"}
                 </h1>
-                <p className="mt-0.5 text-[13px] text-ink-3">
-                  {viewing
-                    ? viewing.description ||
+                {viewing && (
+                  <p className="mt-0.5 text-[13px] text-ink-3">
+                    {viewing.description ||
                       (folderCounts.get(viewing.id) === 1
                         ? "1 notebook"
-                        : `${folderCounts.get(viewing.id) ?? 0} notebooks`)
-                    : "Each notebook is a workspace for your sources, chats, and study tools."}
-                </p>
+                        : `${folderCounts.get(viewing.id) ?? 0} notebooks`)}
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -900,7 +900,7 @@ export default function Home({
                             }}
                             className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover-soft"
                           >
-                            No folder (Notebooks)
+                            No folder (Brewery)
                           </button>
                           {folders.map((f) => (
                             <button
@@ -1268,7 +1268,7 @@ export default function Home({
                 onChange={(e) => setEditFolderId(e.target.value)}
                 className={`${inputClass} appearance-none`}
               >
-                <option value="">No folder (Notebooks)</option>
+                <option value="">No folder (Brewery)</option>
                 {folders.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.name}

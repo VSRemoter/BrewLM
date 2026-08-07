@@ -132,10 +132,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       <div className="flex flex-col gap-5">
         {/* Theme */}
         <div>
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <label className="text-[12.5px] font-medium text-ink-2">Theme</label>
-            <span className="text-[11px] text-ink-3">Applies instantly</span>
-          </div>
+          <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Theme</label>
           <div className="grid grid-cols-4 gap-2">
             {THEMES.map((t) => {
               const active = settings.theme === t.id;
@@ -188,9 +185,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                     >
                       {t.name}
                     </span>
-                    <span className="block truncate text-[10px] leading-tight text-ink-3">
-                      {t.blurb}
-                    </span>
                   </span>
                 </button>
               );
@@ -225,11 +219,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               </button>
             ))}
           </div>
-          {settings.provider === "openrouter" && (
-            <p className="mt-2 text-[12px] leading-relaxed text-ink-3">
-              One key, any model — Claude, GPT, Gemini, Llama, DeepSeek, and more.
-            </p>
-          )}
         </div>
 
         {/* API key */}
@@ -260,19 +249,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             }
             className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
           />
-          <p className="mt-1.5 text-[11.5px] text-ink-3">
-            Stored locally in the app's own database. Never sent anywhere except to your provider.
-          </p>
         </div>
 
         {/* Model */}
         <div>
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <label className="text-[12.5px] font-medium text-ink-2">Model</label>
-            <span className="text-[11px] text-ink-3">
-              Click a chip to use it · × removes · Enter saves a typed id
-            </span>
-          </div>
+          <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Model</label>
           <input
             value={settings.model}
             onChange={(e) => pick({ model: e.target.value })}

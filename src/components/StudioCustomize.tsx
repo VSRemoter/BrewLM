@@ -13,6 +13,8 @@ import {
   AUDIO_FORMAT_DESCS,
   AUDIO_FORMAT_LABELS,
   AUDIO_LENGTH_LABELS,
+  AUDIO_MODE_DESCS,
+  AUDIO_MODE_LABELS,
   DIFFICULTY_LABELS,
   FLASHCARD_COUNTS,
   QUIZ_COUNTS,
@@ -20,6 +22,7 @@ import {
   type Amount,
   type AudioFormat,
   type AudioLength,
+  type AudioMode,
   type AudioOptions,
   type Difficulty,
   type FlashcardsOptions,
@@ -35,6 +38,7 @@ const AMOUNTS: Amount[] = ["compact", "default", "more"];
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 const AUDIO_FORMATS: AudioFormat[] = ["deep-dive", "brief", "debate", "critique"];
 const AUDIO_LENGTHS: AudioLength[] = ["short", "standard", "long"];
+const AUDIO_MODES: AudioMode[] = ["conversation", "solo"];
 const REPORT_TYPES: ReportType[] = ["study-guide", "briefing-doc", "analysis", "custom"];
 
 /** Short labels so four report types fit one segmented row. */
@@ -352,6 +356,7 @@ export function AudioModal({
   onClose: () => void;
   onGenerate: (opts: AudioOptions) => void;
 }) {
+  const [mode, setMode] = useState<AudioMode>("conversation");
   const [format, setFormat] = useState<AudioFormat>("deep-dive");
   const [length, setLength] = useState<AudioLength>("standard");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
@@ -367,9 +372,19 @@ export function AudioModal({
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
-      onGenerate={() => onGenerate({ format, length, sourceIds, description: description.trim(), title: name.trim() || "Audio overview" })}
+      onGenerate={() => onGenerate({ format, length, mode, sourceIds, description: description.trim(), title: name.trim() || "Audio overview" })}
       generateLabel="Generate audio"
     >
+      <Field label="Hosts">
+        <Segmented
+          options={AUDIO_MODES.map((id) => ({ id, label: AUDIO_MODE_LABELS[id] }))}
+          value={mode}
+          onChange={setMode}
+        />
+        <p className="mt-1.5 text-[11.5px] leading-snug text-ink-3">
+          {AUDIO_MODE_DESCS[mode]}
+        </p>
+      </Field>
       <Field label="Format">
         <Segmented
           options={AUDIO_FORMATS.map((id) => ({ id, label: AUDIO_FORMAT_LABELS[id] }))}
