@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One universal macOS build: the bundler cross-compiles both arches
+          # (the Rust step below installs both targets) into a single .dmg.
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+          - os: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Only the macOS lane needs both arches (for the universal target);
+          # other lanes get their native default.
+          targets: ${{ startsWith(matrix.os, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build app and upload release assets
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "BrewLM v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          releaseBody: |
+            ## Install BrewLM v__VERSION__
+
+            **macOS** — download the `universal.dmg` (works on Intel + Apple Silicon), drag BrewLM to Applications. The app is not signed with an Apple Developer ID yet, so on first launch **right-click the app → Open → Open**. If macOS says the app is "damaged", run `xattr -cr /Applications/BrewLM.app` once in Terminal.
+
+            **Windows** — the `x64-setup.exe` (recommended) or the `.msi`. SmartScreen will warn on an unsigned installer: **More info → Run anyway**.
+
+            **Linux** — the `.AppImage` (`chmod +x`, then run) or the `.deb` (Debian/Ubuntu: `sudo apt install ./BrewLM_*.deb`).
+
+            Bring your own API key — OpenRouter, OpenAI, or Anthropic — and paste it in **Settings** on first launch. Nothing is uploaded anywhere.

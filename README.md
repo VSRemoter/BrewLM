@@ -8,7 +8,7 @@
 
 BrewLM turns your own materials — PDFs, web pages, notes, images, audio — into a grounded workspace: ask questions with inline source citations, then spin what you learn into flashcards, quizzes, mind maps, study guides, and even two-host podcast audio, all powered by the LLM of your choice. Everything (notebooks, chats, studio outputs, settings) lives in a local SQLite database on your machine. Your API keys never leave it.
 
-> **Formerly OpenMind.** The app was renamed BrewLM; the repository name is unchanged.
+> **Formerly OpenMind.** The app and repository were renamed BrewLM.
 
 ---
 
@@ -58,15 +58,29 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 
 ## Getting started
 
-### Requirements
-- [Node.js](https://nodejs.org/) 18+
+### Option 1 — Download an installer (no toolchain needed)
+
+Grab the latest build from [**GitHub Releases**](https://github.com/VSRemoter/BrewLM/releases):
+
+| Platform | Download | Notes |
+|---|---|---|
+| **macOS** | `BrewLM_…_universal.dmg` | Intel + Apple Silicon in one image. Unsigned, so first launch: **right-click → Open → Open**. If macOS reports the app as "damaged", run `xattr -cr /Applications/BrewLM.app` once. |
+| **Windows** | `BrewLM_…_x64-setup.exe` (or the `.msi`) | SmartScreen warns on unsigned installers: **More info → Run anyway**. |
+| **Linux** | `BrewLM_…_amd64.AppImage` or `…_amd64.deb` | AppImage: `chmod +x` then run. Debian/Ubuntu: `sudo apt install ./BrewLM_*.deb`. |
+
+Then add an API key in **Settings** on first launch (see *First launch* below).
+
+### Option 2 — Build from source
+
+#### Requirements
+- [Node.js](https://nodejs.org/) 20+
 - [Rust](https://rustup.rs/) (Tauri 2 toolchain)
 - An API key for OpenRouter, OpenAI, or Anthropic (for generation; TTS is optional)
 
 ### Run in development
 ```bash
-git clone https://github.com/VSRemoter/OpenMind.git
-cd OpenMind
+git clone https://github.com/VSRemoter/BrewLM.git
+cd BrewLM
 npm install
 npm run tauri dev
 ```
@@ -82,7 +96,9 @@ The app opens as a desktop window (Vite dev server on port 1420).
 ```bash
 npm run tauri build
 ```
-Produces a signed-native bundle for your OS in `src-tauri/target/release/bundle/`.
+Produces a native bundle for your OS in `src-tauri/target/release/bundle/` (`.dmg` on macOS, `.msi`/`.exe` on Windows, `.AppImage`/`.deb` on Linux).
+
+**Maintainers:** pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows, and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
 
 ---
 
