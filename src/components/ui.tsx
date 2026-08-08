@@ -1,5 +1,5 @@
-import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import { Coffee, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export function Modal({
   title,
@@ -130,6 +130,29 @@ export function TypingDots() {
       {[0, 1, 2].map((i) => (
         <span key={i} className="typing-dot h-1.5 w-1.5 rounded-full bg-ink-3" />
       ))}
+    </span>
+  );
+}
+
+/** Brew-bar verbs cycled while the model works up to its first token. */
+const BREW_WORDS = ["pouring", "brewing", "grinding", "streaming", "serving"];
+
+export function BrewingStatus() {
+  // random start so consecutive waits don't all open with the same word
+  const [i, setI] = useState(() => Math.floor(Math.random() * BREW_WORDS.length));
+  useEffect(() => {
+    const t = setInterval(() => setI((v) => (v + 1) % BREW_WORDS.length), 1600);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <span className="inline-flex items-center gap-1.5 py-1">
+      <Coffee size={13} strokeWidth={2} className="shrink-0 animate-pulse text-accent" />
+      <span
+        key={i}
+        className="brew-word bg-linear-to-r from-accent via-ink to-accent bg-[length:200%_100%] bg-clip-text text-[13px] font-medium italic text-transparent"
+      >
+        {`${BREW_WORDS[i]}…`}
+      </span>
     </span>
   );
 }

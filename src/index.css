@@ -11,6 +11,9 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  /* Active UI font — the Font setting overrides this on :root at runtime;
+     falls back to the theme's stack (e.g. Matrix remaps --font-sans to mono). */
+  --font-ui: var(--font-sans);
 
   /* Original — light, neutral */
   --color-canvas: #fafafa;
@@ -274,7 +277,7 @@ body,
 }
 
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-ui, var(--font-sans));
   background: var(--color-canvas);
   color: var(--color-ink);
   font-size: 14px;
@@ -368,6 +371,18 @@ body {
   color: var(--color-ink-2);
   margin: 0 0 0.75em;
 }
+/* KaTeX display math: keep long equations inside the bubble. */
+.md .katex {
+  max-width: 100%;
+  font-size: 1.06em;
+}
+.md .katex-display {
+  margin: 0.55em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
 .md table {
   width: 100%;
   border-collapse: collapse;
@@ -454,6 +469,21 @@ body {
 }
 .anim-fade-up {
   animation: om-fade-up 0.22s ease-out both;
+}
+
+/* BrewingStatus word: soft slide-up on each swap + a light shimmer sweeping the gradient text. */
+@keyframes om-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.brew-word {
+  animation:
+    om-fade-up 0.3s ease-out both,
+    om-shimmer 2.2s linear infinite;
 }
 
 @keyframes om-pulse-dot {
