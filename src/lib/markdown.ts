@@ -1,5 +1,8 @@
 /** Minimal, safe markdown → HTML for chat bubbles. */
 
+import katex from "katex";
+import "katex/dist/katex.min.css";
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -50,9 +53,53 @@ function sanitizeSvg(escaped: string): string | null {
   return raw;
 }
 
+/* ------------------------------- LaTeX math ------------------------------- */
+
+/**
+ * Recognised delimiters, longest first: $$…$$ / \[…\] are display blocks,
+ * \(…\) / $…$ are inline. Delimiters preceded by a backslash (\$) are literal.
+ */
+const MATH_RE =
+  /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$([^$\n]+?)(?<!\\)\$/g;
+
+/** Placeholders that survive escapeHtml + the inline markdown regexes untouched. */
+const DOLLAR_SENTINEL = "%%BREWDLR%%";
+
+/** Pull math segments out of raw markdown, rendering each to KaTeX HTML. */
+function extractMath(raw: string, rendered: string[]): string {
+  const out = raw.replace(
+    MATH_RE,
+    (whole, dd: string | undefined, bracket: string | undefined, paren: string | undefined, dollar: string | undefined) => {
+      const tex = dd ?? bracket ?? paren ?? dollar ?? "";
+      const display = dd !== undefined || bracket !== undefined;
+      // "$5 and $10" currency guard: $-delimited math never touches spaces
+      // (\( \) has no currency collision, so spaces are fine there).
+      if (dollar !== undefined && /^\s|\s$/.test(tex)) return whole;
+      const idx = rendered.length;
+      try {
+        rendered.push(katex.renderToString(tex, { displayMode: display, throwOnError: false, strict: "ignore" }));
+      } catch {
+        rendered.push(escapeHtml(whole));
+      }
+      return `%%MATH${idx}%%`;
+    }
+  );
+  // literal \$ sequences shielded from the maths pass become a plain $ again at the end
+  return out.replace(/\\\$/g, DOLLAR_SENTINEL);
+}
+
+function restoreMath(html: string, rendered: string[]): string {
+  return html
+    .replace(/%%MATH(\d+)%%/g, (whole, n) => rendered[Number(n)] ?? whole)
+    .split(DOLLAR_SENTINEL).join("$");
+}
+
+/* ------------------------------ markdown pass ----------------------------- */
+
 export function renderMarkdown(src: string): string {
-  const escaped = escapeHtml(src);
-  const blocks = escaped.split(/```/);
+  // Split fences on the RAW source so math inside code stays literal.
+  const blocks = src.split(/```/);
+  const rendered: string[] = [];
   let html = "";
 
   blocks.forEach((block, i) => {
@@ -60,7 +107,7 @@ export function renderMarkdown(src: string): string {
       // code fence: first line may be a language label
       const nl = block.indexOf("\n");
       const lang = (nl === -1 ? block : block.slice(0, nl)).trim().toLowerCase();
-      const code = (nl === -1 ? "" : block.slice(nl + 1)).replace(/\n$/, "");
+      const code = escapeHtml((nl === -1 ? "" : block.slice(nl + 1)).replace(/\n$/, ""));
       // mermaid diagrams: placeholder div, hydrated into an svg on the client
       if (lang === "mermaid") {
         html += `<div class="mermaid-block">${code}</div>`;
@@ -78,7 +125,10 @@ export function renderMarkdown(src: string): string {
       return;
     }
 
-    const lines = block.split("\n");
+    // Math goes first: KaTeX needs the raw LaTeX, and its placeholders
+    // shield formula characters (_, *, |) from the markdown rules below.
+    const escaped = escapeHtml(extractMath(block, rendered));
+    const lines = escaped.split("\n");
     let listType: "ul" | "ol" | null = null;
     let para: string[] = [];
     let li = 0;
@@ -183,5 +233,5 @@ export function renderMarkdown(src: string): string {
     flushList();
   });
 
-  return html;
+  return restoreMath(html, rendered);
 }

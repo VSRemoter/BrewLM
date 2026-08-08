@@ -81,6 +81,8 @@ export interface Settings {
   anthropicKey: string;
   model: string;
   theme: string;
+  /** UI font id from fonts.ts ("system" follows the theme's default stack). */
+  font: string;
   /** Text-to-speech for studio audio. Independent of the chat provider. */
   ttsProvider: TtsProvider;
   /** Dedicated TTS key for OpenAI; falls back to openaiKey when empty. */

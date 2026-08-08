@@ -22,6 +22,7 @@ import {
   updateNotebookDetails,
 } from "./lib/db";
 import { loadSettings } from "./lib/settings";
+import { applyFont } from "./lib/fonts";
 import { applyTheme } from "./lib/themes";
 import type { Folder, Notebook, Settings } from "./lib/types";
 
@@ -56,6 +57,7 @@ export default function App() {
         await getDb();
         const s = await loadSettings();
         applyTheme(s.theme);
+        applyFont(s.font);
         setSettings(s);
         await refresh();
         setReady(true);

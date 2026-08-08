@@ -13,6 +13,7 @@ import {
   saveModelList,
   saveSettings,
 } from "../lib/settings";
+import { FONTS, chooseFont } from "../lib/fonts";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Provider, Settings, TtsProvider } from "../lib/types";
 import { Modal, PrimaryButton } from "./ui";
@@ -66,7 +67,6 @@ function VoiceField({
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [saved, setSaved] = useState(false);
   const [modelList, setModelList] = useState<string[]>([]);
 
   useEffect(() => {
@@ -95,9 +95,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     chooseTheme(id); // applies to the DOM immediately and persists
   };
 
+  const pickFont = (id: string) => {
+    setSettings((s) => (s ? { ...s, font: id } : s));
+    chooseFont(id); // applies to the DOM immediately and persists
+  };
+
   const pick = (patch: Partial<Settings>) => {
     setSettings((s) => (s ? { ...s, ...patch } : s));
-    setSaved(false);
   };
 
   /** Add the typed model id to the chip list (Enter in the Model field). */
@@ -116,15 +120,12 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     // If the removed chip was the active model, fall back sensibly.
     if (settings.model === m) {
       pick({ model: next[0] ?? defaultModelFor(provider) });
-    } else {
-      setSaved(false);
     }
   };
 
   const save = async () => {
     await saveSettings(settings);
-    setSaved(true);
-    setTimeout(onClose, 450);
+    onClose();
   };
 
   return (
@@ -186,6 +187,37 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       {t.name}
                     </span>
                   </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Font */}
+        <div>
+          <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Font</label>
+          <div className="grid grid-cols-3 gap-2">
+            {FONTS.map((f) => {
+              const active = settings.font === f.id;
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => pickFont(f.id)}
+                  className={`flex items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all ${
+                    active
+                      ? "border-accent shadow-sm"
+                      : "border-edge hover:border-ink-3"
+                  }`}
+                >
+                  <span className="text-[16px] leading-none" style={{ fontFamily: f.stack }}>
+                    Ag
+                  </span>
+                  <span className={`text-[12px] leading-tight ${active ? "font-semibold" : "font-medium"}`}>
+                    {f.name}
+                  </span>
+                  {active && (
+                    <Check size={12} strokeWidth={3} className="ml-auto shrink-0 text-accent" />
+                  )}
                 </button>
               );
             })}
@@ -525,7 +557,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-1">
-          {saved && <span className="text-[12px] text-ok">Saved</span>}
           <PrimaryButton onClick={save}>Save settings</PrimaryButton>
         </div>
       </div>

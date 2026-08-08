@@ -1,4 +1,5 @@
 import { getSetting, setSetting } from "./db";
+import { DEFAULT_FONT, FONTS } from "./fonts";
 import { DEFAULT_THEME, THEMES } from "./themes";
 import type { Provider, Settings, TtsProvider } from "./types";
 
@@ -83,7 +84,7 @@ const DEFAULT_TTS = {
 export async function loadSettings(): Promise<Settings> {
   const provider = ((await getSetting("provider")) || "openrouter") as Provider;
   const [
-    openrouterKey, openaiKey, anthropicKey, model, theme,
+    openrouterKey, openaiKey, anthropicKey, model, theme, font,
     ttsProvider, openaiTtsKey, openrouterTtsKey, elevenlabsKey, ttsModel, ttsVoiceAlex, ttsVoiceSam, ttsInstructions,
   ] = await Promise.all([
     getSetting("openrouterKey"),
@@ -91,6 +92,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("anthropicKey"),
     getSetting("model"),
     getSetting("theme"),
+    getSetting("font"),
     getSetting("ttsProvider"),
     getSetting("openaiTtsKey"),
     getSetting("openrouterTtsKey"),
@@ -113,6 +115,8 @@ export async function loadSettings(): Promise<Settings> {
   const safeModel = model && !model.startsWith("sk-") ? model : DEFAULT_MODELS[provider];
   const themeIds = new Set(THEMES.map((t) => t.id));
   const safeTheme = theme && themeIds.has(theme) ? theme : DEFAULT_THEME;
+  const fontIds = new Set(FONTS.map((f) => f.id));
+  const safeFont = font && fontIds.has(font) ? font : DEFAULT_FONT;
   // Gemini TTS ids are gone from OpenRouter (they 400 "not a valid model ID") —
   // drop them so the openrouter default kicks in.
   const safeTtsModel = ttsModel && !/^google\/.*(tts|gemini)/i.test(ttsModel.trim())
@@ -131,6 +135,7 @@ export async function loadSettings(): Promise<Settings> {
     anthropicKey,
     model: safeModel,
     theme: safeTheme,
+    font: safeFont,
     ttsProvider: ttsProv,
     openaiTtsKey: openaiTtsKey || DEFAULT_TTS.openaiTtsKey,
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,
@@ -150,6 +155,7 @@ export async function saveSettings(s: Settings): Promise<void> {
     setSetting("anthropicKey", s.anthropicKey),
     setSetting("model", s.model),
     setSetting("theme", s.theme),
+    setSetting("font", s.font),
     setSetting("ttsProvider", s.ttsProvider),
     setSetting("openaiTtsKey", s.openaiTtsKey),
     setSetting("openrouterTtsKey", s.openrouterTtsKey),

@@ -4,6 +4,7 @@ import {
   ArrowUpFromLine,
   AudioLines,
   BookOpen,
+  Coffee,
   Copy,
   FileText,
   FolderClosed,
@@ -59,7 +60,7 @@ import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
-import { IconButton, TypingDots } from "./ui";
+import { BrewingStatus, IconButton } from "./ui";
 
 const MAX_CONSTITUTION_CHARS = 6000;
 const MAX_SOURCE_CHARS = 6000;
@@ -67,6 +68,20 @@ const MAX_TOTAL_CONTEXT = 30_000;
 const MAX_MENTION_CHARS = 8000;
 const MAX_MENTION_TOTAL = 16_000;
 const HISTORY_LIMIT = 16;
+
+/** Empty-chat inspiration: one quote is picked each time a new chat opens. */
+const CHAT_QUOTES: { text: string; author: string }[] = [
+  { text: "The mind is not a vessel to be filled, but a fire to be kindled.", author: "Plutarch" },
+  { text: "Somewhere, something incredible is waiting to be known.", author: "Carl Sagan" },
+  { text: "I am still learning.", author: "Michelangelo" },
+  { text: "The important thing is not to stop questioning.", author: "Albert Einstein" },
+  { text: "Real knowledge is to know the extent of one's ignorance.", author: "Confucius" },
+  { text: "He who learns but does not think, is lost; he who thinks but does not learn is in great danger.", author: "Confucius" },
+  { text: "Wonder is the beginning of wisdom.", author: "Socrates" },
+  { text: "It is not that I'm so smart. But I stay with the questions much longer.", author: "Albert Einstein" },
+  { text: "We are a way for the cosmos to know itself.", author: "Carl Sagan" },
+  { text: "The more I learn, the more I realize how much I don't know.", author: "Albert Einstein (attributed)" },
+];
 
 interface ChatCommand {
   cmd: string;
@@ -335,7 +350,7 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
     parts.push(`# Notebook constitution\n${body}\n\nThe constitution above governs how you behave in this notebook — follow it strictly. Where it conflicts with the default rules below, the constitution wins.`);
   }
 
-  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
+  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Write math in LaTeX notation — $...$ or \\(...\\) inline, $$...$$ or \\[...\\] for display equations (integrals, fractions, matrices…). The app renders it; never spell formulas out in plaintext.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
 
   if (mentioned.length > 0) {
     let budget = MAX_MENTION_TOTAL;
@@ -479,6 +494,11 @@ export default function ChatPanel({
   const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  /** Quote for the empty-chat splash — re-rolled whenever a different chat opens. */
+  const emptyQuote = useMemo(
+    () => CHAT_QUOTES[Math.floor(Math.random() * CHAT_QUOTES.length)],
+    [chatId]
+  );
   // Chat background popover; dimDraft mirrors chatBgDim for smooth live slider preview.
   const [bgMenuOpen, setBgMenuOpen] = useState(false);
   const [dimDraft, setDimDraft] = useState(chatBgDim);
@@ -801,9 +821,18 @@ export default function ChatPanel({
       setMsgs([]);
       return;
     }
+    let cancelled = false;
     import("../lib/db").then(({ listMessages }) =>
-      listMessages(chatId).then(setMessages)
+      // setMsgs matters, not setMessages: messagesRef must follow the switch,
+      // or the next send resurrects the previous chat's history.
+      listMessages(chatId).then((ms) => {
+        if (!cancelled) setMsgs(ms);
+      })
     );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 
   /* ------------------------------ /queue state ------------------------------ */
@@ -1399,15 +1428,13 @@ export default function ChatPanel({
         {messages.length === 0 && streaming === null ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-accent">
-              <BookOpen size={18} strokeWidth={1.8} className="text-accent-ink" />
+              <Coffee size={18} strokeWidth={1.8} className="text-accent-ink" />
             </div>
-            <h2 className="text-[16px] font-semibold tracking-tight">
-              {notebookTitle}
-            </h2>
-            <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-3">
-              {sources.length > 0
-                ? "Ask anything about your sources — summaries, explanations, key concepts."
-                : "Add a source on the left to ground answers, or just start chatting."}
+            <p className="max-w-md text-[15px] font-medium italic leading-relaxed text-ink-2">
+              {`“${emptyQuote.text}”`}
+            </p>
+            <p className="mt-2 text-[12px] tracking-wide text-ink-3">
+              — {emptyQuote.author}
             </p>
           </div>
         ) : (
@@ -1424,7 +1451,7 @@ export default function ChatPanel({
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }}
                     />
                   ) : (
-                    <TypingDots />
+                    <BrewingStatus />
                   )}
                 </div>
               </div>
