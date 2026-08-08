@@ -56,8 +56,22 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 
 ## Getting started
 
-### Requirements
-- [Node.js](https://nodejs.org/) 18+
+### Option 1 — Download an installer (no toolchain needed)
+
+Grab the latest build from [**GitHub Releases**](https://github.com/VSRemoter/BrewLM/releases):
+
+| Platform | Download | Notes |
+|---|---|---|
+| **macOS** | `BrewLM_…_universal.dmg` | Intel + Apple Silicon in one image. Unsigned, so first launch: **right-click → Open → Open**. If macOS reports the app as "damaged", run `xattr -cr /Applications/BrewLM.app` once. |
+| **Windows** | `BrewLM_…_x64-setup.exe` (or the `.msi`) | SmartScreen warns on unsigned installers: **More info → Run anyway**. |
+| **Linux** | `BrewLM_…_amd64.AppImage` or `…_amd64.deb` | AppImage: `chmod +x` then run. Debian/Ubuntu: `sudo apt install ./BrewLM_*.deb`. |
+
+Then add an API key in **Settings** on first launch (see *First launch* below).
+
+### Option 2 — Build from source
+
+#### Requirements
+- [Node.js](https://nodejs.org/) 20+
 - [Rust](https://rustup.rs/) (Tauri 2 toolchain)
 - An API key for OpenRouter, OpenAI, or Anthropic (for generation; TTS is optional)
 
@@ -80,7 +94,9 @@ The app opens as a desktop window (Vite dev server on port 1420).
 ```bash
 npm run tauri build
 ```
-Produces a signed-native bundle for your OS in `src-tauri/target/release/bundle/`.
+Produces a native bundle for your OS in `src-tauri/target/release/bundle/` (`.dmg` on macOS, `.msi`/`.exe` on Windows, `.AppImage`/`.deb` on Linux).
+
+**Maintainers:** pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows, and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
 
 ---
 
