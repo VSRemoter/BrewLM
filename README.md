@@ -1,6 +1,10 @@
-# BrewLM
+<p align="center">
+  <img src="public/BrewLM-Logo-Wide.png" alt="BrewLM" width="420" />
+</p>
 
-Your personal research copilot — a local-first, NotebookLM-style desktop app for macOS, Windows, and Linux.
+<p align="center">
+  <b>Your personal research copilot</b> — a local-first, NotebookLM-style desktop app for macOS, Windows, and Linux.
+</p>
 
 BrewLM turns your own materials — PDFs, web pages, notes, images, audio — into a grounded workspace: ask questions with inline source citations, then spin what you learn into flashcards, quizzes, mind maps, study guides, and even two-host podcast audio, all powered by the LLM of your choice. Everything (notebooks, chats, studio outputs, settings) lives in a local SQLite database on your machine. Your API keys never leave it.
 
