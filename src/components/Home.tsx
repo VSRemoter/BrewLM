@@ -661,9 +661,11 @@ export default function Home({
       {/* Top bar */}
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-edge-soft bg-panel px-6">
         <div className="flex shrink-0 items-center gap-2.5">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-accent">
-            <BookOpen size={13} strokeWidth={2.2} className="text-accent-ink" />
-          </div>
+          <img
+            src="/brewlm-logo.png"
+            alt="BrewLM logo"
+            className="h-6 w-6 object-contain"
+          />
           <span className="text-[15px] font-semibold tracking-tight">BrewLM</span>
         </div>
         <div className="relative mx-auto w-full max-w-md">
