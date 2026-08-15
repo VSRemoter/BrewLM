@@ -31,6 +31,9 @@ const ZOOM_KEY = "om.zoom";
 let zoom = Number(localStorage.getItem(ZOOM_KEY)) || 1;
 const applyZoom = () => {
   document.documentElement.style.setProperty("zoom", String(zoom));
+  // vh-based lengths are scaled by root zoom, so modals must divide by it
+  // to keep their rendered height inside the actual window.
+  document.documentElement.style.setProperty("--om-zoom", String(zoom));
 };
 applyZoom();
 window.addEventListener("keydown", (e) => {

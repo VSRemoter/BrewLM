@@ -21,7 +21,7 @@ export function Modal({
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className={`anim-fade-up mx-4 max-h-[85vh] w-full overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl ${
+        className={`anim-fade-up mx-4 max-h-[calc(85vh/var(--om-zoom,1))] w-full overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl ${
           wide ? "max-w-2xl" : "max-w-md"
         }`}
         role="dialog"
@@ -40,7 +40,9 @@ export function Modal({
             </button>
           </div>
         </div>
-        <div className="max-h-[calc(85vh-52px)] overflow-y-auto px-5 py-4">{children}</div>
+        <div className="max-h-[calc(85vh/var(--om-zoom,1)_-_52px)] overflow-y-auto px-5 py-4">
+          {children}
+        </div>
       </div>
     </div>
   );
