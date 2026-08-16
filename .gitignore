@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Tauri sidecar binaries (fetched by scripts/fetch-sidecars.sh)
+src-tauri/binaries/

@@ -199,6 +199,21 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
   return new Uint8Array(buf);
 }
 
+/** Parse a raw LLM script into speaker turns (Alex/Sam); capped at 24 turns. */
+export function parseScript(raw: string): ScriptTurn[] {
+  const turns: ScriptTurn[] = [];
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*[*-]?\s*(Alex|Sam)\s*:\s*(.+?)\s*$/i);
+    if (m && m[2].trim()) {
+      turns.push({
+        speaker: m[1].toLowerCase() === "sam" ? "Sam" : "Alex",
+        text: m[2].replace(/\*\*/g, "").trim(),
+      });
+    }
+  }
+  return turns.slice(0, 24);
+}
+
 export function chunksToBase64(chunks: Uint8Array[]): string {
   const total = chunks.reduce((n, c) => n + c.length, 0);
   const out = new Uint8Array(total);

@@ -85,6 +85,38 @@ async function initDb(): Promise<Database> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`);
+  // Phone sharing: paired devices, queued jobs (chat/generate), activity log.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      scope TEXT NOT NULL DEFAULT 'full',
+      created_at INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL DEFAULT 0,
+      revoked_at INTEGER NOT NULL DEFAULT 0
+    )`);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      notebook_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      payload TEXT NOT NULL DEFAULT '{}',
+      result TEXT NOT NULL DEFAULT '',
+      progress TEXT NOT NULL DEFAULT '',
+      device_id TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS activity (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    )`);
   // notebooks gain description (added after the initial schema).
   const nbCols = await db.select<{ name: string }[]>("PRAGMA table_info(notebooks)");
   if (!nbCols.some((c) => c.name === "description"))
@@ -612,5 +644,44 @@ export async function setSetting(key: string, value: string): Promise<void> {
   await d.execute(
     "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2",
     [key, value]
+  );
+}
+
+/* ------------------------- Phone sharing: devices ------------------------ */
+
+export interface SharedDevice {
+  id: string;
+  name: string;
+  scope: "read" | "full";
+  created_at: number;
+  last_seen: number;
+  revoked_at: number;
+}
+
+export interface ActivityEntry {
+  id: string;
+  device_id: string;
+  action: string;
+  detail: string;
+  created_at: number;
+}
+
+export async function listDevices(includeRevoked = false): Promise<SharedDevice[]> {
+  const d = await getDb();
+  return d.select<SharedDevice[]>(
+    `SELECT * FROM devices ${includeRevoked ? "" : "WHERE revoked_at = 0"} ORDER BY created_at DESC`
+  );
+}
+
+export async function revokeDevice(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE devices SET revoked_at = $1 WHERE id = $2", [Date.now(), id]);
+}
+
+export async function listActivity(limit = 20): Promise<ActivityEntry[]> {
+  const d = await getDb();
+  return d.select<ActivityEntry[]>(
+    "SELECT * FROM activity ORDER BY created_at DESC LIMIT $1",
+    [limit]
   );
 }

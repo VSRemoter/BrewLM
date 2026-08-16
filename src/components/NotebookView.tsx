@@ -1,4 +1,4 @@
-import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
+import { ArrowLeft, Settings as SettingsIcon, Smartphone } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
   addMessage,
@@ -23,9 +23,10 @@ import { fetchLinkContent } from "../lib/source";
 import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
+import PairPhonePanel from "./PairPhonePanel";
 import SourcesPanel from "./SourcesPanel";
 import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
-import { IconButton } from "./ui";
+import { IconButton, Modal } from "./ui";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
 const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
@@ -57,6 +58,7 @@ export default function NotebookView({
   onOpenNotebook: (id: string) => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]);
+  const [pairOpen, setPairOpen] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -309,10 +311,19 @@ export default function NotebookView({
           className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
           aria-label="Notebook title"
         />
+        <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
+          <Smartphone size={15} strokeWidth={1.8} />
+        </IconButton>
         <IconButton onClick={onOpenSettings} label="Settings">
           <SettingsIcon size={15} strokeWidth={1.8} />
         </IconButton>
       </header>
+
+      {pairOpen && (
+        <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
+          <PairPhonePanel />
+        </Modal>
+      )}
 
       {/* three panels */}
       <div className="flex min-h-0 flex-1">

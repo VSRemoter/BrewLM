@@ -25,20 +25,30 @@
   .brand { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px; }
   .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
   .brand h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .2px; }
-  .brand .live { margin-left: auto; font-size: 11px; color: var(--accent);
-    border: 1px solid var(--edge); padding: 3px 8px; border-radius: 999px; }
-  .search { width: 100%; border: 1px solid var(--edge); background: var(--panel);
-    color: var(--ink); border-radius: 999px; padding: 10px 16px; font-size: 15px;
-    outline: none; margin-bottom: 14px; }
-  .search::placeholder { color: var(--ink3); }
-  .search:focus { border-color: var(--accent); }
+  .brand .ro-pill { margin-left: auto; font-size: 11px; color: var(--accent);
+    border: 1px solid var(--edge); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+  body.readonly .write-only { display: none !important; }
+  .btn { display: inline-block; border: 1px solid var(--edge); background: var(--panel);
+    color: var(--ink); border-radius: 999px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+  .btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .btn-danger { color: var(--bad); }
+  .btn:disabled { opacity: .5; }
+  .search, .field { width: 100%; border: 1px solid var(--edge); background: var(--panel);
+    color: var(--ink); border-radius: 12px; padding: 10px 14px; font-size: 15px;
+    outline: none; margin-bottom: 10px; }
+  .search { border-radius: 999px; }
+  .search::placeholder, .field::placeholder { color: var(--ink3); }
+  .search:focus, .field:focus { border-color: var(--accent); }
+  textarea.field { min-height: 110px; resize: vertical; font-family: inherit; }
   .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 14px;
     padding: 14px 16px; margin-bottom: 12px; display: block; width: 100%; text-align: left;
-    color: var(--ink); cursor: pointer; }
+    color: var(--ink); cursor: pointer; position: relative; }
   .card:active { background: var(--panel2); }
   .card h3 { margin: 0 0 4px; font-size: 16px; }
   .card p { margin: 0; color: var(--ink2); font-size: 13px; }
   .card .date { color: var(--ink3); font-size: 11.5px; margin-top: 6px; display: block; }
+  .card .menu { position: absolute; top: 10px; right: 12px; color: var(--ink3);
+    font-size: 20px; padding: 2px 8px; }
   .back { color: var(--accent); background: none; border: none; font-size: 15px;
     padding: 8px 0; margin-bottom: 6px; cursor: pointer; }
   .sec { color: var(--ink3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em;
@@ -60,12 +70,15 @@
   .body-md ul, .body-md ol { margin: 8px 0; padding-left: 22px; color: var(--ink2); }
   .body-md li { margin: 3px 0; }
   .body-md blockquote { border-left: 3px solid var(--edge); margin: 8px 0; padding-left: 12px; color: var(--ink3); }
-  .flip { perspective: 600px; }
-  .flip .inner { transition: transform .3s; transform-style: preserve-3d; position: relative; }
+  .flip { perspective: 600px; text-align: center; font-family: inherit; }
+  .flip .inner { transition: transform .3s; transform-style: preserve-3d; display: grid; min-height: 120px; }
+  .flip .inner > * { grid-area: 1 / 1; }
   .flip.flipped .inner { transform: rotateY(180deg); }
-  .flip .face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
-  .flip .back-face { position: absolute; inset: 0; transform: rotateY(180deg); display: flex;
-    align-items: center; justify-content: center; }
+  .flip .face { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 6px 4px; text-align: center; font-size: 15.5px; line-height: 1.55;
+    backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .flip .face .hint { font-size: 11.5px; color: var(--ink3); }
+  .flip .back-face { transform: rotateY(180deg); color: var(--ink2); font-size: 14.5px; }
   .q-opt { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px;
     border-radius: 10px; border: 1px solid var(--edge); background: var(--panel2);
     color: var(--ink); font-size: 14.5px; cursor: pointer; }
@@ -76,30 +89,97 @@
   .empty { color: var(--ink3); font-size: 13.5px; }
   .err { color: var(--bad); padding: 30px 0; text-align: center; }
   .score { float: right; font-size: 12px; color: var(--accent); }
+  /* Tabs */
+  .tabs { display: flex; gap: 6px; margin: 10px 0 14px; }
+  .tab { flex: 1; text-align: center; padding: 9px 0; border-radius: 999px; font-size: 14px;
+    cursor: pointer; border: 1px solid var(--edge); background: var(--panel); color: var(--ink2); }
+  .tab.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  /* Chat */
+  .msg { max-width: 88%; padding: 10px 14px; border-radius: 16px; margin-bottom: 10px; font-size: 14.5px; }
+  .msg.user { margin-left: auto; background: var(--accent); color: var(--bg); border-bottom-right-radius: 4px; }
+  .msg.bot { background: var(--panel); border: 1px solid var(--edge); border-bottom-left-radius: 4px; }
+  .msg.bot .body-md { font-size: 14.5px; }
+  .msg.thinking { color: var(--ink3); font-style: italic; }
+  .composer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    background: var(--bg); border-top: 1px solid var(--edge);
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  .composer .row { max-width: 680px; margin: 0 auto; display: flex; gap: 8px; }
+  .composer textarea { flex: 1; border: 1px solid var(--edge); background: var(--panel);
+    color: var(--ink); border-radius: 18px; padding: 10px 14px; font-size: 15px; max-height: 110px;
+    outline: none; resize: none; font-family: inherit; }
+  .composer button { border-radius: 999px; border: none; background: var(--accent); color: var(--bg);
+    padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .composer button:disabled { opacity: .5; }
+  #app.in-chat { padding-bottom: 100px; }
+  /* Sheets & misc */
+  .sheet { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45);
+    display: flex; align-items: flex-end; }
+  .sheet > div { background: var(--panel); border-radius: 18px 18px 0 0; width: 100%;
+    max-width: 680px; margin: 0 auto; padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+    max-height: 80vh; overflow-y: auto; }
+  .sheet h3 { margin: 0 0 10px; }
+  .sheet .btn { margin: 0 8px 8px 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .chip { border: 1px solid var(--edge); background: var(--panel2); color: var(--ink2);
+    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
+  .chip.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .job-pill { background: var(--panel2); border: 1px dashed var(--edge); border-radius: 12px;
+    padding: 10px 14px; font-size: 13px; color: var(--ink2); margin-bottom: 10px; }
+  .src-item { cursor: default; }
+  .src-item .t { font-size: 14px; }
   /* Theme dock */
   .themes { position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 50;
     display: flex; gap: 9px; padding: 9px 12px; border-radius: 999px;
     background: var(--panel); border: 1px solid var(--edge);
     box-shadow: 0 6px 24px rgba(0,0,0,.22); }
+  .themes.hidden { display: none; }
   .tdot { width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
     border: 2px solid transparent; padding: 2px; background-clip: content-box; }
   .tdot.active { border-color: var(--accent); transform: scale(1.12); }
+  /* Pairing */
+  .pair-wrap { max-width: 380px; margin: 12vh auto 0; text-align: center; }
+  .pin { font-size: 24px !important; letter-spacing: .35em; text-align: center; }
 </style>
 </head>
 <body>
 <div id="app">Loading…</div>
 <script>
 "use strict";
-const BASE = location.pathname.replace(/\/+$/, ''); // "/s/<token>"
 const $app = document.getElementById('app');
-const api = (p) => fetch(`${BASE}/api${p}`).then(r => {
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+const SEG = location.pathname.split('/').filter(Boolean);
+const MODE = SEG[0];                 // 'p' (pairing) | 'd' (device)
+const CRED = SEG[1] || '';
+const BASE = `/${MODE}/${CRED}`;
+const KEY_STORE = 'brewlm-device-key';
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function apiRaw(path, opts) {
+  const r = await fetch(`${BASE}/api${path}`, opts);
+  return r;
+}
+async function api(path, opts) {
+  const r = await apiRaw(path, opts);
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).error || msg; } catch {}
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
   return r.json();
-});
+}
+let SCOPE = 'full'; // device's access level, from /preferences ('read' hides all write UI)
+function applyScopeClass() { document.body.classList.toggle('readonly', SCOPE !== 'full'); }
+
+const post = (path, body) => {
+  if (SCOPE !== 'full') return Promise.reject(new Error('This device is read-only.'));
+  return api(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {})
+  });
+};
 
 /* ------------------------------- theming -------------------------------- */
-/* Mirrors the desktop palettes in src/index.css. panel2 ≈ edge-soft. */
 const M_THEMES = {
   original: { name:'Original', scheme:'light', font:null, v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#8a8a8a', accent:'#171717' } },
   midnight: { name:'Midnight', scheme:'dark', font:null, v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a1a1aa', ink3:'#6e6e78', accent:'#f4f4f5' } },
@@ -126,10 +206,10 @@ function applyMobileTheme(id, persist) {
   document.querySelectorAll('.tdot').forEach(d =>
     d.classList.toggle('active', d.dataset.theme === currentTheme));
 }
-
 function buildThemeDock() {
   const dock = document.createElement('div');
   dock.className = 'themes';
+  dock.id = 'themedock';
   for (const [id, t] of Object.entries(M_THEMES)) {
     const dot = document.createElement('button');
     dot.className = 'tdot';
@@ -141,25 +221,21 @@ function buildThemeDock() {
   }
   document.body.appendChild(dock);
 }
-
 async function initTheme() {
   buildThemeDock();
   const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
   if (saved && M_THEMES[saved]) return applyMobileTheme(saved, false);
-  try {
-    const { theme } = await api('/preferences');      // follow the desktop's theme
-    applyMobileTheme(M_THEMES[theme] ? theme : 'original', false);
-  } catch { applyMobileTheme('original', false); }
+  if (MODE === 'd') {
+    try {
+      const { theme, scope } = await api('/preferences');
+      if (scope) { SCOPE = scope; applyScopeClass(); }
+      return applyMobileTheme(M_THEMES[theme] ? theme : 'original', false);
+    } catch {}
+  }
+  applyMobileTheme('original', false);
 }
 
-/* ------------------------------- utilities ------------------------------- */
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-const fmtDate = (ms) => new Date(Number(ms)).toLocaleDateString(undefined,
-  { month: 'short', day: 'numeric', year: 'numeric' });
-
-/* Minimal markdown renderer (headers, lists, bold/italic, code, links, quotes). */
+/* -------------------------------- markdown ------------------------------ */
 function md(src) {
   if (!src) return '';
   let html = esc(src);
@@ -187,22 +263,82 @@ function md(src) {
   return out;
 }
 
-/* --------------------------------- views --------------------------------- */
-function shell(inner, title) {
+const fmtDate = (ms) => new Date(Number(ms)).toLocaleDateString(undefined,
+  { month: 'short', day: 'numeric' });
+
+/* -------------------------------- pairing ------------------------------- */
+function renderPairing(error = '') {
+  document.getElementById('themedock')?.classList.add('hidden');
   $app.innerHTML = `
-    <div class="brand"><div class="dot"></div><h1>${title || 'BrewLM'}</h1><span class="live">live from your Mac</span></div>
+    <div class="pair-wrap">
+      <div class="brand" style="justify-content:center"><div class="dot"></div><h1>BrewLM</h1></div>
+      <p style="color:var(--ink2);font-size:14.5px">Enter the 6-digit PIN shown next to the QR code<br>in BrewLM → Settings on your Mac.</p>
+      <form id="pinform">
+        <input class="field pin" id="pin" inputmode="numeric" autocomplete="one-time-code"
+               maxlength="6" pattern="[0-9]{6}" placeholder="••••••" required>
+        ${error ? `<p style="color:var(--bad);font-size:13px">${esc(error)}</p>` : ''}
+        <button class="btn btn-primary" style="width:100%" type="submit">Pair this device</button>
+      </form>
+      <p style="color:var(--ink3);font-size:12px;margin-top:18px">This link works once per QR session.<br>Your phone will only ever talk to your Mac.</p>
+    </div>`;
+  document.getElementById('pinform').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pin = document.getElementById('pin').value.trim();
+    try {
+      const r = await post('/pair', { pin });
+      localStorage.setItem(KEY_STORE, r.device_key);
+      location.replace(`/d/${r.device_key}/`);
+    } catch (err) {
+      renderPairing(err.message === 'Wrong PIN.' ? 'Wrong PIN — check the desktop and try again.'
+        : err.message);
+    }
+  });
+}
+
+/* ------------------------------ app shell ------------------------------- */
+function shell(inner, title, opts = {}) {
+  $app.className = opts.chat ? 'in-chat' : '';
+  document.getElementById('themedock')?.classList.toggle('hidden', !!opts.chat);
+  $app.innerHTML = `
+    <div class="brand"><div class="dot"></div><h1>${esc(title || 'BrewLM')}</h1>${MODE === 'd' && SCOPE !== 'full' ? '<span class="ro-pill">Read-only</span>' : ''}</div>
     ${inner}`;
 }
 
-/* ---- home: searchable notebook list ---- */
+async function guardDevice() {
+  try {
+    const p = await api('/preferences');
+    if (p.scope) { SCOPE = p.scope; applyScopeClass(); }
+    return true;
+  } catch (e) {
+    if (e.status === 401 || e.status === 403 || e.status === 404) {
+      localStorage.removeItem(KEY_STORE);
+      shell(`<p class="err">This device is no longer paired.<br>Please pair again from BrewLM → Settings → Pair your phone.</p>`);
+      return false;
+    }
+    return true; // transient server hiccup: keep going
+  }
+}
+
+/* --------------------------------- home --------------------------------- */
 let homeNotebooks = null;
 
 async function renderHome() {
   shell(`
-    <input class="search" id="q" type="search" placeholder="Search notebooks…" autocomplete="off">
-    <div id="list"><p class="empty">Loading notebooks…</p></div>`);
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input class="search" id="q" style="margin:0" type="search" placeholder="Search notebooks…" autocomplete="off">
+      <button class="btn write-only" id="newnb" title="New notebook">＋</button>
+    </div>
+    <div id="list"><p class="empty">Loading notebooks…</p></div>
+    <div id="sheetroot"></div>`);
   const $list = document.getElementById('list');
   const $q = document.getElementById('q');
+  document.getElementById('newnb').onclick = () => {
+    const title = prompt('Notebook title?');
+    if (!title || !title.trim()) return;
+    post('/notebooks', { title: title.trim() })
+      .then(() => { homeNotebooks = null; renderHome(); })
+      .catch(e => alert(e.message));
+  };
 
   const paint = () => {
     if (!homeNotebooks) return;
@@ -214,58 +350,198 @@ async function renderHome() {
       return;
     }
     $list.innerHTML = rows.map(nb => `
-      <button class="card" onclick="location.hash='#nb/${encodeURIComponent(nb.id)}'">
+      <button class="card" data-id="${esc(nb.id)}">
         <h3>${esc(nb.title)}</h3>
         ${nb.description ? `<p>${esc(nb.description)}</p>` : ''}
         <span class="date">Updated ${fmtDate(nb.updated_at)}</span>
+        <span class="menu write-only" data-menu="${esc(nb.id)}">⋯</span>
       </button>`).join('');
+    $list.querySelectorAll('.card').forEach(c =>
+      c.addEventListener('click', (e) => {
+        if (e.target.closest('[data-menu]')) return;
+        location.hash = '#nb/' + encodeURIComponent(c.dataset.id);
+      }));
+    $list.querySelectorAll('[data-menu]').forEach(m =>
+      m.addEventListener('click', () => notebookActions(m.dataset.menu)));
   };
   $q.addEventListener('input', paint);
 
-  if (!homeNotebooks) {
-    try { homeNotebooks = (await api('/notebooks')).notebooks; }
-    catch (e) {
-      $list.innerHTML = `<p class="err">Couldn't load notebooks (${esc(e.message)}).<br>Is BrewLM still running on your Mac?</p>`;
-      return;
-    }
+  try {
+    homeNotebooks = (await api('/notebooks')).notebooks;
+    paint();
+  } catch (e) {
+    $list.innerHTML = `<p class="err">${esc(e.message)}<br>Is BrewLM still running on your Mac?</p>`;
   }
-  paint();
 }
 
+function notebookActions(id) {
+  const nb = (homeNotebooks || []).find(n => n.id === id);
+  if (!nb) return;
+  const root = document.getElementById('sheetroot');
+  root.innerHTML = `
+    <div class="sheet" id="sheet"><div>
+      <h3>${esc(nb.title)}</h3>
+      <button class="btn" id="a-rename">Rename</button>
+      <button class="btn btn-danger" id="a-del">Move to Trash</button>
+      <button class="btn" id="a-cancel" style="float:right">Cancel</button>
+    </div></div>`;
+  const close = () => root.innerHTML = '';
+  root.querySelector('#a-cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelector('#a-rename').onclick = () => {
+    const t = prompt('New title?', nb.title);
+    if (!t || !t.trim()) return close();
+    post(`/notebooks/${encodeURIComponent(id)}/rename`, { title: t.trim() })
+      .then(() => { homeNotebooks = null; close(); renderHome(); })
+      .catch(e => alert(e.message));
+  };
+  root.querySelector('#a-del').onclick = () => {
+    if (!confirm(`Move "${nb.title}" to Trash? (recoverable on the desktop)`)) return close();
+    post(`/notebooks/${encodeURIComponent(id)}/delete`, {})
+      .then(() => { homeNotebooks = null; close(); renderHome(); })
+      .catch(e => alert(e.message));
+  };
+}
+
+/* ------------------------------ notebook view ---------------------------- */
+const nbState = {}; // id -> {tab, chatId}
+
 async function renderNotebook(id) {
+  const st = nbState[id] || (nbState[id] = { tab: 'chat', chatId: null });
   shell('<p class="empty">Loading…</p>');
   let nb;
   try { nb = await api(`/notebooks/${encodeURIComponent(id)}`); }
   catch (e) { return shell(`<p class="err">${esc(e.message)}</p>`); }
 
+  const tabs = `<div class="tabs">
+    ${['chat', 'studio', 'sources'].map(t =>
+      `<div class="tab ${st.tab === t ? 'active' : ''}" data-tab="${t}">${t === 'chat' ? 'Chat' : t === 'studio' ? 'Studio' : 'Sources'}</div>`).join('')}
+  </div>`;
+  const header = `<button class="back" onclick="location.hash=''">‹ All notebooks</button>
+    <h2 style="margin:0 0 2px;font-size:19px">${esc(nb.title)}</h2>`;
+
+  shell(`${header}${tabs}<div id="pane"></div>`, nb.title, { chat: st.tab === 'chat' });
+  if (st.tab !== 'chat') document.getElementById('composer')?.remove();
+  $app.querySelectorAll('.tab').forEach(t => t.onclick = () => { st.tab = t.dataset.tab; renderNotebook(id); });
+
+  const pane = document.getElementById('pane');
+  if (st.tab === 'chat') renderChatTab(pane, nb, st);
+  else if (st.tab === 'studio') renderStudioTab(pane, nb, st);
+  else renderSourcesTab(pane, nb, st);
+}
+
+/* -------------------------------- chat tab ------------------------------ */
+async function renderChatTab(pane, nb, st) {
+  pane.innerHTML = '<p class="empty">Loading chat…</p>';
+  let chats = [];
+  try { chats = (await api(`/notebooks/${encodeURIComponent(nb.id)}/chats`)).chats; }
+  catch (e) { pane.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  if (!chats.find(c => c.id === st.chatId)) st.chatId = chats[0]?.id ?? null;
+
+  const chatBar = `<div class="chips">
+    ${chats.slice(0, 5).map(c => `<span class="chip ${c.id === st.chatId ? 'active' : ''}" data-chat="${esc(c.id)}">${esc(c.title)}</span>`).join('')}
+    <span class="chip write-only" data-newchat>＋ New chat</span>
+  </div>`;
+  pane.innerHTML = `${chatBar}<div id="msgs"></div>`;
+  pane.querySelectorAll('[data-chat]').forEach(el => el.onclick = () => { st.chatId = el.dataset.chat; renderNotebook(nb.id); });
+  pane.querySelector('[data-newchat]').onclick = () => { st.chatId = null; renderMsgs(); };
+
+  const $msgs = pane.querySelector('#msgs');
+  let sending = false;
+
+  async function renderMsgs() {
+    if (!st.chatId) { $msgs.innerHTML = `<p class="empty">${SCOPE !== 'full' ? 'Chats appear here — pick an existing one above.' : 'Say something to start a new chat — answers cite your sources.'}</p>`; return; }
+    let msgs = [];
+    try { msgs = (await api(`/chats/${encodeURIComponent(st.chatId)}/messages`)).messages; }
+    catch (e) { $msgs.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+    $msgs.innerHTML = msgs.length ? msgs.map(m => `
+      <div class="msg ${m.role === 'user' ? 'user' : 'bot'}"><div class="body-md">${m.role === 'user' ? esc(m.content) : md(m.content)}</div></div>`
+    ).join('') : '<p class="empty">No messages yet.</p>';
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  await renderMsgs();
+
+  let composer = document.getElementById('composer');
+  if (composer) composer.remove();
+  composer = document.createElement('div');
+  composer.className = 'composer write-only'; composer.id = 'composer';
+  composer.innerHTML = `<div class="row">
+    <textarea rows="1" placeholder="Ask this notebook…" id="cta"></textarea>
+    <button id="csend">Send</button></div>`;
+  document.body.appendChild(composer);
+  const ta = composer.querySelector('#cta');
+  const btn = composer.querySelector('#csend');
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(110, ta.scrollHeight) + 'px'; });
+
+  btn.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text || sending) return;
+    sending = true; btn.disabled = true; ta.value = '';
+    $msgs.insertAdjacentHTML('beforeend',
+      `<div class="msg user"><div class="body-md">${esc(text)}</div></div>
+       <div class="msg bot thinking" id="thinking">BrewLM is thinking…</div>`);
+    window.scrollTo(0, document.body.scrollHeight);
+    try {
+      const { job_id } = await post('/chat', { notebook_id: nb.id, content: text, chat_id: st.chatId });
+      const job = await pollJob(job_id, 120);
+      if (job.status !== 'done') throw new Error(job.result || 'Chat failed.');
+      const result = JSON.parse(job.result || '{}');
+      if (result.chat_id) st.chatId = result.chat_id;
+      await renderMsgs();
+    } catch (e) {
+      document.getElementById('thinking')?.remove();
+      $msgs.insertAdjacentHTML('beforeend',
+        `<div class="msg bot thinking" style="color:var(--bad)">${esc(e.message)}</div>`);
+    } finally { sending = false; btn.disabled = false; ta.focus(); }
+  };
+}
+
+/* ------------------------------- studio tab ----------------------------- */
+const GEN_TOOLS = [
+  { kind: 'flashcards', label: 'Flashcards', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text']] },
+  { kind: 'quiz', label: 'Quiz', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text']] },
+  { kind: 'mindmap', label: 'Mind map', opts: [['focus', 'text']] },
+  { kind: 'report', label: 'Report', opts: [['report_type', ['study-guide', 'briefing-doc', 'analysis']]] },
+  { kind: 'research', label: 'Deep research', opts: [['topic', 'text']] },
+  { kind: 'audio', label: 'Audio overview', opts: [['format', ['deep-dive', 'brief', 'debate', 'critique']], ['length', ['short', 'standard', 'long']], ['focus', 'text']] },
+];
+const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0 };
+const activeJobs = {}; // jobId -> {label}
+
+async function pollJob(id, maxSeconds) {
+  const deadline = Date.now() + maxSeconds * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000));
+    const job = await api(`/jobs/${encodeURIComponent(id)}`);
+    if (job.status === 'done' || job.status === 'error') return job;
+    if (activeJobs[id]) activeJobs[id].el && (activeJobs[id].el.querySelector('.p').textContent = job.progress || 'Working…');
+  }
+  throw new Error('Timed out waiting for the desktop — is BrewLM open there?');
+}
+
+function renderStudioTab(pane, nb) {
   const groups = { audio: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
   for (const a of nb.artifacts) {
     if (a.kind === 'audio') groups.audio.push(a);
     else if (a.kind === 'flashcards') groups.flashcards.push(a);
     else if (a.kind === 'quiz') groups.quiz.push(a);
     else if (a.kind === 'mindmap') groups.mindmap.push(a);
-    else groups.docs.push(a); // report, notes, research
+    else groups.docs.push(a);
   }
-
-  let h = `<button class="back" onclick="location.hash=''">‹ All notebooks</button>
-    <h2 style="margin:0 0 4px;font-size:19px">${esc(nb.title)}</h2>
-    ${nb.description ? `<p style="margin:0 0 6px;color:var(--ink2);font-size:13.5px">${esc(nb.description)}</p>` : ''}`;
-
   const artCard = (a, body) => `<div class="card"><h3>${esc(a.title)}<span class="pill">${a.kind}</span></h3>${body}</div>`;
-
+  let h = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+      <button class="btn btn-primary write-only" id="gen-open">＋ Generate</button></div>
+    <div id="jobs"></div>`;
   if (groups.audio.length) {
     h += `<div class="sec">Audio overviews</div>`;
-    for (const a of groups.audio) {
-      h += artCard(a, `
-        <audio controls preload="none" data-title="${esc(a.title)}"
-          src="${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio"></audio>
-        <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
-    }
+    for (const a of groups.audio) h += artCard(a, `
+      <audio controls preload="none" data-title="${esc(a.title)}"
+        src="${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio"></audio>
+      <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
   }
   if (groups.docs.length) {
     h += `<div class="sec">Documents</div>`;
-    for (const a of groups.docs)
-      h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+    for (const a of groups.docs) h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
   }
   if (groups.flashcards.length) {
     h += `<div class="sec">Flashcards</div>`;
@@ -279,25 +555,82 @@ async function renderNotebook(id) {
     h += `<div class="sec">Mind maps</div>`;
     for (const a of groups.mindmap) h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
   }
-  if (nb.sources.length) {
-    h += `<div class="sec">Sources · ${nb.sources.length}</div>`;
-    h += nb.sources.map(s => `<div class="card"><p>📄 ${esc(s.title)}</p></div>`).join('');
-  }
-  shell(h, esc(nb.title));
+  if (!nb.artifacts.length) h += `<p class="empty">${SCOPE !== 'full' ? 'Nothing here yet.' : 'Nothing here yet — tap ＋ Generate to create something from your sources.'}</p>`;
+  h += '<div id="sheetroot"></div>';
+  pane.innerHTML = h;
 
-  // Lazy-load interactive bodies on first tap.
-  $app.querySelectorAll('[data-doc]').forEach(el => el.parentElement.addEventListener('click', () => loadDoc(el), { once: true }));
-  $app.querySelectorAll('[data-fc]').forEach(el => el.parentElement.addEventListener('click', () => loadCards(el), { once: true }));
-  $app.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
-  $app.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
+  pane.querySelectorAll('[data-doc]').forEach(el => el.parentElement.addEventListener('click', () => loadDoc(el), { once: true }));
+  pane.querySelectorAll('[data-fc]').forEach(el => el.parentElement.addEventListener('click', () => loadCards(el), { once: true }));
+  pane.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
+  pane.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
     if (d.open) { const el = d.querySelector('[data-script]'); if (el && !el.dataset.done) loadScript(el); }
   }));
-  // Lock-screen media controls
-  $app.querySelectorAll('audio').forEach(a => a.addEventListener('play', () => {
-    if ('mediaSession' in navigator) {
+  pane.querySelectorAll('audio').forEach(a => a.addEventListener('play', () => {
+    if ('mediaSession' in navigator)
       navigator.mediaSession.metadata = new MediaMetadata({ title: a.dataset.title || 'Audio overview', artist: nb.title, album: 'BrewLM' });
-    }
   }));
+
+  pane.querySelector('#gen-open').onclick = () => generateSheet(pane, nb);
+}
+
+function generateSheet(pane, nb) {
+  const root = pane.querySelector('#sheetroot');
+  let picked = null;
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>Generate</h3>
+    <div class="chips" id="tools">
+      ${GEN_TOOLS.map(t => `<span class="chip" data-kind="${t.kind}">${t.label}</span>`).join('')}
+    </div>
+    <div id="optrows"></div>
+    <div style="margin-top:6px">
+      <button class="btn btn-primary" id="go" disabled>Generate</button>
+      <button class="btn" id="cancel">Cancel</button>
+    </div></div></div>`;
+  const close = () => root.innerHTML = '';
+  root.querySelector('#cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  const go = root.querySelector('#go');
+  root.querySelectorAll('[data-kind]').forEach(chip => chip.onclick = () => {
+    root.querySelectorAll('[data-kind]').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    picked = GEN_TOOLS.find(t => t.kind === chip.dataset.kind);
+    root.querySelector('#optrows').innerHTML = picked.opts.map(([key, vals]) => {
+      if (vals === 'text') {
+        return `<input class="field" data-opt="${key}" placeholder="${key === 'topic' ? 'Topic to research…' : 'Focus (optional)…'}">`;
+      }
+      const def = GEN_OPT_DEFAULT[key] ?? 0;
+      return `<div class="chips" data-opt-group="${key}">${vals.map((v, i) =>
+        `<span class="chip ${i === def ? 'active' : ''}" data-val="${v}">${v}</span>`).join('')}</div>`;
+    }).join('');
+    root.querySelectorAll('[data-opt-group] .chip').forEach(c => c.onclick = () => {
+      c.parentElement.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+    });
+    go.disabled = false;
+  });
+  go.onclick = async () => {
+    if (!picked) return;
+    const options = {};
+    for (const [key, vals] of picked.opts) {
+      options[key] = vals === 'text'
+        ? root.querySelector(`[data-opt="${key}"]`)?.value.trim() || ''
+        : root.querySelector(`[data-opt-group="${key}"] .chip.active`)?.dataset.val || '';
+    }
+    if (picked.kind === 'research' && !options.topic) { alert('Research needs a topic.'); return; }
+    close();
+    try {
+      const { job_id } = await post('/generate', { notebook_id: nb.id, kind: picked.kind, options });
+      const jobsEl = pane.querySelector('#jobs');
+      jobsEl.insertAdjacentHTML('afterbegin',
+        `<div class="job-pill" id="job-${job_id}">⏳ <strong>${picked.label}</strong> — <span class="p">Queued…</span></div>`);
+      activeJobs[job_id] = { label: picked.label, el: document.getElementById(`job-${job_id}`) };
+      const job = await pollJob(job_id, picked.kind === 'audio' || picked.kind === 'research' ? 600 : 180);
+      document.getElementById(`job-${job_id}`)?.remove();
+      delete activeJobs[job_id];
+      if (job.status !== 'done') alert(job.result || 'Generation failed.');
+      renderNotebook(nb.id);
+    } catch (e) { alert(e.message); renderNotebook(nb.id); }
+  };
 }
 
 async function loadDoc(el) {
@@ -325,7 +658,7 @@ async function loadScript(el) {
     const d = a.data;
     let script = '';
     if (typeof d === 'object' && d) {
-      if (Array.isArray(d.script))       // [{speaker, text}, …] turns
+      if (Array.isArray(d.script))
         script = d.script.map(t => `**${t.speaker}:** ${t.text}`).join('\n');
       else if (typeof d.script === 'string') script = d.script;
     }
@@ -342,10 +675,10 @@ async function loadCards(el) {
   } catch (e) { return el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
   if (!Array.isArray(cards) || !cards.length) return el.innerHTML = '<p class="empty">No cards.</p>';
   el.innerHTML = cards.map(c => `
-    <button class="card flip" style="min-height:92px" onclick="this.classList.toggle('flipped')">
+    <button class="card flip" onclick="this.classList.toggle('flipped')">
       <span class="inner">
-        <span class="face">${esc(c.front)}<br><small style="color:var(--ink3)">tap to flip</small></span>
-        <span class="back-face" style="color:var(--ink2)">${esc(c.back)}</span>
+        <span class="face">${esc(c.front)}<span class="hint">tap to flip</span></span>
+        <span class="face back-face">${esc(c.back)}</span>
       </span>
     </button>`).join('');
 }
@@ -386,14 +719,64 @@ async function loadQuiz(el) {
   }));
 }
 
+/* ------------------------------ sources tab ----------------------------- */
+function renderSourcesTab(pane, nb, st) {
+  let h = `
+    <div class="write-only">
+    <div class="sec">Add a source</div>
+    <div class="card" style="cursor:default">
+      <input class="field" id="src-title" placeholder="Note title (optional)">
+      <textarea class="field" id="src-text" placeholder="Paste or write a note…"></textarea>
+      <button class="btn btn-primary" id="src-add">Add note</button>
+    </div>
+    <div class="card" style="cursor:default">
+      <input class="field" id="src-url" placeholder="https://… — fetch a webpage into sources">
+      <button class="btn btn-primary" id="src-fetch">Fetch link</button>
+    </div>
+    </div>
+    <div class="sec">Sources · ${nb.sources.length}</div>
+    ${nb.sources.map(s => `<div class="card src-item"><p class="t">📄 ${esc(s.title)}</p>
+      <span class="date">${esc(s.type)} · ${fmtDate(s.created_at)}</span></div>`).join('') || '<p class="empty">No sources yet.</p>'}`;
+  pane.innerHTML = h;
+
+  pane.querySelector('#src-add').onclick = async (e) => {
+    const text = pane.querySelector('#src-text').value.trim();
+    if (!text) return;
+    e.target.disabled = true;
+    try {
+      await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/text`, {
+        title: pane.querySelector('#src-title').value.trim(), text });
+      renderNotebook(nb.id);
+    } catch (err) { alert(err.message); e.target.disabled = false; }
+  };
+  pane.querySelector('#src-fetch').onclick = async (e) => {
+    const url = pane.querySelector('#src-url').value.trim();
+    if (!url) return;
+    e.target.disabled = true; e.target.textContent = 'Fetching…';
+    try {
+      await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url });
+      renderNotebook(nb.id);
+    } catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = 'Fetch link'; }
+  };
+}
+
 /* --------------------------------- router -------------------------------- */
 function route() {
+  if (MODE === 'p') return renderPairing();
   const h = location.hash;
   if (h.startsWith('#nb/')) renderNotebook(decodeURIComponent(h.slice(4)));
   else renderHome();
 }
-window.addEventListener('hashchange', route);
-initTheme().then(route);
+window.addEventListener('hashchange', () => {
+  document.getElementById('composer')?.remove();
+  route();
+});
+
+(async () => {
+  await initTheme();
+  if (MODE === 'd' && !(await guardDevice())) return;
+  route();
+})();
 </script>
 </body>
 </html>
