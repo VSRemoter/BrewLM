@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#fafafa">
+<meta name="referrer" content="no-referrer">
+<title>BrewLM</title>
+<style>
+  :root {
+    /* Overridden by JS theme switcher; defaults = "original" (desktop default). */
+    --bg: #fafafa; --panel: #ffffff; --panel2: #eeeeee; --edge: #e5e5e5;
+    --ink: #171717; --ink2: #525252; --ink3: #8a8a8a; --accent: #171717;
+    --good: #15803d; --bad: #dc2626;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    transition: background .2s, color .2s; }
+  #app { max-width: 680px; margin: 0 auto; padding: 14px 14px 110px;
+    padding-top: calc(14px + env(safe-area-inset-top)); }
+  .brand { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px; }
+  .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  .brand h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  .brand .live { margin-left: auto; font-size: 11px; color: var(--accent);
+    border: 1px solid var(--edge); padding: 3px 8px; border-radius: 999px; }
+  .search { width: 100%; border: 1px solid var(--edge); background: var(--panel);
+    color: var(--ink); border-radius: 999px; padding: 10px 16px; font-size: 15px;
+    outline: none; margin-bottom: 14px; }
+  .search::placeholder { color: var(--ink3); }
+  .search:focus { border-color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 14px;
+    padding: 14px 16px; margin-bottom: 12px; display: block; width: 100%; text-align: left;
+    color: var(--ink); cursor: pointer; }
+  .card:active { background: var(--panel2); }
+  .card h3 { margin: 0 0 4px; font-size: 16px; }
+  .card p { margin: 0; color: var(--ink2); font-size: 13px; }
+  .card .date { color: var(--ink3); font-size: 11.5px; margin-top: 6px; display: block; }
+  .back { color: var(--accent); background: none; border: none; font-size: 15px;
+    padding: 8px 0; margin-bottom: 6px; cursor: pointer; }
+  .sec { color: var(--ink3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em;
+    margin: 20px 0 8px; }
+  .pill { display: inline-block; font-size: 10.5px; color: var(--accent); border: 1px solid var(--edge);
+    border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 2px; }
+  audio { width: 100%; margin-top: 10px; display: block; }
+  details { margin-top: 8px; }
+  summary { color: var(--accent); font-size: 13.5px; cursor: pointer; }
+  .body-md { font-size: 14.5px; color: var(--ink); }
+  .body-md h1, .body-md h2, .body-md h3 { margin: 16px 0 6px; line-height: 1.25; }
+  .body-md h1 { font-size: 19px; } .body-md h2 { font-size: 17px; } .body-md h3 { font-size: 15px; }
+  .body-md p { margin: 8px 0; color: var(--ink2); }
+  .body-md a { color: var(--accent); }
+  .body-md code { background: var(--panel2); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+  .body-md pre { background: var(--panel2); border: 1px solid var(--edge); border-radius: 10px;
+    padding: 10px; overflow-x: auto; font-size: 12.5px; }
+  .body-md pre code { background: none; padding: 0; }
+  .body-md ul, .body-md ol { margin: 8px 0; padding-left: 22px; color: var(--ink2); }
+  .body-md li { margin: 3px 0; }
+  .body-md blockquote { border-left: 3px solid var(--edge); margin: 8px 0; padding-left: 12px; color: var(--ink3); }
+  .flip { perspective: 600px; }
+  .flip .inner { transition: transform .3s; transform-style: preserve-3d; position: relative; }
+  .flip.flipped .inner { transform: rotateY(180deg); }
+  .flip .face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .flip .back-face { position: absolute; inset: 0; transform: rotateY(180deg); display: flex;
+    align-items: center; justify-content: center; }
+  .q-opt { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px;
+    border-radius: 10px; border: 1px solid var(--edge); background: var(--panel2);
+    color: var(--ink); font-size: 14.5px; cursor: pointer; }
+  .q-opt.correct { border-color: var(--good); background: rgba(94,166,114,.15); }
+  .q-opt.wrong { border-color: var(--bad); background: rgba(201,106,94,.15); }
+  .q-exp { margin-top: 8px; font-size: 13px; color: var(--ink2); border-top: 1px dashed var(--edge);
+    padding-top: 8px; }
+  .empty { color: var(--ink3); font-size: 13.5px; }
+  .err { color: var(--bad); padding: 30px 0; text-align: center; }
+  .score { float: right; font-size: 12px; color: var(--accent); }
+  /* Theme dock */
+  .themes { position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 50;
+    display: flex; gap: 9px; padding: 9px 12px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--edge);
+    box-shadow: 0 6px 24px rgba(0,0,0,.22); }
+  .tdot { width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; padding: 2px; background-clip: content-box; }
+  .tdot.active { border-color: var(--accent); transform: scale(1.12); }
+</style>
+</head>
+<body>
+<div id="app">Loading…</div>
+<script>
+"use strict";
+const BASE = location.pathname.replace(/\/+$/, ''); // "/s/<token>"
+const $app = document.getElementById('app');
+const api = (p) => fetch(`${BASE}/api${p}`).then(r => {
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+});
+
+/* ------------------------------- theming -------------------------------- */
+/* Mirrors the desktop palettes in src/index.css. panel2 ≈ edge-soft. */
+const M_THEMES = {
+  original: { name:'Original', scheme:'light', font:null, v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#8a8a8a', accent:'#171717' } },
+  midnight: { name:'Midnight', scheme:'dark', font:null, v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a1a1aa', ink3:'#6e6e78', accent:'#f4f4f5' } },
+  forest:   { name:'Forest',   scheme:'dark', font:null, v:{ bg:'#0c1410', panel:'#121f18', panel2:'#192b21', edge:'#24402f', ink:'#e8f2ea', ink2:'#9cb8a6', ink3:'#64826f', accent:'#3ecf8e' } },
+  ocean:    { name:'Ocean',    scheme:'dark', font:null, v:{ bg:'#081120', panel:'#0f1c31', panel2:'#16283f', edge:'#223a5c', ink:'#e7effc', ink2:'#9ab1d1', ink3:'#61789c', accent:'#4da2ff' } },
+  copper:   { name:'Copper',   scheme:'dark', font:null, v:{ bg:'#170e08', panel:'#221509', panel2:'#2f1e0e', edge:'#432c17', ink:'#f6ebdf', ink2:'#c9a88c', ink3:'#92725a', accent:'#e8853d' } },
+  wine:     { name:'Wine',     scheme:'dark', font:null, v:{ bg:'#140a10', panel:'#1f1119', panel2:'#2b161f', edge:'#41232f', ink:'#f7e9f0', ink2:'#c09aac', ink3:'#8a6175', accent:'#d85674' } },
+  rose:     { name:'Rose',     scheme:'light',font:null, v:{ bg:'#fdf1f6', panel:'#ffffff', panel2:'#f8e2ec', edge:'#f2d3e1', ink:'#3f1a2d', ink2:'#93536f', ink3:'#c18ba6', accent:'#ec4899' } },
+  matrix:   { name:'Matrix',   scheme:'dark', font:'"SF Mono", ui-monospace, Menlo, monospace',
+              v:{ bg:'#010603', panel:'#04140b', panel2:'#082014', edge:'#11452a', ink:'#a3f7bf', ink2:'#52b96f', ink3:'#2d7a44', accent:'#22e05c' } },
+};
+const THEME_KEY = 'brewlm-mobile-theme';
+let currentTheme = 'original';
+
+function applyMobileTheme(id, persist) {
+  const t = M_THEMES[id] || M_THEMES.original;
+  currentTheme = M_THEMES[id] ? id : 'original';
+  const root = document.documentElement;
+  for (const [k, val] of Object.entries(t.v)) root.style.setProperty(`--${k}`, val);
+  root.style.colorScheme = t.scheme;
+  document.body.style.fontFamily = t.font || '';
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', t.v.bg);
+  if (persist) try { localStorage.setItem(THEME_KEY, currentTheme); } catch {}
+  document.querySelectorAll('.tdot').forEach(d =>
+    d.classList.toggle('active', d.dataset.theme === currentTheme));
+}
+
+function buildThemeDock() {
+  const dock = document.createElement('div');
+  dock.className = 'themes';
+  for (const [id, t] of Object.entries(M_THEMES)) {
+    const dot = document.createElement('button');
+    dot.className = 'tdot';
+    dot.dataset.theme = id;
+    dot.title = t.name;
+    dot.style.backgroundColor = t.v.accent;
+    dot.onclick = () => applyMobileTheme(id, true);
+    dock.appendChild(dot);
+  }
+  document.body.appendChild(dock);
+}
+
+async function initTheme() {
+  buildThemeDock();
+  const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
+  if (saved && M_THEMES[saved]) return applyMobileTheme(saved, false);
+  try {
+    const { theme } = await api('/preferences');      // follow the desktop's theme
+    applyMobileTheme(M_THEMES[theme] ? theme : 'original', false);
+  } catch { applyMobileTheme('original', false); }
+}
+
+/* ------------------------------- utilities ------------------------------- */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const fmtDate = (ms) => new Date(Number(ms)).toLocaleDateString(undefined,
+  { month: 'short', day: 'numeric', year: 'numeric' });
+
+/* Minimal markdown renderer (headers, lists, bold/italic, code, links, quotes). */
+function md(src) {
+  if (!src) return '';
+  let html = esc(src);
+  html = html.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n+/, '')}</code></pre>`);
+  const lines = html.split('\n');
+  let out = '', list = null;
+  const closeList = () => { if (list) { out += `</${list}>`; list = null; } };
+  for (let line of lines) {
+    if (line.startsWith('<pre>')) { closeList(); out += line + '\n'; continue; }
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)/))) { closeList(); out += `<h${m[1].length}>${m[2]}</h${m[1].length}>\n`; continue; }
+    if ((m = line.match(/^\s*-\s+(.*)/))) { if (list !== 'ul') { closeList(); out += '<ul>'; list = 'ul'; } out += `<li>${m[1]}</li>`; continue; }
+    if ((m = line.match(/^\s*\d+\.\s+(.*)/))) { if (list !== 'ol') { closeList(); out += '<ol>'; list = 'ol'; } out += `<li>${m[1]}</li>`; continue; }
+    closeList();
+    if (line.trim() === '') continue;
+    if (line.startsWith('&gt;')) { out += `<blockquote>${line.slice(4).trim()}</blockquote>\n`; continue; }
+    if (/^-{3,}$/.test(line.trim())) { out += '<hr>'; continue; }
+    out += `<p>${line}</p>\n`;
+  }
+  closeList();
+  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return out;
+}
+
+/* --------------------------------- views --------------------------------- */
+function shell(inner, title) {
+  $app.innerHTML = `
+    <div class="brand"><div class="dot"></div><h1>${title || 'BrewLM'}</h1><span class="live">live from your Mac</span></div>
+    ${inner}`;
+}
+
+/* ---- home: searchable notebook list ---- */
+let homeNotebooks = null;
+
+async function renderHome() {
+  shell(`
+    <input class="search" id="q" type="search" placeholder="Search notebooks…" autocomplete="off">
+    <div id="list"><p class="empty">Loading notebooks…</p></div>`);
+  const $list = document.getElementById('list');
+  const $q = document.getElementById('q');
+
+  const paint = () => {
+    if (!homeNotebooks) return;
+    const q = ($q.value || '').trim().toLowerCase();
+    const rows = !q ? homeNotebooks : homeNotebooks.filter(nb =>
+      nb.title.toLowerCase().includes(q) || (nb.description || '').toLowerCase().includes(q));
+    if (!rows.length) {
+      $list.innerHTML = `<p class="empty">${q ? `No notebooks match “${esc($q.value.trim())}”.` : 'No notebooks yet.'}</p>`;
+      return;
+    }
+    $list.innerHTML = rows.map(nb => `
+      <button class="card" onclick="location.hash='#nb/${encodeURIComponent(nb.id)}'">
+        <h3>${esc(nb.title)}</h3>
+        ${nb.description ? `<p>${esc(nb.description)}</p>` : ''}
+        <span class="date">Updated ${fmtDate(nb.updated_at)}</span>
+      </button>`).join('');
+  };
+  $q.addEventListener('input', paint);
+
+  if (!homeNotebooks) {
+    try { homeNotebooks = (await api('/notebooks')).notebooks; }
+    catch (e) {
+      $list.innerHTML = `<p class="err">Couldn't load notebooks (${esc(e.message)}).<br>Is BrewLM still running on your Mac?</p>`;
+      return;
+    }
+  }
+  paint();
+}
+
+async function renderNotebook(id) {
+  shell('<p class="empty">Loading…</p>');
+  let nb;
+  try { nb = await api(`/notebooks/${encodeURIComponent(id)}`); }
+  catch (e) { return shell(`<p class="err">${esc(e.message)}</p>`); }
+
+  const groups = { audio: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
+  for (const a of nb.artifacts) {
+    if (a.kind === 'audio') groups.audio.push(a);
+    else if (a.kind === 'flashcards') groups.flashcards.push(a);
+    else if (a.kind === 'quiz') groups.quiz.push(a);
+    else if (a.kind === 'mindmap') groups.mindmap.push(a);
+    else groups.docs.push(a); // report, notes, research
+  }
+
+  let h = `<button class="back" onclick="location.hash=''">‹ All notebooks</button>
+    <h2 style="margin:0 0 4px;font-size:19px">${esc(nb.title)}</h2>
+    ${nb.description ? `<p style="margin:0 0 6px;color:var(--ink2);font-size:13.5px">${esc(nb.description)}</p>` : ''}`;
+
+  const artCard = (a, body) => `<div class="card"><h3>${esc(a.title)}<span class="pill">${a.kind}</span></h3>${body}</div>`;
+
+  if (groups.audio.length) {
+    h += `<div class="sec">Audio overviews</div>`;
+    for (const a of groups.audio) {
+      h += artCard(a, `
+        <audio controls preload="none" data-title="${esc(a.title)}"
+          src="${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio"></audio>
+        <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
+    }
+  }
+  if (groups.docs.length) {
+    h += `<div class="sec">Documents</div>`;
+    for (const a of groups.docs)
+      h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+  }
+  if (groups.flashcards.length) {
+    h += `<div class="sec">Flashcards</div>`;
+    for (const a of groups.flashcards) h += artCard(a, `<div data-fc="${esc(a.id)}"><p class="empty">Tap to load deck…</p></div>`);
+  }
+  if (groups.quiz.length) {
+    h += `<div class="sec">Quizzes</div>`;
+    for (const a of groups.quiz) h += artCard(a, `<div data-quiz="${esc(a.id)}"><p class="empty">Tap to load quiz…</p></div>`);
+  }
+  if (groups.mindmap.length) {
+    h += `<div class="sec">Mind maps</div>`;
+    for (const a of groups.mindmap) h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+  }
+  if (nb.sources.length) {
+    h += `<div class="sec">Sources · ${nb.sources.length}</div>`;
+    h += nb.sources.map(s => `<div class="card"><p>📄 ${esc(s.title)}</p></div>`).join('');
+  }
+  shell(h, esc(nb.title));
+
+  // Lazy-load interactive bodies on first tap.
+  $app.querySelectorAll('[data-doc]').forEach(el => el.parentElement.addEventListener('click', () => loadDoc(el), { once: true }));
+  $app.querySelectorAll('[data-fc]').forEach(el => el.parentElement.addEventListener('click', () => loadCards(el), { once: true }));
+  $app.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
+  $app.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
+    if (d.open) { const el = d.querySelector('[data-script]'); if (el && !el.dataset.done) loadScript(el); }
+  }));
+  // Lock-screen media controls
+  $app.querySelectorAll('audio').forEach(a => a.addEventListener('play', () => {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: a.dataset.title || 'Audio overview', artist: nb.title, album: 'BrewLM' });
+    }
+  }));
+}
+
+async function loadDoc(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.doc)}`);
+    let text;
+    if (a.kind === 'research' && typeof a.data === 'object') {
+      text = md(a.data.md) + (a.data.sources?.length
+        ? `<div class="sec">Sources read</div>` + a.data.sources.map(s =>
+            `<p style="font-size:13px"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a></p>`).join('')
+        : '');
+    } else {
+      text = md(typeof a.data === 'string' ? a.data : '```' + JSON.stringify(a.data, null, 2) + '```');
+    }
+    el.innerHTML = text || '<p class="empty">Empty.</p>';
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function loadScript(el) {
+  el.dataset.done = '1';
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.script)}`);
+    const d = a.data;
+    let script = '';
+    if (typeof d === 'object' && d) {
+      if (Array.isArray(d.script))       // [{speaker, text}, …] turns
+        script = d.script.map(t => `**${t.speaker}:** ${t.text}`).join('\n');
+      else if (typeof d.script === 'string') script = d.script;
+    }
+    el.innerHTML = md(script) || '<p class="empty">No script saved.</p>';
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function loadCards(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  let cards = [];
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.fc)}`);
+    cards = typeof a.data === 'string' ? JSON.parse(a.data) : a.data;
+  } catch (e) { return el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (!Array.isArray(cards) || !cards.length) return el.innerHTML = '<p class="empty">No cards.</p>';
+  el.innerHTML = cards.map(c => `
+    <button class="card flip" style="min-height:92px" onclick="this.classList.toggle('flipped')">
+      <span class="inner">
+        <span class="face">${esc(c.front)}<br><small style="color:var(--ink3)">tap to flip</small></span>
+        <span class="back-face" style="color:var(--ink2)">${esc(c.back)}</span>
+      </span>
+    </button>`).join('');
+}
+
+async function loadQuiz(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  let qs = [];
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.quiz)}`);
+    qs = typeof a.data === 'string' ? JSON.parse(a.data) : a.data;
+  } catch (e) { return el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (!Array.isArray(qs) || !qs.length) return el.innerHTML = '<p class="empty">No questions.</p>';
+  let done = 0, right = 0;
+  el.innerHTML = `<span class="score" data-score></span>` + qs.map((q, i) => `
+    <div class="card" style="cursor:default">
+      <p><strong>${i + 1}.</strong> ${esc(q.question)}</p>
+      ${q.options.map((o, j) => `<button class="q-opt" data-q="${i}" data-j="${j}">${esc(o)}</button>`).join('')}
+      <div class="q-exp" data-exp="${i}" hidden></div>
+    </div>`).join('');
+  const scoreEl = el.querySelector('[data-score]');
+  const upd = () => scoreEl.textContent = done ? `Score: ${right}/${done}` : '';
+  upd();
+  el.querySelectorAll('.q-opt').forEach(btn => btn.addEventListener('click', () => {
+    const qEl = btn.closest('.card');
+    if (qEl.dataset.answered) return;
+    qEl.dataset.answered = '1';
+    const q = qs[Number(btn.dataset.q)];
+    const isRight = Number(btn.dataset.j) === Number(q.answerIndex);
+    done++; if (isRight) right++;
+    qEl.querySelectorAll('.q-opt').forEach(b => {
+      if (Number(b.dataset.j) === Number(q.answerIndex)) b.classList.add('correct');
+    });
+    if (!isRight) btn.classList.add('wrong');
+    const exp = qEl.querySelector(`[data-exp]`);
+    exp.hidden = false;
+    exp.textContent = q.explanation || '';
+    upd();
+  }));
+}
+
+/* --------------------------------- router -------------------------------- */
+function route() {
+  const h = location.hash;
+  if (h.startsWith('#nb/')) renderNotebook(decodeURIComponent(h.slice(4)));
+  else renderHome();
+}
+window.addEventListener('hashchange', route);
+initTheme().then(route);
+</script>
+</body>
+</html>

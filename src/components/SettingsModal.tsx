@@ -1,4 +1,6 @@
-import { Check, ExternalLink, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { Check, Copy, ExternalLink, Smartphone, Square, X } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState } from "react";
 import {
   ELEVENLABS_VOICE_PRESETS,
@@ -16,7 +18,16 @@ import {
 import { FONTS, chooseFont } from "../lib/fonts";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Provider, Settings, TtsProvider } from "../lib/types";
-import { Modal, PrimaryButton } from "./ui";
+import { GhostButton, Modal, PrimaryButton } from "./ui";
+
+/** Mirrors Rust `ShareInfo` (server.rs). */
+type ShareInfo = {
+  url: string | null;
+  token: string;
+  port: number;
+  tunnel: boolean;
+  warning: string | null;
+};
 
 const KEY_FIELD: Record<Provider, keyof Settings> = {
   openrouter: "openrouterKey",
@@ -68,10 +79,41 @@ function VoiceField({
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [modelList, setModelList] = useState<string[]>([]);
+  const [share, setShare] = useState<ShareInfo | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     loadSettings().then(setSettings);
+    invoke<ShareInfo | null>("share_status")
+      .then((s) => setShare(s))
+      .catch(() => setShare(null));
   }, []);
+
+  const shareUrl = share?.url ? `${share.url}/s/${share.token}/` : null;
+
+  const startShare = async () => {
+    setStarting(true);
+    try {
+      setShare(await invoke<ShareInfo>("start_sharing"));
+    } catch (e) {
+      console.error("start_sharing failed:", e);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const stopShare = async () => {
+    await invoke("stop_sharing").catch(() => {});
+    setShare(null);
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    await navigator.clipboard.writeText(shareUrl).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const provider = settings?.provider ?? "openrouter";
 
@@ -554,6 +596,70 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               </p>
             </div>
           )}
+        </div>
+
+        {/* Phone & devices */}
+        <div>
+          <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
+            Pair your phone
+          </label>
+          <div className="rounded-lg border border-edge bg-panel p-3.5">
+            {share === null && (
+              <>
+                <p className="mb-2.5 text-[12px] leading-relaxed text-ink-3">
+                  Listen to audio overviews and read Studio outputs on your phone — from anywhere,
+                  on any network. BrewLM opens a secure tunnel from this Mac and shows a QR code to
+                  scan. Your data stays on this machine; only you have the link.
+                </p>
+                <GhostButton onClick={startShare} disabled={starting}>
+                  <span className="inline-flex items-center gap-2">
+                    <Smartphone size={14} />
+                    {starting ? "Starting secure tunnel…" : "Pair a device"}
+                  </span>
+                </GhostButton>
+              </>
+            )}
+            {share !== null && (
+              <div className="flex flex-col items-center gap-2.5">
+                {shareUrl ? (
+                  <>
+                    <div className="rounded-lg bg-white p-2">
+                      <QRCodeSVG value={shareUrl} size={168} />
+                    </div>
+                    <p className="text-center text-[11.5px] leading-relaxed text-ink-3">
+                      Scan with your phone's camera — works on cellular, not just Wi-Fi.
+                    </p>
+                    <p className="max-w-full break-all text-center font-mono text-[10.5px] text-ink-3">
+                      {shareUrl}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-center text-[12px] leading-relaxed text-ink-3">
+                    {share.warning ?? "Waiting for the tunnel URL… close and try again."}
+                  </p>
+                )}
+                {share.warning && shareUrl && (
+                  <p className="text-center text-[11px] text-ink-3">{share.warning}</p>
+                )}
+                <div className="flex items-center gap-2 pt-1">
+                  {shareUrl && (
+                    <GhostButton onClick={copyShareUrl}>
+                      <span className="inline-flex items-center gap-2">
+                        {copied ? <Check size={14} /> : <Copy size={14} />}
+                        {copied ? "Copied" : "Copy link"}
+                      </span>
+                    </GhostButton>
+                  )}
+                  <GhostButton onClick={stopShare}>
+                    <span className="inline-flex items-center gap-2">
+                      <Square size={13} />
+                      Stop sharing
+                    </span>
+                  </GhostButton>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-1">
