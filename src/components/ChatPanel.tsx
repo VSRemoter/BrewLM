@@ -4,7 +4,6 @@ import {
   ArrowUpFromLine,
   AudioLines,
   BookOpen,
-  Coffee,
   Copy,
   FileText,
   FolderClosed,
@@ -58,6 +57,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
+import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
 import { BrewingStatus, IconButton } from "./ui";
@@ -1428,7 +1428,7 @@ export default function ChatPanel({
         {messages.length === 0 && streaming === null ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-accent">
-              <Coffee size={18} strokeWidth={1.8} className="text-accent-ink" />
+              <BrewIcon size={18} strokeWidth={1.8} onAccent className="text-accent-ink" />
             </div>
             <p className="max-w-md text-[15px] font-medium italic leading-relaxed text-ink-2">
               {`“${emptyQuote.text}”`}
