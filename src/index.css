@@ -268,6 +268,130 @@
   box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
 
+/* --------------------------------- Lilac --------------------------------- */
+[data-theme="lilac"] {
+  color-scheme: light;
+  --color-canvas: #f5f3fc;
+  --color-panel: #ffffff;
+  --color-edge: #e4ddf6;
+  --color-edge-soft: #ece7fa;
+  --color-ink: #2d2342;
+  --color-ink-2: #6e5f99;
+  --color-ink-3: #a89ccc;
+  --color-accent: #7c5cff;
+  --color-accent-ink: #ffffff;
+  --color-hover: #eae5fb;
+  --color-hover-soft: #f1edfc;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f3;
+  --color-danger-edge: #f0b6bf;
+  --color-ok: #0ca678;
+  --color-ok-bg: #eafaf4;
+  --color-ok-edge: #7edcb9;
+  --color-warn: #b45309;
+  --color-warn-bg: #fff8e6;
+  --color-warn-edge: #f3cd72;
+  --color-link: #6d43f0;
+  --color-select: #e2d8fb;
+  --color-scroll: #d3c8f2;
+  --color-code-bg: #f0ecfb;
+  --color-pre-bg: #2a1d4d;
+  --color-pre-ink: #e6dcff;
+}
+
+/* -------------------------------- Lagoon --------------------------------- */
+[data-theme="lagoon"] {
+  color-scheme: light;
+  --color-canvas: #effaf8;
+  --color-panel: #ffffff;
+  --color-edge: #d3ece8;
+  --color-edge-soft: #e2f3f0;
+  --color-ink: #123b39;
+  --color-ink-2: #4d7c76;
+  --color-ink-3: #93bdb6;
+  --color-accent: #0db5a6;
+  --color-accent-ink: #ffffff;
+  --color-hover: #dcf1ee;
+  --color-hover-soft: #e8f6f4;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f3;
+  --color-danger-edge: #f0b6bf;
+  --color-ok: #0c8a5f;
+  --color-ok-bg: #e6f8f0;
+  --color-ok-edge: #7edcb9;
+  --color-warn: #b45309;
+  --color-warn-bg: #fff8e6;
+  --color-warn-edge: #f3cd72;
+  --color-link: #0a94ad;
+  --color-select: #cdeae5;
+  --color-scroll: #bfe0da;
+  --color-code-bg: #e9f6f4;
+  --color-pre-bg: #0f3a36;
+  --color-pre-ink: #c9f0ea;
+}
+
+/* --------------------------------- Sunset -------------------------------- */
+[data-theme="sunset"] {
+  color-scheme: dark;
+  --color-canvas: #1f1016;
+  --color-panel: #2a161d;
+  --color-edge: #46222d;
+  --color-edge-soft: #331a22;
+  --color-ink: #f7e8dd;
+  --color-ink-2: #c4a0a5;
+  --color-ink-3: #8a5f68;
+  --color-accent: #ff9e42;
+  --color-accent-ink: #2a1200;
+  --color-hover: #3a1f29;
+  --color-hover-soft: #2c1820;
+  --color-danger: #ff6b6b;
+  --color-danger-bg: #2c1114;
+  --color-danger-edge: #5a1e22;
+  --color-ok: #3ecf8e;
+  --color-ok-bg: #0c2317;
+  --color-ok-edge: #1d4d34;
+  --color-warn: #ffd166;
+  --color-warn-bg: #2b2110;
+  --color-warn-edge: #544514;
+  --color-link: #ff7fa8;
+  --color-select: #472430;
+  --color-scroll: #572935;
+  --color-code-bg: #33191f;
+  --color-pre-bg: #150a0e;
+  --color-pre-ink: #ffd9c2;
+}
+
+/* --------------------------------- Candy --------------------------------- */
+[data-theme="candy"] {
+  color-scheme: dark;
+  --color-canvas: #0d0a1f;
+  --color-panel: #17122e;
+  --color-edge: #2b2252;
+  --color-edge-soft: #1f1840;
+  --color-ink: #efeaff;
+  --color-ink-2: #a99bdd;
+  --color-ink-3: #6c5fa8;
+  --color-accent: #ff6bcb;
+  --color-accent-ink: #2b0a20;
+  --color-hover: #241c4a;
+  --color-hover-soft: #1b1538;
+  --color-danger: #ff6b81;
+  --color-danger-bg: #2a0e18;
+  --color-danger-edge: #571c2c;
+  --color-ok: #3edea6;
+  --color-ok-bg: #082116;
+  --color-ok-edge: #16523d;
+  --color-warn: #ffd166;
+  --color-warn-bg: #27200c;
+  --color-warn-edge: #574c17;
+  --color-link: #4dd8ff;
+  --color-select: #332772;
+  --color-scroll: #3f3379;
+  --color-code-bg: #201a44;
+  --color-pre-bg: #070513;
+  --color-pre-ink: #e8d8ff;
+}
+
 /* ============================ base application ============================ */
 
 html,

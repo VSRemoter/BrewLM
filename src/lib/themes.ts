@@ -57,6 +57,30 @@ export const THEMES: ThemeDef[] = [
     blurb: "Phosphor green hacker",
     swatch: { canvas: "#010603", panel: "#04140b", accent: "#22e05c", ink: "#a3f7bf" },
   },
+  {
+    id: "lilac",
+    name: "Lilac",
+    blurb: "Soft violet daytime",
+    swatch: { canvas: "#f5f3fc", panel: "#ffffff", accent: "#7c5cff", ink: "#2d2342" },
+  },
+  {
+    id: "lagoon",
+    name: "Lagoon",
+    blurb: "Breezy aqua white",
+    swatch: { canvas: "#effaf8", panel: "#ffffff", accent: "#0db5a6", ink: "#123b39" },
+  },
+  {
+    id: "sunset",
+    name: "Sunset",
+    blurb: "Plum dusk, amber glow",
+    swatch: { canvas: "#1f1016", panel: "#2a161d", accent: "#ff9e42", ink: "#f7e8dd" },
+  },
+  {
+    id: "candy",
+    name: "Candy",
+    blurb: "Neon pink on indigo",
+    swatch: { canvas: "#0d0a1f", panel: "#17122e", accent: "#ff6bcb", ink: "#efeaff" },
+  },
 ];
 
 export const DEFAULT_THEME = "original";
