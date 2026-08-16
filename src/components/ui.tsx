@@ -1,5 +1,6 @@
-import { Coffee, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import { BrewIcon } from "./BrewIcon";
 
 export function Modal({
   title,
@@ -148,7 +149,7 @@ export function BrewingStatus() {
   }, []);
   return (
     <span className="inline-flex items-center gap-1.5 py-1">
-      <Coffee size={13} strokeWidth={2} className="shrink-0 animate-pulse text-accent" />
+      <BrewIcon size={13} strokeWidth={2} animateSteam className="shrink-0 text-accent" />
       <span
         key={i}
         className="brew-word bg-linear-to-r from-accent via-ink to-accent bg-[length:200%_100%] bg-clip-text text-[13px] font-medium italic text-transparent"

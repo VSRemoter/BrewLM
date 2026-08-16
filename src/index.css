@@ -486,6 +486,27 @@ body {
     om-shimmer 2.2s linear infinite;
 }
 
+@keyframes brew-steam-rise {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(-1.2px);
+    opacity: 0.55;
+  }
+}
+.brew-steam {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: brew-steam-rise 1.8s ease-in-out infinite;
+}
+.brew-steam-b {
+  animation-delay: 0.35s;
+  animation-duration: 2.1s;
+}
+
 @keyframes om-pulse-dot {
   0%,
   80%,
