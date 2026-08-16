@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import SettingsModal from "./components/SettingsModal";
+import { startJobRunner } from "./lib/jobRunner";
 import {
   cloneNotebook,
   createFolder,
@@ -55,6 +56,7 @@ export default function App() {
     (async () => {
       try {
         await getDb();
+        startJobRunner(); // drains phone-queued chat/generate jobs
         const s = await loadSettings();
         applyTheme(s.theme);
         applyFont(s.font);

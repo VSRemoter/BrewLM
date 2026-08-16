@@ -50,6 +50,11 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 - **Themes** — 8 built-in (Original, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix); switch instantly with `/theme <name>`.
 - Model switching per provider with autocomplete and custom model lists.
 
+### Pair your phone
+- **Settings → Pair a device** (or the phone icon in a notebook header) shows a QR code + 6-digit PIN. Scan it from anywhere — cellular included — and a secure tunnel from your Mac pairs the device. No app to install, no account.
+- From the phone: **chat** with cited answers, run **flashcards/quizzes** with grading, **generate** any Studio output (podcast audio included), **add notes/link sources**, create/rename/trash notebooks, and stream **audio overviews** with lock-screen controls.
+- Safety: per-device revocable keys, read-only or full-access scopes, rate limits on LLM actions, soft-delete everywhere, an activity log — and **your API keys never leave the Mac**. Requires BrewLM running on the Mac.
+
 ### Local-first, bring-your-own-keys
 - Provider choice: **OpenRouter**, **OpenAI**, or **Anthropic** — keys stored locally in `~/.brewlm` (app support dir). Optional separate TTS provider (system voices, OpenAI, OpenRouter, ElevenLabs).
 - One SQLite file (`brewlm.db`) holds everything; schema migrations run automatically at startup.
@@ -98,7 +103,7 @@ npm run tauri build
 ```
 Produces a native bundle for your OS in `src-tauri/target/release/bundle/` (`.dmg` on macOS, `.msi`/`.exe` on Windows, `.AppImage`/`.deb` on Linux).
 
-**Maintainers:** pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows, and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
+**Maintainers:** phone pairing tunnels run through [cloudflared](https://github.com/cloudflare/cloudflared) (BSD-3-Clause © Cloudflare), bundled as a Tauri sidecar. Run `bash scripts/fetch-sidecars.sh` once before `tauri build` (the CI release workflow does this automatically). In dev (`tauri dev`) any `cloudflared` on PATH works — e.g. `brew install cloudflared`; Windows builds currently fall back to PATH (see the script header). Pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows, and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
 
 ---
 
@@ -137,8 +142,9 @@ Type `/` in chat to open the palette with autocomplete.
 ## Architecture at a glance
 
 - **Tauri 2 + React 19 + TypeScript + Vite** frontend; Tailwind CSS 4 design system.
-- **SQLite** (`@tauri-apps/plugin-sql`) as the sole data store — notebooks, folders, sources, chats, artifacts, settings, and trash (`trashed_at`) soft-delete.
+- **SQLite** (`@tauri-apps/plugin-sql`) as the sole data store — notebooks, folders, sources, chats, artifacts, settings, paired devices, and trash (`trashed_at`) soft-delete.
 - **LLM calls** happen in the webview via `fetch` with your keys (never proxied); Tauri plugins supply native file dialogs, filesystem access, and CORS-free page fetching.
+- **Phone sharing**: a small embedded web server (`src-tauri/src/server.rs`, axum) serves a pairing/mobile client (`src-tauri/mobile.html`) and a device-key-authenticated API over the local DB; a `cloudflared` quick tunnel makes it reachable anywhere. Phone-issued chat/generate requests land in a `jobs` table that the desktop webview drains (`src/lib/jobRunner.ts`) using the same pipelines as the in-app Studio.
 - Slash commands and the FIFO queue live in `src/components/ChatPanel.tsx`; generation pipelines in `src/lib/studio.ts`, `research.ts`, `llm.ts`, `tts.ts`.
 
 ---

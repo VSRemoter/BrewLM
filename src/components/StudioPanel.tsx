@@ -30,7 +30,7 @@ import {
   type ReportOptions,
 } from "../lib/studio";
 import type { StudioCommand } from "../lib/studioCommands";
-import { synthesizeScript, type ScriptTurn } from "../lib/tts";
+import { parseScript, synthesizeScript } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
 import { buildSystemPrompt } from "./ChatPanel";
@@ -101,21 +101,7 @@ Rules:
 - Spoken language only: no markdown, no headings, no bullet points, no emojis, no stage directions or sound-effects like [intro music].
 - Conversational and lively: Sam asks questions, reacts, and paraphrases; Alex explains clearly.
 - Open by naming the topic of the sources; close with the 2–3 biggest takeaways.
-- Stay strictly grounded in the sources — no fabricated facts.`;
-
-function parseScript(raw: string): ScriptTurn[] {
-  const turns: ScriptTurn[] = [];
-  for (const line of raw.split("\n")) {
-    const m = line.match(/^\s*[*-]?\s*(Alex|Sam)\s*:\s*(.+?)\s*$/i);
-    if (m && m[2].trim()) {
-      turns.push({
-        speaker: m[1].toLowerCase() === "sam" ? "Sam" : "Alex",
-        text: m[2].replace(/\*\*/g, "").trim(),
-      });
-    }
-  }
-  return turns.slice(0, 24);
-}
+ - Stay strictly grounded in the sources — no fabricated facts.`;
 
 /** Tools with a customize modal (deep research already opens its own). */
 type CustomizeKind = "flashcards" | "quiz" | "mindmap" | "audio" | "report";

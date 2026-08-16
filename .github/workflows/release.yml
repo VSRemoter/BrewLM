@@ -61,6 +61,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Bundles cloudflared as a Tauri sidecar (phone pairing tunnels).
+      - name: Fetch sidecar binaries
+        run: bash scripts/fetch-sidecars.sh
+
       - name: Build app and upload release assets
         uses: tauri-apps/tauri-action@v0
         env:

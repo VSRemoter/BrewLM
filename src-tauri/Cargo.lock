@@ -414,13 +414,15 @@ dependencies = [
 
 [[package]]
 name = "brewlm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
  "rand 0.8.7",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tauri",
  "tauri-build",
