@@ -14,6 +14,8 @@ export interface Notebook {
   folder_id: string;
   /** 0 = live; otherwise the timestamp it was sent to the homepage Trash. */
   trashed_at: number;
+  /** SQLite boolean: 1 = chat answers grounded in sources (default); 0 = free-form. */
+  grounded: number;
   created_at: number;
   updated_at: number;
 }
@@ -38,6 +40,19 @@ export interface Source {
   content: string;
   mime: string | null;
   created_at: number;
+}
+
+/** One retrievable slice of a source (see rag.ts). Embedding is a JSON number[]. */
+export interface SourceChunk {
+  id: string;
+  source_id: string;
+  notebook_id: string;
+  seq: number;
+  /** PDF page the chunk came from, when known. */
+  page: number | null;
+  text: string;
+  /** JSON-serialized embedding vector; "" when indexed with the BM25 fallback. */
+  embedding: string;
 }
 
 export interface ChatMessage {

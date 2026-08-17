@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceType } from "./types";
+import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceChunk, SourceType } from "./types";
 
 export function uid(): string {
   return crypto.randomUUID();
@@ -34,6 +34,23 @@ async function initDb(): Promise<Database> {
       mime TEXT,
       created_at INTEGER NOT NULL
     )`);
+  // Retrieval index: chunked source text + optional embeddings (see rag.ts).
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS source_chunks (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      notebook_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      page INTEGER,
+      text TEXT NOT NULL,
+      embedding TEXT NOT NULL DEFAULT ''
+    )`);
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_source_chunks_notebook ON source_chunks(notebook_id)"
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_source_chunks_source ON source_chunks(source_id)"
+  );
   await db.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -146,6 +163,9 @@ async function initDb(): Promise<Database> {
     await db.execute("ALTER TABLE notebooks ADD COLUMN chat_bg TEXT NOT NULL DEFAULT ''");
   if (!nbCols.some((c) => c.name === "chat_bg_dim"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN chat_bg_dim INTEGER NOT NULL DEFAULT 55");
+  // notebooks gain grounded (/ground toggle: 1 = answers grounded in sources).
+  if (!nbCols.some((c) => c.name === "grounded"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN grounded INTEGER NOT NULL DEFAULT 1");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -200,6 +220,7 @@ export async function createNotebook(
     chat_bg_dim: 55,
     folder_id: folderId,
     trashed_at: 0,
+    grounded: 1,
     created_at: now,
     updated_at: now,
   };
@@ -245,12 +266,13 @@ export async function cloneNotebook(
     chat_bg_dim: src.chat_bg_dim,
     folder_id: src.folder_id,
     trashed_at: 0,
+    grounded: src.grounded ?? 1,
     created_at: now,
     updated_at: now,
   };
   await d.execute(
-    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.created_at, nb.updated_at]
   );
 
   for (const s of await listSources(srcId)) {
@@ -312,6 +334,21 @@ export async function setNotebookStarred(id: string, starred: boolean): Promise<
   await d.execute("UPDATE notebooks SET starred = $1 WHERE id = $2", [starred ? 1 : 0, id]);
 }
 
+export async function setNotebookGrounded(id: string, grounded: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET grounded = $1 WHERE id = $2", [grounded ? 1 : 0, id]);
+}
+
+/** /ground flag (default 1 for legacy rows); used by the mobile job runner. */
+export async function getNotebookGrounded(id: string): Promise<number> {
+  const d = await getDb();
+  const rows = await d.select<{ grounded: number }[]>(
+    "SELECT grounded FROM notebooks WHERE id = $1",
+    [id]
+  );
+  return rows[0]?.grounded ?? 1;
+}
+
 /** Cover images are cosmetic — like starring, they must not bump updated_at. */
 export async function setNotebookCover(id: string, cover: string): Promise<void> {
   const d = await getDb();
@@ -347,6 +384,7 @@ export async function touchNotebook(id: string): Promise<void> {
 export async function deleteNotebook(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM sources WHERE notebook_id = $1", [id]);
+  await d.execute("DELETE FROM source_chunks WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM messages WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
@@ -461,11 +499,65 @@ export async function updateSource(
     content,
     id,
   ]);
+  // Edited content invalidates its retrieval chunks (re-indexed lazily).
+  await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
 }
 
 export async function deleteSource(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM sources WHERE id = $1", [id]);
+  await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
+}
+
+/* ---------------------------- Source chunks (RAG) ---------------------------- */
+
+/** Replace a source's whole chunk set (re-index). Pass [] to just clear it. */
+export async function replaceChunks(chunks: SourceChunk[]): Promise<void> {
+  if (chunks.length === 0) return;
+  const d = await getDb();
+  await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [chunks[0].source_id]);
+  for (const c of chunks) {
+    await d.execute(
+      "INSERT INTO source_chunks (id, source_id, notebook_id, seq, page, text, embedding) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [c.id, c.source_id, c.notebook_id, c.seq, c.page, c.text, c.embedding]
+    );
+  }
+}
+
+export async function chunksForNotebook(notebookId: string): Promise<SourceChunk[]> {
+  const d = await getDb();
+  return d.select<SourceChunk[]>(
+    "SELECT * FROM source_chunks WHERE notebook_id = $1 ORDER BY source_id, seq",
+    [notebookId]
+  );
+}
+
+export async function chunksForSource(sourceId: string): Promise<SourceChunk[]> {
+  const d = await getDb();
+  return d.select<SourceChunk[]>(
+    "SELECT * FROM source_chunks WHERE source_id = $1 ORDER BY seq",
+    [sourceId]
+  );
+}
+
+/** Source ids in this notebook that already have chunks (index-coverage check). */
+export async function indexedSourceIds(notebookId: string): Promise<Set<string>> {
+  const d = await getDb();
+  const rows = await d.select<{ source_id: string }[]>(
+    "SELECT DISTINCT source_id FROM source_chunks WHERE notebook_id = $1",
+    [notebookId]
+  );
+  return new Set(rows.map((r) => r.source_id));
+}
+
+/** Source ids whose chunks are BM25-only (no embeddings stored — stale index). */
+export async function unembeddedSourceIds(notebookId: string): Promise<Set<string>> {
+  const d = await getDb();
+  const rows = await d.select<{ source_id: string }[]>(
+    "SELECT DISTINCT source_id FROM source_chunks WHERE notebook_id = $1 AND embedding = ''",
+    [notebookId]
+  );
+  return new Set(rows.map((r) => r.source_id));
 }
 
 /* ------------------------------- Messages ------------------------------ */
@@ -608,6 +700,13 @@ export async function deleteSources(notebookId: string, type?: SourceType): Prom
   const res = type
     ? await d.execute("DELETE FROM sources WHERE notebook_id = $1 AND type = $2", [notebookId, type])
     : await d.execute("DELETE FROM sources WHERE notebook_id = $1", [notebookId]);
+  if (res.rowsAffected > 0) {
+    // Chunks of removed sources re-index on demand; clear per-type wipes wholesale.
+    await d.execute(
+      "DELETE FROM source_chunks WHERE notebook_id = $1 AND source_id NOT IN (SELECT id FROM sources WHERE notebook_id = $1)",
+      [notebookId]
+    );
+  }
   return res.rowsAffected;
 }
 

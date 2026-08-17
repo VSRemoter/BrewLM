@@ -30,12 +30,16 @@ BrewLM turns your own materials — PDFs, web pages, notes, images, audio — in
 
 ### Grounded chat
 - Answers cite **your sources inline** (e.g., “…the effect was significant [1]”) — one click takes you to the source.
+- **Retrieval over sources**: source text is chunked and indexed locally (embedded via OpenAI/OpenRouter when available, with an offline BM25 fallback — stale BM25 indexes auto-upgrade once a working key is present), so each reply draws on the most relevant passages of *all* sources — a 400-page PDF stays fully answerable without large-context token costs. The prompt also says explicitly which sources weren't covered.
+- **Prompt caching & cost controls**: Anthropic cache breakpoints and OpenAI/OpenRouter usage accounting keep repeated notebook context cheap (cache reads ~10% price); generated images are downscaled before saving and pixels never re-enter chat history — each reply shows its token usage (in / out / cache hit).
 - **@mention** sources mid-prompt to focus the context; mentions persist across follow-ups.
+- **/ground** toggles source grounding per notebook — off means free-form answers from the model's own knowledge (no sources sent, no retrieval cost); @mentions still pull a source back in for one answer.
+- **/search <query>** — one-shot web answer inline with numbered source links (provider web search, billed per query); `/research <topic>` remains the deep, report-style version saved to Studio.
 - Multiple chat threads per notebook with auto-titles, renaming, and a queue: `/queue` stacks prompts/commands to run in order when the current reply finishes.
 - Streaming responses with a **stop** button, activity-aware chat titles, and a per-notebook **chat background image** with a dim slider.
 
 ### The Studio (generation tools)
-Every output is saved to the Studio panel and can be viewed, revised, downloaded, or deleted:
+Every output is saved to the Studio panel and can be viewed, revised, downloaded, or deleted. On notebooks too large for a context window, every tool (flashcards, quiz, mind map, audio, report) runs over a **cached whole-notebook condensation** — one exhaustive map-reduce pass, shared by all tools until the sources change:
 - **Flashcards** — active-recall decks (count / difficulty / focus).
 - **Quiz** — multiple-choice with explanations and grading.
 - **Mind map** — hierarchical idea outlines (mermaid-rendered).

@@ -5,6 +5,16 @@ export interface LlmMessage {
   content: string;
 }
 
+/** Token accounting for one completion, when the provider reports it. */
+export interface StreamUsage {
+  input?: number;
+  output?: number;
+  /** Input tokens served from the provider's prompt cache (~90% cheaper). */
+  cachedRead?: number;
+  /** Input tokens written into the provider's prompt cache. */
+  cachedWrite?: number;
+}
+
 interface StreamOptions {
   provider: Provider;
   apiKey: string;
@@ -14,6 +24,8 @@ interface StreamOptions {
   jsonMode?: boolean;
   /** Abort mid-request to cancel generation; fetch + stream stop promptly. */
   signal?: AbortSignal;
+  /** Called once the stream ends with provider-reported token usage (if any). */
+  onUsage?: (usage: StreamUsage) => void;
 }
 
 /** True when an error came from an intentional AbortController cancel. */
@@ -59,15 +71,35 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     headers["X-Title"] = "BrewLM";
   }
 
+  // Anthropic-family models routed via OpenRouter support explicit prompt
+  // caching: mark the (large, stable) system message as cacheable so repeat
+  // turns in a notebook re-read the sources at ~10% cost instead of 100%.
+  const cacheable = opts.provider === "openrouter" && /anthropic|claude/i.test(opts.model);
+  const messages = cacheable
+    ? opts.messages.map((m) =>
+        m.role === "system"
+          ? {
+              role: m.role,
+              content: [
+                { type: "text", text: m.content, cache_control: { type: "ephemeral" } },
+              ],
+            }
+          : m
+      )
+    : opts.messages;
+
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: opts.messages,
+    messages,
     stream: true,
     max_tokens: opts.maxTokens ?? 4096,
   };
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
+  // Ask for token usage in the final stream chunk (cost visibility).
+  if (opts.provider === "openai") body.stream_options = { include_usage: true };
+  if (opts.provider === "openrouter") body.usage = { include: true };
   // Image-generation models (e.g. gemini-*-image) need both modalities requested.
   if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
     body.modalities = ["image", "text"];
@@ -89,6 +121,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   const pushImage = (url: string | null) => {
     if (url && !images.includes(url)) images.push(url);
   };
+  let usage: StreamUsage = {};
 
   for await (const payload of sseLines(res.body)) {
     if (payload === "[DONE]") break;
@@ -107,10 +140,20 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       }
       const imgs = choice?.delta?.images ?? choice?.message?.images;
       if (Array.isArray(imgs)) for (const img of imgs) pushImage(imagePartUrl(img));
+      // Final usage chunk (arrives with empty choices when include_usage is set).
+      const u = json.usage;
+      if (u && typeof u === "object") {
+        usage = {
+          input: u.prompt_tokens ?? u.input_tokens ?? usage.input,
+          output: u.completion_tokens ?? u.output_tokens ?? usage.output,
+          cachedRead: u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? usage.cachedRead,
+        };
+      }
     } catch {
       // partial JSON chunk — ignore
     }
   }
+  if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.(usage);
   for (const url of images) yield `\n\n![generated image](${url})\n\n`;
 }
 
@@ -130,6 +173,7 @@ function imagePartUrl(part: unknown): string | null {
 async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
   const system = opts.messages.filter((m) => m.role === "system");
   const rest = opts.messages.filter((m) => m.role !== "system");
+  const systemText = system.map((m) => m.content).join("\n\n");
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -143,7 +187,11 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       model: opts.model,
       max_tokens: opts.maxTokens ?? 4096,
       stream: true,
-      system: system.map((m) => m.content).join("\n\n") || undefined,
+      // One ephemeral cache breakpoint at the end of the (large, stable)
+      // system prompt: repeat turns re-read the sources at ~10% input cost.
+      system: systemText
+        ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
+        : undefined,
       messages: rest.map((m) => ({ role: m.role, content: m.content })),
     }),
     signal: opts.signal,
@@ -151,12 +199,31 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
   if (!res.ok) throw new Error(await apiError(res));
   if (!res.body) throw new Error("Empty response body");
 
+  const usage: StreamUsage = {};
   for await (const payload of sseLines(res.body)) {
     try {
       const json = JSON.parse(payload);
       if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
         yield json.delta.text as string;
+      } else if (json.type === "message_start") {
+        const u = json.message?.usage;
+        if (u) {
+          usage.input = u.input_tokens ?? usage.input;
+          usage.output = u.output_tokens ?? usage.output;
+          usage.cachedRead = u.cache_read_input_tokens ?? usage.cachedRead;
+          usage.cachedWrite = u.cache_creation_input_tokens ?? usage.cachedWrite;
+        }
+      } else if (json.type === "message_delta") {
+        const u = json.usage;
+        if (u) {
+          // message_delta carries cumulative output tokens (and possibly cache stats).
+          usage.output = u.output_tokens ?? usage.output;
+          usage.cachedRead = u.cache_read_input_tokens ?? usage.cachedRead;
+          usage.cachedWrite = u.cache_creation_input_tokens ?? usage.cachedWrite;
+          usage.input = u.input_tokens ?? usage.input;
+        }
       } else if (json.type === "message_stop") {
+        opts.onUsage?.(usage);
         return;
       } else if (json.type === "error") {
         throw new Error(json.error?.message ?? "Anthropic stream error");
@@ -166,6 +233,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       throw e;
     }
   }
+  opts.onUsage?.(usage);
 }
 
 export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {

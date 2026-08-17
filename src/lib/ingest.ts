@@ -1,6 +1,7 @@
 /** Shared file ingestion: turns dropped/picked files into notebook sources. */
 
 import { addSource } from "./db";
+import { indexSource } from "./rag";
 import { classifyFile, extractPdfText, readFileAsDataUrl, readFileAsText } from "./source";
 import type { Source } from "./types";
 
@@ -24,6 +25,13 @@ export async function ingestFiles(
     try {
       if (type === "pdf") {
         const text = await extractPdfText(file);
+        // Scanned/image-only PDFs yield ~no text: nothing to index or ground
+        // in. Add the file, but say so loudly instead of failing silently.
+        if (text.trim().length < 200) {
+          errors.push(
+            `${file.name}: almost no extractable text — this looks like a scanned/image-only PDF. It was added, but the AI can't read its contents; run OCR on it first, then re-add.`
+          );
+        }
         added.push(await addSource(notebookId, "pdf", file.name, text, file.type));
       } else if (type === "text" || type === "file") {
         const text = await readFileAsText(file).catch(() => "");
@@ -58,5 +66,9 @@ export async function ingestFiles(
     }
   }
   onBusy?.(null);
+  // Chunk + embed new sources in the background so their content is fully
+  // searchable by the time the first question lands (failures are silent —
+  // the lazy ensureIndexed path retries before the next prompt).
+  for (const s of added) void indexSource(s);
   return { added, errors };
 }

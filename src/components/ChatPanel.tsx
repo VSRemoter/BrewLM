@@ -1,5 +1,6 @@
 import {
   AlignLeft,
+  Anchor,
   ArrowUp,
   ArrowUpFromLine,
   AudioLines,
@@ -18,6 +19,7 @@ import {
   Palette,
   Pencil,
   Plus,
+  Search,
   Settings2,
   Sparkles,
   Square,
@@ -35,6 +37,7 @@ import {
   listFolders,
   moveNotebookToFolder,
   renameChat,
+  setNotebookGrounded,
   setNotebookStarred,
   setSetting,
 } from "../lib/db";
@@ -47,7 +50,10 @@ import {
   segmentMentions,
   type MentionItem,
 } from "../lib/mentions";
-import { isAbortError, streamChat, type LlmMessage } from "../lib/llm";
+import { isAbortError, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { downscaleGeneratedImages, stripHistoryImages } from "../lib/genImage";
+import { ensureIndexed, rankChunks, type RetrievedChunk } from "../lib/rag";
+import { webAnswer } from "../lib/research";
 import {
   activeKey,
   loadModelList,
@@ -68,6 +74,8 @@ const MAX_TOTAL_CONTEXT = 30_000;
 const MAX_MENTION_CHARS = 8000;
 const MAX_MENTION_TOTAL = 16_000;
 const HISTORY_LIMIT = 16;
+/** History budget in chars (~6k tokens); long past messages stop multiplying cost. */
+const MAX_HISTORY_CHARS = 24_000;
 
 /** Empty-chat inspiration: one quote is picked each time a new chat opens. */
 const CHAT_QUOTES: { text: string; author: string }[] = [
@@ -145,6 +153,20 @@ const COMMANDS: ChatCommand[] = [
     usage: "/remove <sources|chats|studios> [type]",
     desc: "Bulk delete sources, chats, or studio outputs",
     icon: Trash2,
+    takesArgs: true,
+  },
+  {
+    cmd: "/ground",
+    usage: "/ground",
+    desc: "Toggle source grounding on/off for this notebook",
+    icon: Anchor,
+    takesArgs: false,
+  },
+  {
+    cmd: "/search",
+    usage: "/search <query>",
+    desc: "One-shot web answer with cited sources (provider search)",
+    icon: Search,
     takesArgs: true,
   },
   {
@@ -296,6 +318,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/theme <name>\` — switches the app theme instantly (names autocomplete). Available: ${THEMES.map((t) => t.name).join(", ")}. Also changeable in Settings.
 - \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
+- \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
 - \`/clone "<title>" [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). **The title must be in quotes.** \`/clone "My copy"\` or \`/clone "My copy" no\` keeps you here; \`/clone "My copy" yes\` takes you there. Because the title is quoted, a *yes* or *no* inside it can't be confused for the flag — \`/clone "Project yes" no\` clones "Project yes" and stays put. For a sources-only starter copy, use **Use as template** on the homepage cards.
 - \`/remove <sources|chats|studios> [type]\` — bulk delete. \`/remove sources\` wipes every source; \`/remove chats\` deletes all chat threads and starts fresh; \`/remove studios\` clears the Studio. Narrow it with a type, e.g. \`/remove sources links\` (text, links, pdf, images, audio, files) or \`/remove studios audios\` (flashcards, quizzes, mindmaps, audios, reports, research).
@@ -314,13 +337,32 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`.
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
+- \`/search <query>\` — one-shot web answer, right here in chat, with numbered source links. Your provider bills web searches per query, so this only runs when you ask; for a deep multi-source dossier use \`/research\` instead.
 AI Studio results are saved as artifacts in the Studio panel (right) — reopen, download, or add them back as sources from there. No arguments = the same defaults as clicking the tool card. Queued AI actions consume tokens when they run.
 
 ## Privacy
 API keys, sources, chats and artifacts all live in a local database on your machine. No account, no cloud sync. Organizing works offline; only AI calls need a network.`;
 
 
-export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = []): string {
+/**
+ * Assemble the system prompt. Section order is deliberate: constitution and
+ * rules first, the (large, stable) sources block next, and the per-message
+ * @-mentions last — keeping the expensive prefix byte-identical across turns
+ * so provider prompt caching (explicit on Anthropic, automatic on OpenAI)
+ * actually hits.
+ *
+ * When `retrieved` chunks are supplied (rag.ts), the sources block contains
+ * the most relevant slices of ALL sources for this message instead of a blind
+ * first-N-characters prefix of the first few sources — this is what lets a
+ * 400-page PDF or a notebook full of files fit a 30k-char budget meaningfully.
+ */
+export function buildSystemPrompt(
+  sources: Source[],
+  mentioned: MentionItem[] = [],
+  retrieved?: RetrievedChunk[],
+  opts: { grounded?: boolean } = {}
+): string {
+  const grounded = opts.grounded !== false;
   const constitutions = sources.filter(
     (s) => s.type === "context" && s.content.trim()
   );
@@ -328,13 +370,17 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
   const mentionedSourceIds = new Set(
     mentioned.filter((m) => m.group === "source").map((m) => m.id)
   );
-  const knowledge = sources.filter(
-    (s) =>
-      s.type !== "context" &&
-      s.content &&
-      !s.content.startsWith("data:") &&
-      !mentionedSourceIds.has(s.id)
-  );
+  // Ungrounded: no source material is ever sent — zero source tokens, zero
+  // retrieval cost; @-mentions (below) remain as the user's explicit override.
+  const knowledge = grounded
+    ? sources.filter(
+        (s) =>
+          s.type !== "context" &&
+          s.content &&
+          !s.content.startsWith("data:") &&
+          !mentionedSourceIds.has(s.id)
+      )
+    : [];
 
   const parts: string[] = ["You are BrewLM, a thoughtful study assistant."];
 
@@ -350,8 +396,72 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
     parts.push(`# Notebook constitution\n${body}\n\nThe constitution above governs how you behave in this notebook — follow it strictly. Where it conflicts with the default rules below, the constitution wins.`);
   }
 
-  parts.push(`# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- Write math in LaTeX notation — $...$ or \\(...\\) inline, $$...$$ or \\[...\\] for display equations (integrals, fractions, matrices…). The app renders it; never spell formulas out in plaintext.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`);
+  const formatRules = `Write math in LaTeX notation — $...$ or \\(...\\) inline, $$...$$ or \\[...\\] for display equations (integrals, fractions, matrices…). The app renders it; never spell formulas out in plaintext.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`;
+  parts.push(
+    grounded
+      ? `# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- ${formatRules}`
+      : `# Default rules\n- Source grounding is OFF in this notebook: answer from your own knowledge. None of the user's documents were sent with this conversation — do not claim to have read or cite specific sources.\n- Only if a message references @Title has the user handed you material — then center the answer on it and cite it.\n- ${formatRules}`
+  );
 
+  // Sources block: retrieval-ranked chunks when available, legacy prefix
+  // truncation otherwise. Either way the section is capped by MAX_TOTAL_CONTEXT
+  // and ends with an honest coverage line so the model knows what it can't see.
+  if (knowledge.length > 0) {
+    const omitted: string[] = [];
+    let section = "";
+
+    if (retrieved && retrieved.length > 0) {
+      const covered = new Set<string>();
+      let budget = MAX_TOTAL_CONTEXT;
+      const blocks: string[] = [];
+      let headerSource = "";
+      for (const c of retrieved) {
+        if (budget <= 0) break;
+        const line = c.page ? `[p. ${c.page}] ${c.text}` : c.text;
+        const header =
+          c.sourceId !== headerSource ? `### ${c.sourceTitle} (${c.sourceType})\n` : "";
+        const cost = header.length + line.length + 1;
+        if (blocks.length > 0 && cost > budget) break;
+        blocks.push(header + line);
+        headerSource = c.sourceId;
+        covered.add(c.sourceId);
+        budget -= cost;
+      }
+      for (const s of knowledge) if (!covered.has(s.id)) omitted.push(s.title);
+      const coverage =
+        omitted.length === 0
+          ? "Relevant excerpts from every source are included here."
+          : `Excerpts from ${covered.size} of ${knowledge.length} sources are included, chosen for relevance to the latest message. Not covered here: ${listTitles(omitted)} — if the answer needs them, say so rather than guessing.`;
+      section = `# Source excerpts (retrieved by relevance)\nThese are the most relevant passages from the user's sources for the latest message; other passages exist but aren't shown.\n\n${blocks.join("\n\n")}\n\n[Coverage: ${coverage}]`;
+    } else {
+      let budget = MAX_TOTAL_CONTEXT;
+      const sections: string[] = [];
+      const included = new Set<string>();
+      for (const s of knowledge) {
+        if (budget <= 0) break;
+        const cap = Math.min(MAX_SOURCE_CHARS, budget);
+        const trimmed =
+          s.content.length > cap
+            ? s.content.slice(0, cap) +
+              `\n[…truncated — only the first ${cap} of ${s.content.length} characters shown; other parts of this source exist]`
+            : s.content;
+        sections.push(`### ${s.title} (${s.type})\n${trimmed}`);
+        included.add(s.id);
+        budget -= trimmed.length;
+      }
+      for (const s of knowledge) if (!included.has(s.id)) omitted.push(s.title);
+      if (omitted.length > 0) {
+        sections.push(
+          `[Coverage: only ${included.size} of ${knowledge.length} sources fit. Not in context: ${listTitles(omitted)} — if the answer needs them, say so rather than guessing.]`
+        );
+      }
+      section = `# Sources\n${sections.join("\n\n---\n\n")}`;
+    }
+    parts.push(section);
+  }
+
+  // @-mentions tail the prompt: they vary per message, and anything before
+  // them stays byte-stable for provider prompt caching.
   if (mentioned.length > 0) {
     let budget = MAX_MENTION_TOTAL;
     const sections: string[] = [];
@@ -373,27 +483,38 @@ export function buildSystemPrompt(sources: Source[], mentioned: MentionItem[] = 
     );
   }
 
-  if (knowledge.length === 0) {
-    if (mentioned.length === 0) {
-      parts.push(
-        "The user has not added any knowledge sources yet — encourage them to add sources, or answer simple questions generally."
-      );
-    }
-    return parts.join("\n\n");
+  if (grounded && knowledge.length === 0 && mentioned.length === 0) {
+    parts.push(
+      "The user has not added any knowledge sources yet — encourage them to add sources, or answer simple questions generally."
+    );
   }
 
-  let budget = MAX_TOTAL_CONTEXT;
-  const sections: string[] = [];
-  for (const s of knowledge) {
-    if (budget <= 0) break;
-    const cap = Math.min(MAX_SOURCE_CHARS, budget);
-    const trimmed = s.content.length > cap ? s.content.slice(0, cap) + "\n[…truncated]" : s.content;
-    sections.push(`### ${s.title} (${s.type})\n${trimmed}`);
-    budget -= trimmed.length;
-  }
-
-  parts.push(`# Sources\n${sections.join("\n\n---\n\n")}`);
   return parts.join("\n\n");
+}
+
+/** Comma-joined titles, capped so the coverage note itself stays cheap. */
+function listTitles(titles: string[], max = 10): string {
+  const shown = titles.slice(0, max);
+  const rest = titles.length - shown.length;
+  return shown.join(", ") + (rest > 0 ? ` (+${rest} more)` : "");
+}
+
+/**
+ * Pick the messages that fit the conversation-history budget: newest first,
+ * at most HISTORY_LIMIT turns and ~MAX_HISTORY_CHARS total, always including
+ * the latest message.
+ */
+export function selectChatHistory(all: ChatMessage[]): ChatMessage[] {
+  const capped = all.slice(-HISTORY_LIMIT);
+  const kept: ChatMessage[] = [];
+  let budget = MAX_HISTORY_CHARS;
+  for (let i = capped.length - 1; i >= 0; i--) {
+    const m = capped[i];
+    if (kept.length > 0 && m.content.length > budget) break;
+    kept.unshift(m);
+    budget -= m.content.length;
+  }
+  return kept;
 }
 
 /** Grow the textarea with its content, up to ~10 lines. */
@@ -432,6 +553,7 @@ export default function ChatPanel({
   onCloneNotebook,
   onRemove,
   notebookStarred,
+  notebookGrounded,
   chatBg,
   chatBgDim,
   onChatBgChange,
@@ -471,6 +593,8 @@ export default function ChatPanel({
   onRemove: (what: string, filter?: string) => Promise<{ reply: string; chatReplaced?: boolean }>;
   /** Live starred flag so /star can toggle it. */
   notebookStarred: boolean;
+  /** Live grounding flag (SQLite boolean, default 1) so /ground can toggle it. */
+  notebookGrounded?: number;
   /** Data-URL image behind the chat area ("" = none). */
   chatBg: string;
   /** Readability scrim over chatBg: 0–80 (percent). */
@@ -482,6 +606,8 @@ export default function ChatPanel({
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Provider-reported token usage per assistant message (this session only). */
+  const [usageByMsg, setUsageByMsg] = useState<Record<string, StreamUsage>>({});
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
@@ -819,9 +945,11 @@ export default function ChatPanel({
   useEffect(() => {
     if (!chatId) {
       setMsgs([]);
+      setUsageByMsg({});
       return;
     }
     let cancelled = false;
+    setUsageByMsg({});
     import("../lib/db").then(({ listMessages }) =>
       // setMsgs matters, not setMessages: messagesRef must follow the switch,
       // or the next send resurrects the previous chat's history.
@@ -1082,6 +1210,89 @@ export default function ChatPanel({
       return;
     }
 
+    // /ground — toggle source grounding for this notebook.
+    if (/^\/ground(\s|$)/i.test(text)) {
+      const next = (notebookGrounded ?? 1) === 0;
+      await setNotebookGrounded(notebookId, next);
+      onNotebookMoved();
+      const replyMsg = await addMessage(
+        chatId,
+        notebookId,
+        "assistant",
+        next
+          ? `📚 Grounding **on** — answers will be grounded in your sources and cite them. (\`/ground\` toggles this.)`
+          : `🌐 Grounding **off** — I'll answer from my own knowledge and skip your sources entirely (cheaper and faster — no retrieval runs). @mention a source anytime to pull it into a single answer. (\`/ground\` toggles this.)`
+      );
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /search <query> — one-shot web answer with cited links (provider search,
+    // billed per query — that's why it's a command, not a background toggle).
+    if (/^\/search(\s|$)/i.test(text)) {
+      const query = text.replace(/^\/search\s*/i, "").trim();
+      if (!query) {
+        const replyMsg = await addMessage(
+          chatId,
+          notebookId,
+          "assistant",
+          "What should I look up? e.g. `/search best budget e-ink tablets 2026`. For a deep multi-source dossier saved to Studio, use `/research <topic>` instead."
+        );
+        setMsgs((prev) => [...prev, replyMsg]);
+        onChatActivity?.(chatId, isFirst ? text : undefined);
+        textareaRef.current?.focus();
+        return;
+      }
+      streamingRef.current = true;
+      setStreaming("");
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      try {
+        const groundedNow = (notebookGrounded ?? 1) !== 0;
+        const mentionedNow = resolveMentions(query, catalog);
+        // Same grounding as chat — web results can weave into notebook context.
+        let retrieved: RetrievedChunk[] | undefined;
+        if (groundedNow) {
+          try {
+            await ensureIndexed(sources, settings);
+            const ranked = await rankChunks(sources, query, settings, MAX_TOTAL_CONTEXT);
+            if (ranked.length > 0) retrieved = ranked;
+          } catch {
+            /* search proceeds without notebook context */
+          }
+        }
+        const { text: answer, hits } = await webAnswer({
+          query,
+          settings,
+          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow }),
+          signal: ctrl.signal,
+        });
+        if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        let body = answer || "(no answer came back — try rephrasing)";
+        if (hits.length > 0) {
+          body += `\n\n---\n\n##### Sources from the web\n${hits
+            .map((h, i) => `${i + 1}. [${h.title}](${h.url})`)
+            .join("\n")}`;
+        }
+        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
+        setMsgs((prev) => [...prev, replyMsg]);
+      } catch (e) {
+        if (!(isAbortError(e) || ctrl.signal.aborted)) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        // aborted → nothing saved (user pressed stop)
+      } finally {
+        abortRef.current = null;
+        streamingRef.current = false;
+        setStreaming(null);
+        textareaRef.current?.focus();
+      }
+      onChatActivity?.(chatId, isFirst ? `Search: ${query}` : undefined);
+      return;
+    }
+
     // /clear — delete this thread entirely (unlike /new, which saves it).
     if (/^\/clear(\s|$)/i.test(text)) {
       await onClearChat();
@@ -1167,19 +1378,44 @@ export default function ChatPanel({
         .join("\n"),
       catalog
     );
+
+    // Retrieval: index any unindexed sources, then fill the context budget
+    // with the chunks most relevant to this message. Skipped entirely when
+    // grounding is off (no embedding calls, no source tokens, no delay).
+    // Any failure falls back to legacy truncation inside buildSystemPrompt.
+    const groundedNow = (notebookGrounded ?? 1) !== 0;
+    let retrieved: RetrievedChunk[] | undefined;
+    if (groundedNow) {
+      try {
+        await ensureIndexed(sources, settings);
+        const ranked = await rankChunks(sources, text, settings, MAX_TOTAL_CONTEXT);
+        const mentionedIds = new Set(
+          mentioned.filter((m) => m.group === "source").map((m) => m.id)
+        );
+        const filtered = ranked.filter((r) => !mentionedIds.has(r.sourceId));
+        if (filtered.length > 0) retrieved = filtered;
+      } catch (e) {
+        console.warn("rag: retrieval skipped", e);
+      }
+    }
+
     const llmMessages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(sources, mentioned) },
-      ...history.slice(-HISTORY_LIMIT).map((m, i, arr) => ({
+      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow }) },
+      ...selectChatHistory(history).map((m, i, arr) => ({
         role: m.role,
+        // Image embeds in past turns stay on screen but leave the context
+        // (multi-hundred-KB base64 re-sent per turn = silent token burn).
         // The visible bubble says "/summarize"; the model gets the real prompt.
-        content:
+        content: stripHistoryImages(
           isSummarize && i === arr.length - 1 && m.role === "user"
             ? `Write a clear, well-structured summary of this whole notebook: the core ideas, why they matter, and the key details worth remembering. Cover every source.`
-            : m.content,
+            : m.content
+        ),
       })),
     ];
 
     let acc = "";
+    let usage: StreamUsage | null = null;
     try {
       for await (const delta of streamChat({
         provider: settings.provider,
@@ -1187,13 +1423,19 @@ export default function ChatPanel({
         model: settings.model,
         messages: llmMessages,
         signal: ctrl.signal,
+        onUsage: (u) => {
+          usage = u;
+        },
       })) {
         acc += delta;
         setStreaming(acc);
       }
       // Cancelled right at the tail? Discard rather than save a cut-off answer.
       if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc || "(no response)");
+      // Generated images persist downscaled (~100 KB instead of megabytes).
+      const savedText = acc ? await downscaleGeneratedImages(acc) : acc;
+      const assistantMsg = await addMessage(chatId, notebookId, "assistant", savedText || "(no response)");
+      if (usage) setUsageByMsg((prev) => ({ ...prev, [assistantMsg.id]: usage as StreamUsage }));
       setMsgs((prev) => [...prev, assistantMsg]);
     } catch (e) {
       if (!(isAbortError(e) || ctrl.signal.aborted)) {
@@ -1440,7 +1682,7 @@ export default function ChatPanel({
         ) : (
           <div className="mx-auto max-w-2xl px-5 py-6">
             {messages.map((m) => (
-              <Bubble key={m.id} role={m.role} content={m.content} items={catalog} />
+              <Bubble key={m.id} role={m.role} content={m.content} items={catalog} usage={usageByMsg[m.id]} />
             ))}
             {streaming !== null && (
               <div className="anim-fade-up mb-5 flex justify-start">
@@ -1898,6 +2140,9 @@ export default function ChatPanel({
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
             {model} · via {settings.provider === "openrouter" ? "OpenRouter" : settings.provider}
+            {(notebookGrounded ?? 1) === 0 && (
+              <span className="text-warn"> · grounding off</span>
+            )}
           </p>
         </div>
       </div>
@@ -1905,14 +2150,22 @@ export default function ChatPanel({
   );
 }
 
+/** Token counts rendered compactly: 1234 → "1.2k". */
+function fmtTokens(n: number | undefined): string | null {
+  if (!n) return null;
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+}
+
 function Bubble({
   role,
   content,
   items,
+  usage,
 }: {
   role: "user" | "assistant";
   content: string;
   items: MentionItem[];
+  usage?: StreamUsage;
 }) {
   const segments = useMemo(
     () => (role === "user" ? segmentMentions(content, items) : []),
@@ -1943,6 +2196,17 @@ function Bubble({
     <div className="anim-fade-up mb-5 flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed">
         <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }} />
+        {usage && (
+          <div className="mt-2 border-t border-edge-soft pt-1.5 text-[10.5px] text-ink-3">
+            {[
+              fmtTokens(usage.input) && `${fmtTokens(usage.input)} in`,
+              fmtTokens(usage.output) && `${fmtTokens(usage.output)} out`,
+              fmtTokens(usage.cachedRead) && `${fmtTokens(usage.cachedRead)} cache hit`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </div>
+        )}
       </div>
     </div>
   );
