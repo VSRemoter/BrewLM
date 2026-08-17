@@ -29,7 +29,7 @@ BrewLM turns your own materials — PDFs, web pages, notes, images, audio — in
 - Homepage with folders, grid/list views, sorting, search, cover images on cards, starring (pinning), multi-select bulk actions (move / trash / restore / delete), and a Trash with restore & permanent delete.
 
 ### Grounded chat
-- Answers cite **your sources inline** (e.g., “…the effect was significant [1]”) — one click takes you to the source.
+- Answers cite **your sources by title inline** (e.g., “…the effect was significant (Source: Week 4 lecture.pdf)”).
 - **Retrieval over sources**: source text is chunked and indexed locally (embedded via OpenAI/OpenRouter when available, with an offline BM25 fallback — stale BM25 indexes auto-upgrade once a working key is present), so each reply draws on the most relevant passages of *all* sources — a 400-page PDF stays fully answerable without large-context token costs. The prompt also says explicitly which sources weren't covered.
 - **Prompt caching & cost controls**: Anthropic cache breakpoints and OpenAI/OpenRouter usage accounting keep repeated notebook context cheap (cache reads ~10% price); generated images are downscaled before saving and pixels never re-enter chat history — each reply shows its token usage (in / out / cache hit).
 - **@mention** sources mid-prompt to focus the context; mentions persist across follow-ups.
@@ -51,13 +51,14 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 ### Customization & organization
 - **Clone & Template**: `/clone "<title>" [yes|no]` duplicates a notebook exactly (sources + chats + studio). **Use as template** on the homepage makes a sources-only starter copy.
 - **Folders** with `/move`, **star** pinning, **rename** chats and notebooks, per-notebook covers and chat backgrounds.
-- **Themes** — 8 built-in (Original, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix); switch instantly with `/theme <name>`.
+- **Themes** — 12 built-in (Original, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix, plus the multi-hue Lilac, Lagoon, Sunset, and Candy); switch instantly with `/theme <name>`.
 - Model switching per provider with autocomplete and custom model lists.
 
 ### Pair your phone
-- **Settings → Pair a device** (or the phone icon in a notebook header) shows a QR code + 6-digit PIN. Scan it from anywhere — cellular included — and a secure tunnel from your Mac pairs the device. No app to install, no account.
+- **Settings → Pair a device** (or the phone icon in a notebook header) shows a QR code + 6-digit PIN, valid for ~20 minutes. Scan it from anywhere — cellular included — and a secure cloudflared tunnel from your Mac pairs the device. No app to install, no account.
+- **Choose the pairing scope at pairing time**: *Full access* (chat, generation, writes) or *read-only* (browse chats & sources, listen to audio — nothing can be written or changed).
 - From the phone: **chat** with cited answers, run **flashcards/quizzes** with grading, **generate** any Studio output (podcast audio included), **add notes/link sources**, create/rename/trash notebooks, and stream **audio overviews** with lock-screen controls.
-- Safety: per-device revocable keys, read-only or full-access scopes, rate limits on LLM actions, soft-delete everywhere, an activity log — and **your API keys never leave the Mac**. Requires BrewLM running on the Mac.
+- Safety: the pairing panel lists every linked device with **one-tap revoke** and a **recent activity log** (per-device revocable keys, rate limits on LLM actions, soft-delete everywhere) — and **your API keys never leave the Mac**. Requires BrewLM running on the Mac.
 
 ### Local-first, bring-your-own-keys
 - Provider choice: **OpenRouter**, **OpenAI**, or **Anthropic** — keys stored locally in `~/.brewlm` (app support dir). Optional separate TTS provider (system voices, OpenAI, OpenRouter, ElevenLabs).
@@ -127,6 +128,7 @@ Type `/` in chat to open the palette with autocomplete.
 | `/return` | Back to the homepage |
 | `/clear` | Delete this chat thread and start fresh |
 | `/star` | Pin/unpin the notebook on the homepage |
+| `/ground` | Toggle source grounding for this notebook — off answers from the model's own knowledge (no sources sent, no retrieval cost); @mentions still pull a source in for one answer |
 | `/note <text>` | Save pasted text as a source |
 | `/url <link>` | Fetch a webpage into sources |
 | `/summarize` | Summarize the notebook here in chat |
@@ -136,6 +138,7 @@ Type `/` in chat to open the palette with autocomplete.
 | `/audio [deep-dive brief debate critique] [short standard long] [focus]` | Two-host podcast → Studio |
 | `/report [summary study-guide briefing faq timeline analysis custom]` | Markdown document → Studio |
 | `/research <topic>` | Web-powered cited report → Studio |
+| `/search <query>` | One-shot web answer right here in chat with numbered source links (provider web search, billed per query) |
 | `/queue <prompt or command>` | Line up work to run when the current task finishes |
 | `/rename <title>` | Rename the current chat thread |
 
