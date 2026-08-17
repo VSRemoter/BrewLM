@@ -15,6 +15,14 @@ import {
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
+import {
+  condenseNotebook,
+  condensedSystemPrompt,
+  ensureIndexed,
+  indexSource,
+  MAP_REDUCE_THRESHOLD,
+  rankChunks,
+} from "../lib/rag";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
 import { formatTime } from "../lib/source";
@@ -198,6 +206,32 @@ const StudioPanel = forwardRef<
   const textSources = sources.filter(isTextSource);
 
   /**
+   * Shared grounding: index the scoped sources if needed, then fill the
+   * context budget with the chunks most relevant to `query` (the tool's
+   * prompt). With `exhaustive` on a notebook too big for any context window,
+   * run the cached whole-notebook condensation instead — the expensive
+   * map-reduce pass is computed once, shared by every Studio tool, and
+   * recomputed only when the sources change.
+   */
+  const groundedSystem = async (
+    scoped: Source[],
+    query: string,
+    opts: { exhaustive?: boolean } = {}
+  ): Promise<string> => {
+    await ensureIndexed(scoped, settings);
+    if (opts.exhaustive && sourceChars(scoped) > MAP_REDUCE_THRESHOLD) {
+      const notes = await condenseNotebook(notebookId, scoped, settings, (p) => setGenPhase(p));
+      return condensedSystemPrompt(notes);
+    }
+    const retrieved = await rankChunks(scoped, query, settings, 30_000);
+    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined);
+  };
+
+  /** Prompt-usable source text; over the threshold, reports condense exhaustively. */
+  const sourceChars = (scoped: Source[]) =>
+    scoped.filter(isTextSource).reduce((n, s) => n + s.content.length, 0);
+
+  /**
    * Sources to ground a generation on. Constitutions always pass through;
    * when the customize modal scopes to specific sources, only those are used
    * as knowledge material.
@@ -240,6 +274,7 @@ const StudioPanel = forwardRef<
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
+      const prompt = opts?.prompt ?? tool.prompt;
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
@@ -247,8 +282,8 @@ const StudioPanel = forwardRef<
         maxTokens: 4096,
         signal: ctrl.signal,
         messages: [
-          { role: "system", content: buildSystemPrompt(usedSources) },
-          { role: "user", content: opts?.prompt ?? tool.prompt },
+          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true }) },
+          { role: "user", content: prompt },
         ],
       });
 
@@ -323,6 +358,11 @@ const StudioPanel = forwardRef<
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
+      const scoped = scopedSources(sourceIds);
+      // Bigger than a context window: groundedSystem runs the cached
+      // whole-notebook condensation so the report covers EVERY source.
+      const system = await groundedSystem(scoped, prompt, { exhaustive: true });
+      setGenPhase(`Writing ${label.toLowerCase()}…`);
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
@@ -330,7 +370,7 @@ const StudioPanel = forwardRef<
         maxTokens: 4096,
         signal: ctrl.signal,
         messages: [
-          { role: "system", content: buildSystemPrompt(scopedSources(sourceIds)) },
+          { role: "system", content: system },
           { role: "user", content: prompt },
         ],
       });
@@ -368,6 +408,7 @@ const StudioPanel = forwardRef<
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
+      const audioPrompt = opts ? buildAudioPrompt(opts) : AUDIO_PROMPT;
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
@@ -375,8 +416,8 @@ const StudioPanel = forwardRef<
         maxTokens: 4096,
         signal: ctrl.signal,
         messages: [
-          { role: "system", content: buildSystemPrompt(scopedSources(opts?.sourceIds)) },
-          { role: "user", content: opts ? buildAudioPrompt(opts) : AUDIO_PROMPT },
+          { role: "system", content: await groundedSystem(scopedSources(opts?.sourceIds), audioPrompt, { exhaustive: true }) },
+          { role: "user", content: audioPrompt },
         ],
       });
 
@@ -456,7 +497,8 @@ const StudioPanel = forwardRef<
       // ground future chats: import the read pages as link sources
       setGenPhase("Saving sources…");
       for (const p of outcome.pages) {
-        await addSource(notebookId, "link", p.title, p.text, p.url);
+        const src = await addSource(notebookId, "link", p.title, p.text, p.url);
+        void indexSource(src, settings);
       }
       onSourcesChanged?.();
       onArtifactsChanged();
@@ -542,6 +584,7 @@ const StudioPanel = forwardRef<
     setReviseBusy(replace ? "replace" : "new");
     const ctrl = new AbortController();
     try {
+      const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`;
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
@@ -549,11 +592,8 @@ const StudioPanel = forwardRef<
         maxTokens: 4096,
         signal: ctrl.signal,
         messages: [
-          { role: "system", content: buildSystemPrompt(sources) },
-          {
-            role: "user",
-            content: `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`,
-          },
+          { role: "system", content: await groundedSystem(sources, note) },
+          { role: "user", content: revisePrompt },
         ],
       });
 

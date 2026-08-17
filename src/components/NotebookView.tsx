@@ -394,8 +394,9 @@ export default function NotebookView({
           onStudioCommand={(cmd) => studioRef.current!.run(cmd)}
           onCloneNotebook={handleClone}
           onRemove={handleRemove}
-           notebookStarred={notebook.starred === 1}
-           chatBg={notebook.chat_bg}
+            notebookStarred={notebook.starred === 1}
+            notebookGrounded={notebook.grounded ?? 1}
+            chatBg={notebook.chat_bg}
            chatBgDim={notebook.chat_bg_dim}
            onChatBgChange={async (bg, dim) => {
              await setNotebookChatBg(notebook.id, bg);

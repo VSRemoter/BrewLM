@@ -161,6 +161,164 @@ async function searchWeb(query: string, settings: Settings, signal?: AbortSignal
   return [];
 }
 
+/* ----------------------- one-shot web answers (/search) ----------------------- */
+
+export interface WebAnswerOutcome {
+  text: string;
+  hits: WebHit[];
+}
+
+function dedupeHits(hits: WebHit[], cap = 8): WebHit[] {
+  const seen = new Set<string>();
+  const out: WebHit[] = [];
+  for (const h of hits) {
+    const u = normalizeUrl(h.url);
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push({ title: h.title || u, url: u });
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+/** Anthropic: one answer with server-side web search; citations from the blocks. */
+async function answerAnthropic(
+  query: string,
+  apiKey: string,
+  model: string,
+  system: string | undefined,
+  signal?: AbortSignal
+): Promise<WebAnswerOutcome> {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2048,
+      system: system || undefined,
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+      messages: [{ role: "user", content: query }],
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
+  const json = await res.json();
+  const texts: string[] = [];
+  const hits: WebHit[] = [];
+  for (const block of json.content ?? []) {
+    if (block.type === "text" && typeof block.text === "string") {
+      texts.push(block.text);
+      if (Array.isArray(block.citations)) {
+        for (const c of block.citations) {
+          if (c.url) hits.push({ title: String(c.title ?? c.url), url: String(c.url) });
+        }
+      }
+    }
+    if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
+      for (const r of block.content) {
+        if (r.type === "web_search_result" && r.url) {
+          hits.push({ title: String(r.title ?? r.url), url: String(r.url) });
+        }
+      }
+    }
+  }
+  return { text: texts.join("\n\n").trim(), hits: dedupeHits(hits) };
+}
+
+/** OpenAI: the search-preview chat model answers with url_citation annotations. */
+async function answerOpenAI(
+  query: string,
+  apiKey: string,
+  system: string | undefined,
+  signal?: AbortSignal
+): Promise<WebAnswerOutcome> {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini-search-preview",
+      messages: [
+        ...(system ? [{ role: "system", content: system }] : []),
+        { role: "user", content: query },
+      ],
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
+  const json = await res.json();
+  const msg = json.choices?.[0]?.message;
+  return {
+    text: String(msg?.content ?? "").trim(),
+    hits: dedupeHits(collectCitations(msg?.annotations)),
+  };
+}
+
+/** OpenRouter: current model + the "web" plugin; citations from annotations. */
+async function answerOpenRouter(
+  query: string,
+  apiKey: string,
+  model: string,
+  system: string | undefined,
+  signal?: AbortSignal
+): Promise<WebAnswerOutcome> {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://brewlm.app",
+      "X-Title": "BrewLM",
+    },
+    body: JSON.stringify({
+      model,
+      plugins: [{ id: "web", max_results: 5 }],
+      messages: [
+        ...(system ? [{ role: "system", content: system }] : []),
+        { role: "user", content: query },
+      ],
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
+  const json = await res.json();
+  const msg = json.choices?.[0]?.message;
+  return {
+    text: String(msg?.content ?? "").trim(),
+    hits: dedupeHits(collectCitations(msg?.annotations)),
+  };
+}
+
+/**
+ * One web-grounded answer to a question (`/search`). Distinct from deepResearch:
+ * single search round, inline answer for chat — no planning, no page reads,
+ * no report. Paid per web query by the provider, so it only runs on demand.
+ */
+export async function webAnswer(opts: {
+  query: string;
+  settings: Settings;
+  /** Persona/grounding system prompt (chat's own, so context can blend). */
+  system?: string;
+  signal?: AbortSignal;
+}): Promise<WebAnswerOutcome> {
+  const { query, settings, system, signal } = opts;
+  const q = `${query.trim()}\n\n(Answer using current information from the web.)`;
+  if (settings.provider === "anthropic" && settings.anthropicKey)
+    return answerAnthropic(q, settings.anthropicKey, settings.model, system, signal);
+  if (settings.provider === "openai" && settings.openaiKey)
+    return answerOpenAI(q, settings.openaiKey, system, signal);
+  if (settings.provider === "openrouter" && settings.openrouterKey)
+    return answerOpenRouter(q, settings.openrouterKey, settings.model, system, signal);
+  throw new Error("Add an API key in Settings first — web search runs through your provider.");
+}
+
 /* ------------------------------- pipeline ------------------------------- */
 
 function normalizeUrl(url: string): string | null {

@@ -4,13 +4,14 @@
  * them with the exact same LLM pipelines as the Studio panel, writing results
  * (chat messages, artifacts) straight into the shared SQLite database.
  */
-import { buildSystemPrompt } from "../components/ChatPanel";
+import { buildSystemPrompt, selectChatHistory } from "../components/ChatPanel";
 import {
   addArtifact,
   addMessage,
   addSource,
   createChat,
   getDb,
+  getNotebookGrounded,
   listMessages,
   listSources,
   renameChat,
@@ -18,6 +19,16 @@ import {
   touchNotebook,
 } from "./db";
 import { complete, extractJson } from "./llm";
+import { downscaleGeneratedImages, stripHistoryImages } from "./genImage";
+import {
+  condenseNotebook,
+  condensedSystemPrompt,
+  ensureIndexed,
+  indexSource,
+  isRetrievable,
+  MAP_REDUCE_THRESHOLD,
+  rankChunks,
+} from "./rag";
 import { deepResearch } from "./research";
 import { activeKey, loadSettings } from "./settings";
 import {
@@ -37,7 +48,6 @@ import { parseScript, synthesizeScript } from "./tts";
 import type { Source } from "./types";
 
 const POLL_MS = 3000;
-const HISTORY_LIMIT = 16;
 
 interface JobRow {
   id: string;
@@ -135,18 +145,30 @@ async function runChatJob(p: {
     listMessages(chatId),
     listSources(p.notebook_id),
   ]);
+  const grounded = (await getNotebookGrounded(p.notebook_id)) !== 0;
+  let retrieved: Awaited<ReturnType<typeof rankChunks>> = [];
+  if (grounded) {
+    await ensureIndexed(sources, settings);
+    retrieved = await rankChunks(sources, p.content, settings, 30_000);
+  }
   const reply = (
     await complete({
       provider: settings.provider,
       apiKey: key,
       model: settings.model,
       messages: [
-        { role: "system", content: buildSystemPrompt(sources) },
-        ...history.slice(-HISTORY_LIMIT).map((m) => ({ role: m.role, content: m.content })),
+        {
+          role: "system",
+          content: buildSystemPrompt(sources, [], retrieved.length ? retrieved : undefined, { grounded }),
+        },
+        ...selectChatHistory(history).map((m) => ({
+          role: m.role,
+          content: stripHistoryImages(m.content),
+        })),
       ],
     })
   ).trim();
-  const answer = reply || "(no response)";
+  const answer = await downscaleGeneratedImages(reply || "(no response)");
   await addMessage(chatId, p.notebook_id, "assistant", answer);
   await touchChat(chatId);
   await touchNotebook(p.notebook_id);
@@ -197,7 +219,8 @@ async function runGenerateJob(p: {
       onPhase: (phase) => void setJobProgress(phase),
     });
     for (const page of outcome.pages) {
-      await addSource(p.notebook_id, "link", page.title, page.text, page.url);
+      const src = await addSource(p.notebook_id, "link", page.title, page.text, page.url);
+      void indexSource(src, settings);
     }
     await addArtifact(
       p.notebook_id,
@@ -217,17 +240,44 @@ async function runGenerateJob(p: {
   if (grounding.length === 0 || !grounding.some(isTextSource)) {
     throw new Error("This notebook needs at least one text-based source (note, PDF, or link) first.");
   }
-  const ask = (prompt: string) =>
-    complete({
+  await ensureIndexed(grounding, settings);
+  /** Total prompt-usable text — decides direct generation vs. cached full-coverage condense. */
+  const totalSourceChars = grounding
+    .filter(isRetrievable)
+    .reduce((sum, s) => sum + s.content.length, 0);
+  const ask = async (prompt: string, opts: { exhaustive?: boolean } = {}) => {
+    // Huge notebooks: cached whole-notebook condensation so every tool covers
+    // ALL sources (the expensive pass is computed once, then shared).
+    if (opts.exhaustive && totalSourceChars > MAP_REDUCE_THRESHOLD) {
+      const notes = await condenseNotebook(p.notebook_id, grounding, settings, (ph) =>
+        void setJobProgress(ph)
+      );
+      return complete({
+        provider: settings.provider,
+        apiKey: key,
+        model: settings.model,
+        maxTokens: 4096,
+        messages: [
+          { role: "system", content: condensedSystemPrompt(notes) },
+          { role: "user", content: prompt },
+        ],
+      });
+    }
+    const retrieved = await rankChunks(grounding, prompt, settings, 30_000);
+    return complete({
       provider: settings.provider,
       apiKey: key,
       model: settings.model,
       maxTokens: 4096,
       messages: [
-        { role: "system", content: buildSystemPrompt(grounding) },
+        {
+          role: "system",
+          content: buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined),
+        },
         { role: "user", content: prompt },
       ],
     });
+  };
 
   let title: string;
   let data: string;
@@ -235,7 +285,8 @@ async function runGenerateJob(p: {
   switch (p.kind) {
     case "flashcards": {
       const raw = await ask(
-        buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus })
+        buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus }),
+        { exhaustive: true }
       );
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
@@ -246,7 +297,8 @@ async function runGenerateJob(p: {
     }
     case "quiz": {
       const raw = await ask(
-        buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus })
+        buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus }),
+        { exhaustive: true }
       );
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
@@ -256,7 +308,7 @@ async function runGenerateJob(p: {
       break;
     }
     case "mindmap": {
-      const raw = await ask(buildMindmapPrompt(o.focus));
+      const raw = await ask(buildMindmapPrompt(o.focus), { exhaustive: true });
       data = raw
         .replace(/```(?:markdown|md)?\s*\n?/g, "")
         .replace(/```$/gm, "")
@@ -268,7 +320,7 @@ async function runGenerateJob(p: {
     case "report": {
       const type = o.report_type as "study-guide" | "briefing-doc" | "analysis" | "custom";
       title = type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[type];
-      const doc = (await ask(buildReportPrompt(type, o.custom_prompt))).trim();
+      const doc = (await ask(buildReportPrompt(type, o.custom_prompt), { exhaustive: true })).trim();
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
       data = doc;
       done = `Saved report “${title}” to Studio.`;
@@ -283,7 +335,7 @@ async function runGenerateJob(p: {
         sourceIds: [],
         description: o.focus,
       };
-      const raw = await ask(buildAudioPrompt(opts));
+      const raw = await ask(buildAudioPrompt(opts), { exhaustive: true });
       const turns = parseScript(raw);
       if (turns.length < 4) throw new Error("Couldn't produce a usable script — try again.");
       let audio: string | null = null;
