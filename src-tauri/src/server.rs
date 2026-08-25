@@ -207,30 +207,16 @@ async fn log_activity(pool: &SqlitePool, device_id: &str, action: &str, detail: 
 /// Resolution order: bundled sidecar (release builds) → env override →
 /// common install paths/PATH (dev machines).
 fn find_cloudflared() -> Option<PathBuf> {
-    // Bundled sidecar: binaries/cloudflared-<target-triple>(.exe) next to the exe.
+    // Bundled sidecar: Tauri's bundler strips the `-<target-triple>` suffix
+    // when copying externalBin files, so release builds ship plain
+    // `cloudflared` (`cloudflared.exe` on Windows) next to the app binary.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            #[cfg(target_os = "windows")]
-            const TRIPLE: &str = "x86_64-pc-windows-msvc.exe";
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            const TRIPLE: &str = "aarch64-apple-darwin";
-            #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
-            const TRIPLE: &str = "x86_64-apple-darwin";
-            #[cfg(target_os = "linux")]
-            const TRIPLE: &str = "x86_64-unknown-linux-gnu";
-            let sidecar = dir.join(format!("cloudflared-{TRIPLE}"));
-            if sidecar.exists() {
-                println!("SHARE_CLOUDFLARED=bundled:{}", sidecar.display());
-                return Some(sidecar);
-            }
-            // Universal macOS releases bundle a single lipo'd binary instead
-            // of per-arch ones — fall back to that name.
-            #[cfg(target_os = "macos")]
-            {
-                let universal = dir.join("cloudflared-universal-apple-darwin");
-                if universal.exists() {
-                    println!("SHARE_CLOUDFLARED=bundled:{}", universal.display());
-                    return Some(universal);
+            for name in ["cloudflared", "cloudflared.exe"] {
+                let sidecar = dir.join(name);
+                if sidecar.exists() {
+                    println!("SHARE_CLOUDFLARED=bundled:{}", sidecar.display());
+                    return Some(sidecar);
                 }
             }
         }
