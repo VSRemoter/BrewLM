@@ -79,6 +79,8 @@ pub fn run() {
 
     app.run(|app_handle, event| match event {
         // macOS: clicking the dock icon re-shows the window.
+        // (Reopen is a macOS-only RunEvent variant — gate it or Linux/Windows break.)
+        #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => show_main_window(app_handle),
         tauri::RunEvent::ExitRequested { .. } => cleanup_sharing(app_handle),
         _ => {}

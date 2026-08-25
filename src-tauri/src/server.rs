@@ -223,6 +223,16 @@ fn find_cloudflared() -> Option<PathBuf> {
                 println!("SHARE_CLOUDFLARED=bundled:{}", sidecar.display());
                 return Some(sidecar);
             }
+            // Universal macOS releases bundle a single lipo'd binary instead
+            // of per-arch ones — fall back to that name.
+            #[cfg(target_os = "macos")]
+            {
+                let universal = dir.join("cloudflared-universal-apple-darwin");
+                if universal.exists() {
+                    println!("SHARE_CLOUDFLARED=bundled:{}", universal.display());
+                    return Some(universal);
+                }
+            }
         }
     }
     if let Ok(p) = std::env::var("BREWLM_CLOUDFLARED") {

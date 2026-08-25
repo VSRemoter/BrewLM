@@ -23,8 +23,16 @@ echo "Fetching cloudflared ${VERSION} sidecars → ${OUT}"
 fetch_tgz "$BASE/cloudflared-darwin-arm64.tgz" "cloudflared-aarch64-apple-darwin"
 fetch_tgz "$BASE/cloudflared-darwin-amd64.tgz" "cloudflared-x86_64-apple-darwin"
 fetch_bin "$BASE/cloudflared-linux-amd64"      "cloudflared-x86_64-unknown-linux-gnu"
-# Windows: cloudflared ships only an .msi on GitHub releases; until that is
-# unpacked in CI, Windows builds fall back to `cloudflared` on PATH
-# (`winget install cloudflare.cloudflared`). See find_cloudflared().
+fetch_bin "$BASE/cloudflared-windows-amd64.exe" "cloudflared-x86_64-pc-windows-msvc.exe"
+# Universal macOS builds (`--target universal-apple-darwin`) require a single
+# binary named cloudflared-universal-apple-darwin — lipo the two arch slices
+# together. lipo only exists on macOS, so skip this elsewhere (only the
+# macOS CI lane ever needs it).
+if command -v lipo >/dev/null 2>&1; then
+  lipo -create \
+    "$OUT/cloudflared-aarch64-apple-darwin" \
+    "$OUT/cloudflared-x86_64-apple-darwin" \
+    -output "$OUT/cloudflared-universal-apple-darwin"
+fi
 chmod +x "$OUT"/cloudflared-* || true
 echo "Done:"; ls -lh "$OUT"
