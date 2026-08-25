@@ -6,6 +6,7 @@ import {
   Loader2,
   Network,
   Pencil,
+  Pin,
   SlidersHorizontal,
   StickyNote,
   Telescope,
@@ -13,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import { addArtifact, addSource, deleteArtifact, renameArtifact, updateArtifact } from "../lib/db";
+import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
 import {
   condenseNotebook,
@@ -866,7 +867,8 @@ const StudioPanel = forwardRef<
             </p>
           ) : (
             <div className="flex flex-col gap-1">
-              {artifacts.map((a) => {
+              {/* Pinned first; stable sort keeps the rest newest-first. */}
+              {[...artifacts].sort((x, y) => y.pinned - x.pinned).map((a) => {
                 const Icon = KIND_ICON[a.kind] ?? StickyNote;
                 let subtitle = "";
                 try {
@@ -900,6 +902,21 @@ const StudioPanel = forwardRef<
                         </span>
                         <span className="block text-[11px] text-ink-3">{subtitle}</span>
                       </span>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await setArtifactPinned(a.id, !a.pinned);
+                        onArtifactsChanged();
+                      }}
+                      className={`shrink-0 rounded p-1 transition-all hover:text-ink ${
+                        a.pinned
+                          ? "text-accent"
+                          : "text-ink-3 opacity-0 group-hover:opacity-100"
+                      }`}
+                      title={a.pinned ? "Unpin" : "Pin to top"}
+                      aria-label={a.pinned ? `Unpin ${a.title}` : `Pin ${a.title} to top`}
+                    >
+                      <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
                     </button>
                     <button
                       onClick={() => openRevise(a)}

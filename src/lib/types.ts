@@ -39,6 +39,8 @@ export interface Source {
   title: string;
   content: string;
   mime: string | null;
+  /** 1 = pinned to the top of the sources list (below the constitution). */
+  pinned: number;
   created_at: number;
 }
 
@@ -81,6 +83,8 @@ export interface Artifact {
   kind: ArtifactKind;
   title: string;
   data: string;
+  /** 1 = pinned to the top of the Studio list. */
+  pinned: number;
   created_at: number;
 }
 

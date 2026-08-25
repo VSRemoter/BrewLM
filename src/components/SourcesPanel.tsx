@@ -8,6 +8,7 @@ import {
   Loader2,
   Music,
   Pencil,
+  Pin,
   Plus,
   Type,
   Upload,
@@ -16,7 +17,7 @@ import {
 import { useRef, useState } from "react";
 import { CONSTITUTION_TITLE } from "../lib/constitution";
 import { ConstitutionPickerModal } from "./ConstitutionPicker";
-import { addSource, deleteSource, updateSource } from "../lib/db";
+import { addSource, deleteSource, setSourcePinned, updateSource } from "../lib/db";
 import { ingestFiles } from "../lib/ingest";
 import { ACCEPT_STRING, fetchLinkContent, sourcePreview } from "../lib/source";
 import type { Source } from "../lib/types";
@@ -65,8 +66,11 @@ export default function SourcesPanel({
   };
 
   const hasConstitution = sources.some((s) => s.type === "context");
+  // Constitution first (always), then pinned sources, then everything else —
+  // stable sort keeps each group in its original created_at order.
   const ordered = [...sources].sort(
-    (a, b) => Number(b.type === "context") - Number(a.type === "context")
+    (a, b) =>
+      Number(b.type === "context") - Number(a.type === "context") || b.pinned - a.pinned
   );
 
   /* ---------------------------- file ingestion ---------------------------- */
@@ -247,11 +251,6 @@ export default function SourcesPanel({
                     <span className="truncate text-[12.5px] font-medium leading-tight">
                       {s.title}
                     </span>
-                    {isConstitution && (
-                      <span className="shrink-0 rounded-full border border-edge bg-panel px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wider text-ink-3">
-                        Constitution
-                      </span>
-                    )}
                   </span>
                   <span className="mt-0.5 line-clamp-1 block text-[11px] text-ink-3">
                     {isConstitution
@@ -260,6 +259,22 @@ export default function SourcesPanel({
                         ? s.mime ?? s.type
                         : sourcePreview(s.content)}
                   </span>
+                </button>
+              )}
+              {!isRenaming && (
+                <button
+                  onClick={async () => {
+                    await setSourcePinned(s.id, !s.pinned);
+                    onChanged();
+                  }}
+                  className={`shrink-0 rounded p-0.5 transition-all hover:text-ink ${
+                    s.pinned
+                      ? "text-accent"
+                      : "text-ink-3 opacity-0 group-hover:opacity-100"
+                  }`}
+                  title={s.pinned ? "Unpin source" : "Pin to top"}
+                >
+                  <Pin size={12} fill={s.pinned ? "currentColor" : "none"} />
                 </button>
               )}
               {!isRenaming && (

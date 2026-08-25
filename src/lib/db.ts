@@ -97,6 +97,15 @@ async function initDb(): Promise<Database> {
       data TEXT NOT NULL,
       created_at INTEGER NOT NULL
     )`);
+  // Pinning: pinned sources/artifacts sort first (constitution still wins over pins).
+  const srcCols = await db.select<{ name: string }[]>("PRAGMA table_info(sources)");
+  if (!srcCols.some((c) => c.name === "pinned")) {
+    await db.execute("ALTER TABLE sources ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  const artCols = await db.select<{ name: string }[]>("PRAGMA table_info(artifacts)");
+  if (!artCols.some((c) => c.name === "pinned")) {
+    await db.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
   await db.execute(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -277,8 +286,8 @@ export async function cloneNotebook(
 
   for (const s of await listSources(srcId)) {
     await d.execute(
-      "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-      [uid(), nb.id, s.type, s.title, s.content, s.mime, now]
+      "INSERT INTO sources (id, notebook_id, type, title, content, mime, pinned, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+      [uid(), nb.id, s.type, s.title, s.content, s.mime, s.pinned ?? 0, now]
     );
   }
   if (opts.includeArtifacts ?? true) {
@@ -287,8 +296,8 @@ export async function cloneNotebook(
       [srcId]
     )) {
       await d.execute(
-        "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-        [uid(), nb.id, a.kind, a.title, a.data, now]
+        "INSERT INTO artifacts (id, notebook_id, kind, title, data, pinned, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        [uid(), nb.id, a.kind, a.title, a.data, a.pinned ?? 0, now]
       );
     }
   }
@@ -478,6 +487,7 @@ export async function addSource(
     title,
     content,
     mime,
+    pinned: 0,
     created_at: Date.now(),
   };
   await d.execute(
@@ -501,6 +511,11 @@ export async function updateSource(
   ]);
   // Edited content invalidates its retrieval chunks (re-indexed lazily).
   await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
+}
+
+export async function setSourcePinned(id: string, pinned: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE sources SET pinned = $1 WHERE id = $2", [pinned ? 1 : 0, id]);
 }
 
 export async function deleteSource(id: string): Promise<void> {
@@ -666,6 +681,7 @@ export async function addArtifact(
     kind,
     title,
     data,
+    pinned: 0,
     created_at: Date.now(),
   };
   await d.execute(
@@ -678,6 +694,11 @@ export async function addArtifact(
 export async function deleteArtifact(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM artifacts WHERE id = $1", [id]);
+}
+
+export async function setArtifactPinned(id: string, pinned: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE artifacts SET pinned = $1 WHERE id = $2", [pinned ? 1 : 0, id]);
 }
 
 /** Rewrite an artifact's payload in place (Studio "Revise" → Replace original). */
