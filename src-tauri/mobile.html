@@ -33,6 +33,9 @@
   .btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
   .btn-danger { color: var(--bad); }
   .btn:disabled { opacity: .5; }
+  .tts-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+  .tts-row[hidden] { display: none; }
+  .tts-status { font-size: 12.5px; color: var(--ink2); }
   .search, .field { width: 100%; border: 1px solid var(--edge); background: var(--panel);
     color: var(--ink); border-radius: 12px; padding: 10px 14px; font-size: 15px;
     outline: none; margin-bottom: 10px; }
@@ -500,6 +503,95 @@ async function renderChatTab(pane, nb, st) {
   };
 }
 
+/* -------------------- device-voice read aloud (TTS) --------------------- */
+/* Overviews made with the "System voices" provider carry no audio file —
+   only a script, so there's nothing to stream. Read the script aloud with
+   the phone's own speech synthesis: no keys, no network, no server round-trip. */
+const TTS_OK = typeof window !== 'undefined' && 'speechSynthesis' in window;
+const tts = { run: 0, playing: null };
+
+function pickDeviceVoices() {
+  return new Promise(resolve => {
+    const pick = () => {
+      const all = window.speechSynthesis.getVoices();
+      if (!all.length) return false;
+      const en = all.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+      const pool = en.length >= 2 ? en : all;
+      resolve([pool[0] || null, pool[1] || pool[0] || null]);
+      return true;
+    };
+    if (pick()) return;
+    window.speechSynthesis.onvoiceschanged = () => pick();
+    setTimeout(() => pick(), 1500);
+  });
+}
+
+/* Chrome/Android network voices truncate long utterances — split each turn
+   into sentence-sized chunks. */
+function chunkTurn(text) {
+  const parts = [];
+  const segs = text.match(/[^.!?…;:]+[.!?…;:]?\s*/g) || [text];
+  for (let seg of segs) {
+    seg = seg.trim();
+    while (seg.length > 190) { parts.push(seg.slice(0, 190)); seg = seg.slice(190); }
+    if (seg) parts.push(seg);
+  }
+  return parts;
+}
+
+function stopSpeaking() {
+  tts.run++;
+  tts.playing = null;
+  if (TTS_OK) window.speechSynthesis.cancel();
+  document.querySelectorAll('.tts-btn').forEach(b => { b.textContent = '▶ Read aloud'; b.disabled = false; });
+  document.querySelectorAll('.tts-status').forEach(s => { s.textContent = ''; });
+}
+
+async function readAloud(id, btn, statusEl) {
+  if (!TTS_OK) return;
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+  if (tts.playing === id) { stopSpeaking(); return; }   // tap again to stop
+  stopSpeaking();                                       // stop whatever else was playing
+  btn.disabled = true;
+  say('Loading script…');
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(id)}`);
+    const raw = a.data && Array.isArray(a.data.script) ? a.data.script : [];
+    const turns = raw
+      .filter(t => t && typeof t.text === 'string' && t.text.trim())
+      .map(t => ({ sam: String(t.speaker).toLowerCase() === 'sam', text: t.text.trim() }));
+    if (!turns.length) throw new Error('No script saved for this overview.');
+    const [va, vb] = await pickDeviceVoices().catch(() => [null, null]);
+    const run = ++tts.run;
+    tts.playing = id;
+    btn.disabled = false;
+    btn.textContent = '⏹ Stop';
+    // Flatten into chunks, remembering which script turn each chunk belongs to.
+    const queue = [];
+    turns.forEach((t, ti) => chunkTurn(t.text).forEach(text => queue.push({ sam: t.sam, text, turn: ti })));
+    let i = 0;
+    const step = () => {
+      if (tts.run !== run) return;
+      if (i >= queue.length) { stopSpeaking(); return; }
+      say(`Speaking — part ${queue[i].turn + 1} of ${turns.length}`);
+      const u = new SpeechSynthesisUtterance(queue[i].text);
+      const v = queue[i].sam ? vb : va;
+      if (v) u.voice = v;
+      u.rate = 1;
+      u.onend = () => { if (tts.run === run) { i++; step(); } };
+      u.onerror = u.onend;
+      window.speechSynthesis.speak(u);
+    };
+    step();
+  } catch (e) {
+    if (tts.playing === id) tts.playing = null;
+    say(e.message);
+    btn.disabled = false;
+    btn.textContent = '▶ Read aloud';
+  }
+}
+window.addEventListener('pagehide', stopSpeaking);
+
 /* ------------------------------- studio tab ----------------------------- */
 const GEN_TOOLS = [
   { kind: 'flashcards', label: 'Flashcards', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text']] },
@@ -539,8 +631,12 @@ function renderStudioTab(pane, nb) {
   if (groups.audio.length) {
     h += `<div class="sec">Audio overviews</div>`;
     for (const a of groups.audio) h += artCard(a, `
-      <audio controls preload="none" data-title="${esc(a.title)}"
+      <audio controls preload="none" data-title="${esc(a.title)}" data-art="${esc(a.id)}"
         src="${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio"></audio>
+      <div class="tts-row" data-tts-for="${esc(a.id)}" hidden>
+        <button class="btn tts-btn" data-tts="${esc(a.id)}">▶ Read aloud</button>
+        <span class="tts-status"></span>
+      </div>
       <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
   }
   if (groups.docs.length) {
@@ -569,9 +665,28 @@ function renderStudioTab(pane, nb) {
   pane.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
     if (d.open) { const el = d.querySelector('[data-script]'); if (el && !el.dataset.done) loadScript(el); }
   }));
-  pane.querySelectorAll('audio').forEach(a => a.addEventListener('play', () => {
-    if ('mediaSession' in navigator)
-      navigator.mediaSession.metadata = new MediaMetadata({ title: a.dataset.title || 'Audio overview', artist: nb.title, album: 'BrewLM' });
+  pane.querySelectorAll('audio').forEach(a => {
+    a.addEventListener('play', () => {
+      if ('mediaSession' in navigator)
+        navigator.mediaSession.metadata = new MediaMetadata({ title: a.dataset.title || 'Audio overview', artist: nb.title, album: 'BrewLM' });
+    });
+    if (TTS_OK) {
+      // No synthesized audio stored (System voices) → offer device-voice playback.
+      const showTts = () => {
+        const row = pane.querySelector(`[data-tts-for="${CSS.escape(a.dataset.art)}"]`);
+        if (row) row.hidden = false;
+        a.style.display = 'none';
+      };
+      a.addEventListener('error', showTts);
+      // Probe up front so the dead player never shows for script-only artifacts.
+      fetch(`${BASE}/api/artifacts/${encodeURIComponent(a.dataset.art)}/audio`, { method: 'HEAD' })
+        .then(r => { if (r.status === 404) showTts(); })
+        .catch(() => {});   // network hiccup — leave the normal player in place
+    }
+  });
+  pane.querySelectorAll('.tts-btn').forEach(b => b.addEventListener('click', () => {
+    const row = b.closest('.tts-row');
+    readAloud(b.dataset.tts, b, row && row.querySelector('.tts-status'));
   }));
 
   pane.querySelector('#gen-open').onclick = () => generateSheet(pane, nb);
