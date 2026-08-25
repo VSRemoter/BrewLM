@@ -517,10 +517,16 @@ export function selectChatHistory(all: ChatMessage[]): ChatMessage[] {
   return kept;
 }
 
-/** Grow the textarea with its content, up to ~10 lines. */
+/** Grow the textarea with its content, up to ~20 lines.
+ *  Keep overflow hidden whenever the content fits: WebKit counts textarea
+ *  padding as scrollable overflow, so `auto` leaves the box wiggle-scrollable
+ *  (phantom scrollbars, both axes) even when empty. Flip on scrolling only
+ *  past the cap (scrollbar glyphs stay hidden via the className). */
 function autoSize(el: HTMLTextAreaElement) {
   el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  const capped = Math.min(el.scrollHeight, 320);
+  el.style.height = capped + "px";
+  el.style.overflowY = el.scrollHeight > 320 ? "auto" : "hidden";
 }
 
 /** Detect `@query` at the caret: prefix must be start/whitespace/paren. */
@@ -2122,7 +2128,7 @@ export default function ChatPanel({
                   ? "Ask about your sources… (@ to reference · / for commands)"
                   : "Ask anything… (type / for commands)"
               }
-              className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3"
+              className="max-h-80 flex-1 resize-none overflow-hidden bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
             <button
               onClick={() => (streaming !== null ? stopGenerating() : send())}

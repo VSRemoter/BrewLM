@@ -182,5 +182,9 @@ export function formatTime(ts: number): string {
   const sameDay = d.toDateString() === now.toDateString();
   if (sameDay)
     return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return d.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
