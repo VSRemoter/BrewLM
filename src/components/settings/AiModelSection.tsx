@@ -1,4 +1,4 @@
-import { ExternalLink, X } from "lucide-react";
+import { Check, ExternalLink, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { supportsTemperature } from "../../lib/llm";
 import {
@@ -112,8 +112,12 @@ export default function AiModelSection({
             </a>
           </div>
         </Row>
-        <Row label="Model" alignTop>
-          <div className="w-72">
+      </Card>
+
+      {/* Model: type any id to use it instantly; save favorites to the list. */}
+      <Card>
+        <Row label="Model" desc="The model everything runs on — type any id, or pick a saved one below.">
+          <div className="flex w-72 gap-1.5">
             <input
               value={settings.model}
               onChange={(e) => patch({ model: e.target.value })}
@@ -126,39 +130,70 @@ export default function AiModelSection({
               placeholder="model id"
               className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
             />
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={addModel}
+              disabled={!settings.model.trim() || modelList.includes(settings.model.trim())}
+              title="Save to your model list"
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-edge bg-panel px-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover disabled:cursor-default disabled:opacity-40"
+            >
+              <Plus size={12} strokeWidth={2.5} />
+              Add
+            </button>
+          </div>
+        </Row>
+        {modelList.length > 0 && (
+          <div className="py-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+                Saved models
+              </span>
+              <span className="text-[11px] text-ink-3">{modelList.length}</span>
+            </div>
+            <div className="max-h-56 divide-y divide-edge-soft overflow-y-auto rounded-lg border border-edge">
               {modelList.map((m) => {
                 const active = settings.model === m;
                 return (
-                  <span
+                  <div
                     key={m}
-                    className={`group inline-flex items-center gap-1 rounded-full border py-1 pl-2.5 pr-1 font-mono text-[11px] transition-colors ${
-                      active
-                        ? "border-accent bg-accent text-accent-ink"
-                        : "border-edge bg-panel text-ink-2 hover:border-ink-3"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => patch({ model: m })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        patch({ model: m });
+                      }
+                    }}
+                    title={m}
+                    className={`group flex cursor-pointer items-center gap-2 px-2.5 py-2 transition-colors ${
+                      active ? "bg-hover" : "hover:bg-hover"
                     }`}
                   >
-                    <button onClick={() => patch({ model: m })} className="outline-none" title={`Use ${m}`}>
+                    <Check
+                      size={13}
+                      strokeWidth={2.5}
+                      className={`shrink-0 ${active ? "text-ink" : "text-transparent"}`}
+                    />
+                    <span className={`min-w-0 flex-1 truncate font-mono text-[12px] ${active ? "text-ink" : "text-ink-2"}`}>
                       {m}
-                    </button>
+                    </span>
                     <button
-                      onClick={() => removeModel(m)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeModel(m);
+                      }}
                       aria-label={`Remove ${m}`}
                       title="Remove"
-                      className={`rounded-full p-0.5 transition-opacity ${
-                        active
-                          ? "text-accent-ink/80 hover:bg-white/20 hover:text-accent-ink"
-                          : "text-ink-3 opacity-0 hover:bg-hover hover:text-ink group-hover:opacity-100"
-                      }`}
+                      className="shrink-0 rounded-full p-1 text-ink-3 opacity-0 transition-opacity hover:bg-panel hover:text-ink group-hover:opacity-100"
                     >
-                      <X size={11} strokeWidth={2.5} />
+                      <X size={12} strokeWidth={2.5} />
                     </button>
-                  </span>
+                  </div>
                 );
               })}
             </div>
           </div>
-        </Row>
+        )}
       </Card>
 
       {/* Temperature */}
