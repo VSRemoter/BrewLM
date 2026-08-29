@@ -68,11 +68,12 @@ export default function DataSection({
       {/* Storage location */}
       <Card>
         <Row label="Database" desc={dbPath || "…"} alignTop>
-          <GhostButton onClick={() => void revealDataFolder()}>
-            <span className="inline-flex items-center gap-1.5">
-              <FolderOpen size={13} /> Reveal
-            </span>
-          </GhostButton>
+          <button
+            onClick={() => void revealDataFolder()}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+          >
+            <FolderOpen size={13} /> Reveal
+          </button>
         </Row>
       </Card>
 
@@ -80,18 +81,21 @@ export default function DataSection({
       <SectionTitle title="Backup & Restore" />
       <Card>
         <Row label="Export backup" desc="A self-contained copy of the database you can archive or move to another machine.">
-          <GhostButton onClick={() => void doExport()} disabled={busy === "export"}>
-            <span className="inline-flex items-center gap-1.5">
-              <Download size={13} /> {busy === "export" ? "Exporting…" : "Export"}
-            </span>
-          </GhostButton>
+          <button
+            onClick={() => void doExport()}
+            disabled={busy === "export"}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+          >
+            <Download size={13} /> {busy === "export" ? "Exporting…" : "Export"}
+          </button>
         </Row>
         <Row label="Import backup" desc="Replaces ALL current data with a backup file, then reloads the app.">
-          <GhostButton onClick={() => setImportOpen(true)}>
-            <span className="inline-flex items-center gap-1.5">
-              <Upload size={13} /> Import
-            </span>
-          </GhostButton>
+          <button
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+          >
+            <Upload size={13} /> Import
+          </button>
         </Row>
       </Card>
       {exportedTo && <Footnote>Backup saved to {exportedTo}</Footnote>}
@@ -123,7 +127,7 @@ export default function DataSection({
         <Row label="Factory reset" desc="Erase every notebook, source, chat, studio output, pairing, and setting on this machine.">
           <button
             onClick={() => setResetOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-4 py-2 text-[13px] font-medium text-danger transition-opacity hover:opacity-85"
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:bg-danger-bg"
           >
             <Trash2 size={13} /> Reset…
           </button>

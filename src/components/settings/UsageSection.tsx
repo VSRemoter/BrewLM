@@ -47,7 +47,7 @@ function StatCard({
   sub?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-edge bg-panel px-3.5 py-3">
+    <div className="rounded-lg border border-edge bg-panel px-3.5 py-3">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">{label}</div>
       <div className="mt-1 truncate text-[18px] font-semibold tracking-tight text-ink" title={value}>
         {value}
@@ -145,11 +145,13 @@ export default function UsageSection() {
           <Segmented options={RANGE_LABELS} value={range} onChange={setRange} />
           <Segmented options={METRIC_LABELS} value={metric} onChange={setMetric} />
         </div>
-        <GhostButton onClick={() => void exportCsv()} disabled={!events?.length}>
-          <span className="inline-flex items-center gap-1.5">
-            <Download size={12} /> Export CSV
-          </span>
-        </GhostButton>
+        <button
+          onClick={() => void exportCsv()}
+          disabled={!events?.length}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+        >
+          <Download size={12} /> Export CSV
+        </button>
       </div>
 
       {!events ? (

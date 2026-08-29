@@ -3,7 +3,6 @@ import { ExternalLink, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Settings } from "../../lib/types";
 import { checkForUpdate, type UpdateInfo } from "../../lib/updates";
-import { GhostButton } from "../ui";
 import { Card, Row, SectionTitle, Toggle } from "./controls";
 
 export default function AboutSection({
@@ -74,11 +73,13 @@ export default function AboutSection({
                 Download <ExternalLink size={11} />
               </a>
             )}
-            <GhostButton onClick={() => void check()} disabled={checking}>
-              <span className="inline-flex items-center gap-1.5">
-                <RefreshCw size={12} /> Check now
-              </span>
-            </GhostButton>
+            <button
+              onClick={() => void check()}
+              disabled={checking}
+              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+            >
+              <RefreshCw size={12} /> Check now
+            </button>
           </div>
         </Row>
       </Card>

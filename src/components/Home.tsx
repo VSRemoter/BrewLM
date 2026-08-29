@@ -772,7 +772,7 @@ export default function Home({
                         exitSelect();
                       }}
                       disabled={selectedIds.length === 0}
-                      className="flex items-center gap-1.5 rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
                     >
                       <RotateCcw size={13} strokeWidth={1.8} />
                       Restore
@@ -780,18 +780,23 @@ export default function Home({
                     <button
                       onClick={() => setBulkPurging(true)}
                       disabled={selectedIds.length === 0}
-                      className="flex items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:bg-danger-bg disabled:opacity-40"
                     >
                       <Trash2 size={13} strokeWidth={1.8} />
                       Delete forever
                     </button>
-                    <GhostButton onClick={exitSelect}>Done</GhostButton>
+                    <button
+                      onClick={exitSelect}
+                      className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                    >
+                      Done
+                    </button>
                   </>
                 ) : (
                   trashedNotebooks.length > 0 && (
                     <button
                       onClick={() => setSelecting(true)}
-                      className="rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                      className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
                     >
                       Select
                     </button>
@@ -908,7 +913,7 @@ export default function Home({
                     <button
                       onClick={() => setMoveMenuOpen((v) => !v)}
                       disabled={selectedIds.length === 0}
-                      className="flex items-center gap-1.5 rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
                       aria-haspopup="menu"
                       aria-expanded={moveMenuOpen}
                     >
@@ -960,18 +965,23 @@ export default function Home({
                   <button
                     onClick={() => setBulkTrashing(true)}
                     disabled={selectedIds.length === 0}
-                    className="flex items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-40"
+                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:bg-danger-bg disabled:opacity-40"
                   >
                     <Trash2 size={13} strokeWidth={1.8} />
                     Move to Trash
                   </button>
-                  <GhostButton onClick={exitSelect}>Done</GhostButton>
+                  <button
+                    onClick={exitSelect}
+                    className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                  >
+                    Done
+                  </button>
                 </>
               ) : (
                 <>
                   <button
                     onClick={() => setSelecting(true)}
-                    className="rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                    className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
                   >
                     Select
                   </button>
@@ -979,7 +989,7 @@ export default function Home({
               <div className="relative">
                 <button
                   onClick={() => setSortMenuOpen((v) => !v)}
-                  className="flex items-center gap-1.5 rounded-full border border-edge bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
                   aria-label="Sort notebooks"
                   aria-haspopup="menu"
                   aria-expanded={sortMenuOpen}

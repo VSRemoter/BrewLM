@@ -106,12 +106,14 @@ export default function PairPhonePanel() {
               />
               Full access for this pairing (chat, generation, writes) — off = read-only
             </label>
-            <GhostButton onClick={startShare} disabled={starting}>
-              <span className="inline-flex items-center gap-2">
-                <Smartphone size={14} />
-                {starting ? "Starting secure tunnel…" : "Pair a device"}
-              </span>
-            </GhostButton>
+            <button
+              onClick={startShare}
+              disabled={starting}
+              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+            >
+              <Smartphone size={14} />
+              {starting ? "Starting secure tunnel…" : "Pair a device"}
+            </button>
           </>
         )}
         {share !== null && (
