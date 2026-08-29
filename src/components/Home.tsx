@@ -4,6 +4,7 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  Download,
   FolderClosed,
   FolderPlus,
   ImagePlus,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Folder, Notebook } from "../lib/types";
+import type { UpdateInfo } from "../lib/updates";
 import { fileToCoverDataUrl, formatTime } from "../lib/source";
 import { BrewIcon } from "./BrewIcon";
 import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
@@ -87,6 +89,9 @@ export default function Home({
   onRestoreBulk,
   onDeleteForeverBulk,
   onSettings,
+  updateInfo,
+  onDismissUpdate,
+  trashRetentionDays = 0,
 }: {
   notebooks: Notebook[];
   trashedNotebooks: Notebook[];
@@ -118,6 +123,11 @@ export default function Home({
   /** Sources-only starter copy of a notebook ("Use as template" card action). */
   onUseTemplate: (id: string) => void;
   onSettings: () => void;
+  /** Newer release found at launch (Settings → About); null = up to date / dismissed. */
+  updateInfo?: UpdateInfo | null;
+  onDismissUpdate?: () => void;
+  /** Trash auto-empty setting (0 = never) — shown as a hint in the Trash view. */
+  trashRetentionDays?: number;
 }) {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
@@ -710,6 +720,33 @@ export default function Home({
         </IconButton>
       </header>
 
+      {/* Update banner — a newer GitHub Release was found at launch. */}
+      {updateInfo?.isNewer && (
+        <div className="flex shrink-0 items-center justify-center gap-2 border-b border-edge-soft bg-accent/10 px-4 py-2 text-[12.5px]">
+          <Download size={13} strokeWidth={2} className="shrink-0 text-accent" />
+          <span className="text-ink-2">
+            BrewLM <b>v{updateInfo.latest}</b> is available — you're on v{updateInfo.current}.
+          </span>
+          <a
+            href={updateInfo.url}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-link hover:underline"
+          >
+            Download
+          </a>
+          {onDismissUpdate && (
+            <button
+              onClick={onDismissUpdate}
+              aria-label="Dismiss update notice"
+              className="ml-1 rounded-md p-0.5 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-8">
         {trashOpen ? (
@@ -719,6 +756,8 @@ export default function Home({
                 <h1 className="text-[22px] font-semibold tracking-tight">Trash</h1>
                 <p className="mt-0.5 text-[13px] text-ink-3">
                   Restore notebooks to bring them back, or delete them forever.
+                  {trashRetentionDays > 0 &&
+                    ` Notebooks are permanently deleted after ${trashRetentionDays} days in the Trash.`}
                 </p>
               </div>
               <div className="flex items-center gap-2">

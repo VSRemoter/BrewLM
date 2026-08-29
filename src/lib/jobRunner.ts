@@ -46,6 +46,7 @@ import {
 } from "./studio";
 import { parseScript, synthesizeScript } from "./tts";
 import type { Source } from "./types";
+import { recordUsage } from "./usage";
 
 const POLL_MS = 3000;
 
@@ -156,6 +157,8 @@ async function runChatJob(p: {
       provider: settings.provider,
       apiKey: key,
       model: settings.model,
+      temperature: settings.temperature ?? undefined,
+      onUsage: (u) => void recordUsage("chat", settings.provider, settings.model, u),
       messages: [
         {
           role: "system",
@@ -257,6 +260,8 @@ async function runGenerateJob(p: {
         apiKey: key,
         model: settings.model,
         maxTokens: 4096,
+        temperature: settings.temperature ?? undefined,
+        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: condensedSystemPrompt(notes) },
           { role: "user", content: prompt },
@@ -269,6 +274,8 @@ async function runGenerateJob(p: {
       apiKey: key,
       model: settings.model,
       maxTokens: 4096,
+      temperature: settings.temperature ?? undefined,
+      onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
       messages: [
         {
           role: "system",

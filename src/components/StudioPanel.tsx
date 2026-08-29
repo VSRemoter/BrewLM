@@ -26,6 +26,7 @@ import {
 } from "../lib/rag";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
+import { recordUsage } from "../lib/usage";
 import { formatTime } from "../lib/source";
 import {
   REPORT_FORMATS,
@@ -281,7 +282,9 @@ const StudioPanel = forwardRef<
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
+        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true }) },
           { role: "user", content: prompt },
@@ -369,7 +372,9 @@ const StudioPanel = forwardRef<
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
+        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: system },
           { role: "user", content: prompt },
@@ -415,7 +420,9 @@ const StudioPanel = forwardRef<
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
+        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: await groundedSystem(scopedSources(opts?.sourceIds), audioPrompt, { exhaustive: true }) },
           { role: "user", content: audioPrompt },
@@ -591,7 +598,9 @@ const StudioPanel = forwardRef<
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
+        temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
+        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: await groundedSystem(sources, note) },
           { role: "user", content: revisePrompt },
@@ -1015,6 +1024,7 @@ const StudioPanel = forwardRef<
       {customizing === "flashcards" && (
         <FlashcardsModal
           sources={textSources}
+          defaults={{ amount: settings.defFlashcardsAmount, difficulty: settings.defFlashcardsDifficulty }}
           onClose={() => setCustomizing(null)}
           onGenerate={(opts) => {
             setCustomizing(null);
@@ -1026,6 +1036,7 @@ const StudioPanel = forwardRef<
       {customizing === "quiz" && (
         <QuizModal
           sources={textSources}
+          defaults={{ amount: settings.defQuizAmount, difficulty: settings.defQuizDifficulty }}
           onClose={() => setCustomizing(null)}
           onGenerate={(opts) => {
             setCustomizing(null);
@@ -1049,6 +1060,7 @@ const StudioPanel = forwardRef<
       {customizing === "audio" && (
         <AudioModal
           sources={textSources}
+          defaults={{ mode: settings.defAudioMode, format: settings.defAudioFormat, length: settings.defAudioLength }}
           onClose={() => setCustomizing(null)}
           onGenerate={(opts) => {
             setCustomizing(null);
@@ -1059,6 +1071,7 @@ const StudioPanel = forwardRef<
       {customizing === "report" && (
         <ReportModal
           sources={textSources}
+          defaults={{ type: settings.defReportType }}
           onClose={() => setCustomizing(null)}
           onGenerate={(opts) => {
             setCustomizing(null);

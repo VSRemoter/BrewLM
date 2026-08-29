@@ -180,6 +180,22 @@ async function initDb(): Promise<Database> {
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_chats_nb ON chats(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_artifacts_nb ON artifacts(notebook_id)`);
+  // Token usage ledger powering Settings → Usage & Cost. cost_usd is the real
+  // billed amount when the provider reports it (OpenRouter), NULL otherwise.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      ts INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      input INTEGER NOT NULL DEFAULT 0,
+      output INTEGER NOT NULL DEFAULT 0,
+      cached_read INTEGER NOT NULL DEFAULT 0,
+      cached_write INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL
+    )`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts)`);
   return db;
 }
 
@@ -398,6 +414,23 @@ export async function deleteNotebook(id: string): Promise<void> {
   await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
+}
+
+/**
+ * Trash auto-empty: permanently delete notebooks trashed longer than `days`
+ * ago. 0 or negative = retention disabled. Runs once at startup; returns the
+ * number of notebooks purged.
+ */
+export async function purgeExpiredTrash(days: number): Promise<number> {
+  if (days <= 0) return 0;
+  const cutoff = Date.now() - days * 86_400_000;
+  const d = await getDb();
+  const rows = await d.select<{ id: string }[]>(
+    "SELECT id FROM notebooks WHERE trashed_at > 0 AND trashed_at < $1",
+    [cutoff]
+  );
+  for (const r of rows) await deleteNotebook(r.id);
+  return rows.length;
 }
 
 /* ------------------------------- Folders ------------------------------- */
@@ -642,6 +675,26 @@ export async function createChat(notebookId: string, title = "New chat"): Promis
   return chat;
 }
 
+/**
+ * Guarantee the notebook has at least one chat, creating the default one only
+ * when none exists. The conditional INSERT is a single statement — atomic in
+ * SQLite — so concurrent callers (React StrictMode's dev double-mount, fast
+ * navigation) can't create duplicates the way check-then-create can.
+ */
+export async function ensureChat(notebookId: string): Promise<Chat> {
+  const d = await getDb();
+  const now = Date.now();
+  const res = await d.execute(
+    `INSERT INTO chats (id, notebook_id, title, created_at, updated_at)
+     SELECT $1, $2, 'New chat', $3, $3
+     WHERE NOT EXISTS (SELECT 1 FROM chats WHERE notebook_id = $2)`,
+    [uid(), notebookId, now]
+  );
+  if (res.rowsAffected > 0) await touchNotebook(notebookId);
+  const list = await listChats(notebookId);
+  return list[0];
+}
+
 export async function renameChat(id: string, title: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE chats SET title = $1 WHERE id = $2", [title, id]);
@@ -765,6 +818,43 @@ export async function setSetting(key: string, value: string): Promise<void> {
     "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2",
     [key, value]
   );
+}
+
+/* ---------------------------- Data management ---------------------------- */
+
+/** Flush WAL sidecars into the main db file so a backup copy is self-contained. */
+export async function checkpointWal(): Promise<void> {
+  const d = await getDb();
+  await d.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+}
+
+/** Close the shared connection (restore/factory-reset replace the file after). */
+export async function closeDb(): Promise<void> {
+  if (!dbPromise) return;
+  const d = await dbPromise;
+  dbPromise = null;
+  await d.close();
+}
+
+/** Factory reset: wipe every row from every table (schema and file stay). */
+export async function clearAllData(): Promise<void> {
+  const d = await getDb();
+  for (const t of [
+    "messages",
+    "chats",
+    "sources",
+    "source_chunks",
+    "artifacts",
+    "notebooks",
+    "folders",
+    "devices",
+    "jobs",
+    "activity",
+    "usage_events",
+    "settings",
+  ]) {
+    await d.execute(`DELETE FROM ${t}`);
+  }
 }
 
 /* ------------------------- Phone sharing: devices ------------------------ */

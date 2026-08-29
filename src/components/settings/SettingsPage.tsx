@@ -1,0 +1,129 @@
+import {
+  AudioLines,
+  BarChart3,
+  ChevronLeft,
+  Database,
+  Info,
+  Palette,
+  Smartphone,
+  Sparkles,
+  Wand2,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { loadSettings, patchSettings } from "../../lib/settings";
+import type { Settings } from "../../lib/types";
+import type { UpdateInfo } from "../../lib/updates";
+import PairPhonePanel from "../PairPhonePanel";
+import AboutSection from "./AboutSection";
+import AiModelSection from "./AiModelSection";
+import AppearanceSection from "./AppearanceSection";
+import AudioSection from "./AudioSection";
+import DataSection from "./DataSection";
+import StudioSection from "./StudioSection";
+import UsageSection from "./UsageSection";
+
+const SECTIONS = [
+  { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "ai", label: "AI Model", icon: Sparkles },
+  { id: "studio", label: "Studio Defaults", icon: Wand2 },
+  { id: "audio", label: "Audio Voices", icon: AudioLines },
+  { id: "usage", label: "Usage & Cost", icon: BarChart3 },
+  { id: "data", label: "Data & Storage", icon: Database },
+  { id: "phone", label: "Phone Pairing", icon: Smartphone },
+  { id: "about", label: "About & Updates", icon: Info },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
+
+/**
+ * Full-page settings: sidebar sections + instant-apply controls. Rendered as a
+ * layer over the current view so Home/Notebook state survives a settings trip.
+ */
+export default function SettingsPage({
+  updateInfo,
+  onClose,
+}: {
+  updateInfo: UpdateInfo | null;
+  onClose: () => void;
+}) {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [section, setSection] = useState<SectionId>("appearance");
+
+  useEffect(() => {
+    loadSettings().then(setSettings);
+  }, []);
+
+  /** Instant-apply: update local state immediately, persist only the changed keys. */
+  const patch = (p: Partial<Settings>) => {
+    setSettings((s) => (s ? { ...s, ...p } : s));
+    void patchSettings(p);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-canvas text-ink">
+      {/* Header */}
+      <header className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-4 py-3">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+        >
+          <ChevronLeft size={15} strokeWidth={2} /> Back
+        </button>
+        <h1 className="text-[15px] font-semibold tracking-tight">Settings</h1>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        {/* Section nav */}
+        <nav className="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-edge-soft p-3">
+          {SECTIONS.map((s) => {
+            const Icon = s.icon;
+            const active = section === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setSection(s.id)}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
+                  active ? "bg-hover font-semibold text-ink" : "font-medium text-ink-3 hover:bg-hover-soft hover:text-ink-2"
+                }`}
+              >
+                <Icon size={15} strokeWidth={1.8} className="shrink-0" />
+                {s.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Content */}
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          {settings ? (
+            <div className="mx-auto max-w-4xl px-6 py-6">
+              {section === "appearance" && <AppearanceSection settings={settings} patch={patch} />}
+              {section === "ai" && <AiModelSection settings={settings} patch={patch} />}
+              {section === "studio" && <StudioSection settings={settings} patch={patch} />}
+              {section === "audio" && <AudioSection settings={settings} patch={patch} />}
+              {section === "usage" && <UsageSection />}
+              {section === "data" && <DataSection settings={settings} patch={patch} />}
+              {section === "phone" && (
+                <div>
+                  <h2 className="mb-3 text-[17px] font-semibold tracking-tight text-ink">
+                    Phone Pairing
+                  </h2>
+                  <div className="rounded-2xl border border-edge bg-panel px-4 py-3">
+                    <PairPhonePanel />
+                  </div>
+                </div>
+              )}
+              {section === "about" && (
+                <AboutSection settings={settings} patch={patch} updateInfo={updateInfo} />
+              )}
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-ink-3 border-t-transparent" />
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

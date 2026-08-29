@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
-import SettingsModal from "./components/SettingsModal";
+import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
 import {
   cloneNotebook,
@@ -14,6 +14,7 @@ import {
   listNotebooks,
   listTrashedNotebooks,
   moveNotebookToFolder,
+  purgeExpiredTrash,
   restoreNotebook,
   setFolderCover,
   setNotebookCover,
@@ -25,6 +26,7 @@ import {
 import { loadSettings } from "./lib/settings";
 import { applyFont } from "./lib/fonts";
 import { applyTheme } from "./lib/themes";
+import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import type { Folder, Notebook, Settings } from "./lib/types";
 
 export default function App() {
@@ -36,6 +38,7 @@ export default function App() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   const refresh = useCallback(async () => {
     const [nbs, trash, fds] = await Promise.all([
@@ -58,11 +61,20 @@ export default function App() {
         await getDb();
         startJobRunner(); // drains phone-queued chat/generate jobs
         const s = await loadSettings();
+        // Trash auto-empty (retention 0 = disabled).
+        const purged = await purgeExpiredTrash(s.trashRetentionDays);
+        if (purged > 0) console.info(`trash: auto-emptied ${purged} notebook(s)`);
         applyTheme(s.theme);
         applyFont(s.font);
         setSettings(s);
         await refresh();
         setReady(true);
+        // Non-blocking update check — never delays or breaks startup.
+        if (s.updateCheckOnLaunch) {
+          void checkForUpdate().then((info) => {
+            if (info?.isNewer) setUpdateInfo(info);
+          });
+        }
       } catch (e) {
         setFatal(e instanceof Error ? e.message : String(e));
       }
@@ -119,6 +131,9 @@ export default function App() {
           notebooks={notebooks}
           trashedNotebooks={trashedNotebooks}
           folders={folders}
+          updateInfo={updateInfo}
+          onDismissUpdate={() => setUpdateInfo(null)}
+          trashRetentionDays={settings.trashRetentionDays}
           onOpen={setOpenId}
           onSettings={() => setSettingsOpen(true)}
           onCreate={async (title, description, folderId, cover) => {
@@ -201,7 +216,8 @@ export default function App() {
       )}
 
       {settingsOpen && (
-        <SettingsModal
+        <SettingsPage
+          updateInfo={updateInfo}
           onClose={() => {
             setSettingsOpen(false);
             reloadSettings();

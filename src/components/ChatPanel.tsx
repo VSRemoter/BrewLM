@@ -63,6 +63,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
+import { recordUsage } from "../lib/usage";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
@@ -1348,7 +1349,7 @@ export default function ChatPanel({
     // Studio tool commands — run in the Studio panel, confirm here.
     const studioMatch = /^\/(flashcards|quiz|mindmap|audio|report|research)(\s|$)/i.exec(text);
     if (studioMatch) {
-      const parsed = parseStudioCommand(text);
+      const parsed = parseStudioCommand(text, settings);
       if (typeof parsed === "string") {
         const replyMsg = await addMessage(chatId, notebookId, "assistant", parsed);
         setMsgs((prev) => [...prev, replyMsg]);
@@ -1428,9 +1429,11 @@ export default function ChatPanel({
         apiKey: keyed,
         model: settings.model,
         messages: llmMessages,
+        temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
         onUsage: (u) => {
           usage = u;
+          void recordUsage("chat", settings.provider, settings.model, u);
         },
       })) {
         acc += delta;

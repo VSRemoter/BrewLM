@@ -93,6 +93,15 @@ export type Provider = "openrouter" | "openai" | "anthropic";
 /** Where Audio overviews get their voices from. */
 export type TtsProvider = "system" | "openai" | "openrouter" | "elevenlabs";
 
+/* Studio tool option vocabularies (canonical home; studio.ts re-exports them). */
+export type Amount = "compact" | "default" | "more";
+export type Difficulty = "easy" | "medium" | "hard";
+export type AudioFormat = "deep-dive" | "brief" | "debate" | "critique";
+export type AudioLength = "short" | "standard" | "long";
+/** Conversation = two hosts (Alex & Sam); Solo = a single narrator (Alex). */
+export type AudioMode = "conversation" | "solo";
+export type ReportType = "study-guide" | "briefing-doc" | "analysis" | "custom";
+
 export interface Settings {
   provider: Provider;
   openrouterKey: string;
@@ -115,6 +124,21 @@ export interface Settings {
   ttsVoiceSam: string;
   /** Direction for how the hosts should sound (tone, pace, accent…). OpenAI TTS only. */
   ttsInstructions: string;
+  /** Sampling temperature; null = provider default (the param is never sent). */
+  temperature: number | null;
+  /* Studio defaults — seed the customize modals and slash commands. */
+  defFlashcardsAmount: Amount;
+  defFlashcardsDifficulty: Difficulty;
+  defQuizAmount: Amount;
+  defQuizDifficulty: Difficulty;
+  defAudioMode: AudioMode;
+  defAudioFormat: AudioFormat;
+  defAudioLength: AudioLength;
+  defReportType: ReportType;
+  /** Days a notebook sits in Trash before startup purge; 0 = never auto-delete. */
+  trashRetentionDays: number;
+  /** Check GitHub Releases for a newer version on launch. */
+  updateCheckOnLaunch: boolean;
 }
 
 export interface Flashcard {

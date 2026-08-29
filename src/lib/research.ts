@@ -1,7 +1,28 @@
-import { complete, extractJson } from "./llm";
+import { complete, extractJson, type StreamUsage } from "./llm";
 import { activeKey } from "./settings";
 import { fetchLinkContent } from "./source";
-import type { Settings } from "./types";
+import type { Provider, Settings } from "./types";
+import { recordUsage } from "./usage";
+
+/** Parse token usage out of a non-streaming provider response, when present. */
+function usageFromJson(provider: Provider, json: unknown): StreamUsage {
+  const u = (json as { usage?: Record<string, number> })?.usage;
+  if (!u || typeof u !== "object") return {};
+  if (provider === "anthropic") {
+    return {
+      input: u.input_tokens,
+      output: u.output_tokens,
+      cachedRead: u.cache_read_input_tokens,
+      cachedWrite: u.cache_creation_input_tokens,
+    };
+  }
+  return {
+    input: u.prompt_tokens ?? u.input_tokens,
+    output: u.completion_tokens ?? u.output_tokens,
+    cachedRead: (u.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens ?? u.cache_read_input_tokens,
+    costUsd: typeof u.cost === "number" ? u.cost : undefined,
+  };
+}
 
 /** Throws a recognisable AbortError so the caller can tell cancel from failure. */
 function throwIfAborted(signal?: AbortSignal) {
@@ -67,6 +88,7 @@ async function searchOpenRouter(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "openrouter", model, usageFromJson("openrouter", json));
   return collectCitations(json.choices?.[0]?.message?.annotations);
 }
 
@@ -91,6 +113,7 @@ async function searchOpenAI(query: string, apiKey: string, signal?: AbortSignal)
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "openai", "gpt-4o-mini-search-preview", usageFromJson("openai", json));
   return collectCitations(json.choices?.[0]?.message?.annotations);
 }
 
@@ -131,6 +154,7 @@ async function searchAnthropic(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "anthropic", model, usageFromJson("anthropic", json));
   const out: WebHit[] = [];
   for (const block of json.content ?? []) {
     // results of the tool calls
@@ -208,6 +232,7 @@ async function answerAnthropic(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "anthropic", model, usageFromJson("anthropic", json));
   const texts: string[] = [];
   const hits: WebHit[] = [];
   for (const block of json.content ?? []) {
@@ -254,6 +279,7 @@ async function answerOpenAI(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "openai", "gpt-4o-mini-search-preview", usageFromJson("openai", json));
   const msg = json.choices?.[0]?.message;
   return {
     text: String(msg?.content ?? "").trim(),
@@ -289,6 +315,7 @@ async function answerOpenRouter(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
+  void recordUsage("research", "openrouter", model, usageFromJson("openrouter", json));
   const msg = json.choices?.[0]?.message;
   return {
     text: String(msg?.content ?? "").trim(),
@@ -350,7 +377,9 @@ export async function deepResearch(opts: {
       apiKey: key,
       model: settings.model,
       maxTokens: 4096,
+      temperature: settings.temperature ?? undefined,
       signal,
+      onUsage: (u) => void recordUsage("research", settings.provider, settings.model, u),
       messages: [
         ...(system ? [{ role: "system" as const, content: system }] : []),
         { role: "user" as const, content: prompt },

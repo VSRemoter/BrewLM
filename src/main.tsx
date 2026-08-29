@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { applyZoom, getZoom, setZoom } from "./lib/zoom";
 import "./index.css";
 
 /** Last-resort error surface so a startup failure never shows a blank window. */
@@ -27,31 +28,23 @@ window.addEventListener("unhandledrejection", (e) =>
 );
 
 /* ------------------------- App zoom (⌘+ / ⌘- / ⌘0) ------------------------ */
-const ZOOM_KEY = "om.zoom";
-let zoom = Number(localStorage.getItem(ZOOM_KEY)) || 1;
-const applyZoom = () => {
-  document.documentElement.style.setProperty("zoom", String(zoom));
-  // vh-based lengths are scaled by root zoom, so modals must divide by it
-  // to keep their rendered height inside the actual window.
-  document.documentElement.style.setProperty("--om-zoom", String(zoom));
-};
+// Shared store in lib/zoom.ts — Settings → Appearance → Text size drives the
+// same value, so shortcuts and the slider never disagree.
 applyZoom();
 window.addEventListener("keydown", (e) => {
   if (!(e.metaKey || e.ctrlKey)) return;
   if (e.key === "=" || e.key === "+" || e.code === "NumpadAdd") {
     e.preventDefault();
-    zoom = Math.min(1.6, Math.round((zoom + 0.1) * 100) / 100);
+    setZoom(getZoom() + 0.1);
   } else if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract") {
     e.preventDefault();
-    zoom = Math.max(0.6, Math.round((zoom - 0.1) * 100) / 100);
+    setZoom(getZoom() - 0.1);
   } else if (e.key === "0") {
     e.preventDefault();
-    zoom = 1;
+    setZoom(1);
   } else {
     return;
   }
-  localStorage.setItem(ZOOM_KEY, String(zoom));
-  applyZoom();
 });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

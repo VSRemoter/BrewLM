@@ -13,6 +13,8 @@ export interface StreamUsage {
   cachedRead?: number;
   /** Input tokens written into the provider's prompt cache. */
   cachedWrite?: number;
+  /** Real billed cost in USD, when the provider reports it (OpenRouter). */
+  costUsd?: number;
 }
 
 interface StreamOptions {
@@ -22,10 +24,26 @@ interface StreamOptions {
   messages: LlmMessage[];
   maxTokens?: number;
   jsonMode?: boolean;
+  /** Sampling temperature (0–1). Undefined = provider default: never sent. */
+  temperature?: number;
   /** Abort mid-request to cancel generation; fetch + stream stop promptly. */
   signal?: AbortSignal;
   /** Called once the stream ends with provider-reported token usage (if any). */
   onUsage?: (usage: StreamUsage) => void;
+}
+
+/**
+ * Reasoning-model families (o1/o3/o4, gpt-5) reject sampling params and
+ * `max_tokens` — the settings UI uses supportsTemperature() to hint, and
+ * request builders use isReasoningModel() to send max_completion_tokens.
+ */
+function isReasoningModel(model: string): boolean {
+  return /^(openai\/)?(o1|o3|o4|gpt-5)/i.test(model.trim());
+}
+
+/** Reasoning-model families reject sampling params like temperature. */
+export function supportsTemperature(model: string): boolean {
+  return !isReasoningModel(model);
 }
 
 /** True when an error came from an intentional AbortController cancel. */
@@ -92,8 +110,11 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     model: opts.model,
     messages,
     stream: true,
-    max_tokens: opts.maxTokens ?? 4096,
+    stream_options: { include_usage: true },
   };
+  // o1/o3/gpt-5-class models reject `max_tokens` outright — the request fails.
+  if (isReasoningModel(opts.model)) body.max_completion_tokens = opts.maxTokens ?? 4096;
+  else body.max_tokens = opts.maxTokens ?? 4096;
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
@@ -103,6 +124,9 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   // Image-generation models (e.g. gemini-*-image) need both modalities requested.
   if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
     body.modalities = ["image", "text"];
+  }
+  if (opts.temperature != null && supportsTemperature(opts.model)) {
+    body.temperature = opts.temperature;
   }
 
   const res = await fetch(base, {
@@ -147,6 +171,8 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
           input: u.prompt_tokens ?? u.input_tokens ?? usage.input,
           output: u.completion_tokens ?? u.output_tokens ?? usage.output,
           cachedRead: u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? usage.cachedRead,
+          // OpenRouter reports the real billed amount when usage:include is set.
+          costUsd: typeof u.cost === "number" ? u.cost : usage.costUsd,
         };
       }
     } catch {
@@ -187,6 +213,8 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       model: opts.model,
       max_tokens: opts.maxTokens ?? 4096,
       stream: true,
+      // All Claude models accept temperature; only sent when the user set one.
+      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
       // One ephemeral cache breakpoint at the end of the (large, stable)
       // system prompt: repeat turns re-read the sources at ~10% input cost.
       system: systemText

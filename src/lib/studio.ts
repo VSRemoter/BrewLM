@@ -9,13 +9,17 @@
 
 /* ------------------------------- option types ------------------------------ */
 
-export type Amount = "compact" | "default" | "more";
-export type Difficulty = "easy" | "medium" | "hard";
-export type AudioFormat = "deep-dive" | "brief" | "debate" | "critique";
-export type AudioLength = "short" | "standard" | "long";
-/** Conversation = two hosts (Alex & Sam); Solo = a single narrator (Alex). */
-export type AudioMode = "conversation" | "solo";
-export type ReportType = "study-guide" | "briefing-doc" | "analysis" | "custom";
+// Canonical definitions live in types.ts (Settings references them); re-exported
+// here so existing imports from this module keep working.
+import type {
+  Amount,
+  AudioFormat,
+  AudioLength,
+  AudioMode,
+  Difficulty,
+  ReportType,
+} from "./types";
+export type { Amount, AudioFormat, AudioLength, AudioMode, Difficulty, ReportType } from "./types";
 
 export interface FlashcardsOptions {
   amount: Amount;

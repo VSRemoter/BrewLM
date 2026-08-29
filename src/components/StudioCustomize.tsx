@@ -205,15 +205,18 @@ function useSourceSelection(sources: Source[]) {
 
 export function FlashcardsModal({
   sources,
+  defaults,
   onClose,
   onGenerate,
 }: {
   sources: Source[];
+  /** Settings → Studio Defaults seed the initial selections. */
+  defaults?: { amount: Amount; difficulty: Difficulty };
   onClose: () => void;
   onGenerate: (opts: FlashcardsOptions) => void;
 }) {
-  const [amount, setAmount] = useState<Amount>("default");
-  const [difficulty, setDifficulty] = useState<Difficulty>("medium");
+  const [amount, setAmount] = useState<Amount>(defaults?.amount ?? "default");
+  const [difficulty, setDifficulty] = useState<Difficulty>(defaults?.difficulty ?? "medium");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
   const [name, setName] = useState("Flashcards");
@@ -259,15 +262,18 @@ export function FlashcardsModal({
 
 export function QuizModal({
   sources,
+  defaults,
   onClose,
   onGenerate,
 }: {
   sources: Source[];
+  /** Settings → Studio Defaults seed the initial selections. */
+  defaults?: { amount: Amount; difficulty: Difficulty };
   onClose: () => void;
   onGenerate: (opts: QuizOptions) => void;
 }) {
-  const [amount, setAmount] = useState<Amount>("default");
-  const [difficulty, setDifficulty] = useState<Difficulty>("medium");
+  const [amount, setAmount] = useState<Amount>(defaults?.amount ?? "default");
+  const [difficulty, setDifficulty] = useState<Difficulty>(defaults?.difficulty ?? "medium");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
   const [name, setName] = useState("Quiz");
@@ -349,16 +355,19 @@ export function MindmapModal({
 
 export function AudioModal({
   sources,
+  defaults,
   onClose,
   onGenerate,
 }: {
   sources: Source[];
+  /** Settings → Studio Defaults seed the initial selections. */
+  defaults?: { mode: AudioMode; format: AudioFormat; length: AudioLength };
   onClose: () => void;
   onGenerate: (opts: AudioOptions) => void;
 }) {
-  const [mode, setMode] = useState<AudioMode>("conversation");
-  const [format, setFormat] = useState<AudioFormat>("deep-dive");
-  const [length, setLength] = useState<AudioLength>("standard");
+  const [mode, setMode] = useState<AudioMode>(defaults?.mode ?? "conversation");
+  const [format, setFormat] = useState<AudioFormat>(defaults?.format ?? "deep-dive");
+  const [length, setLength] = useState<AudioLength>(defaults?.length ?? "standard");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [description, setDescription] = useState("");
   const [name, setName] = useState("Audio overview");
@@ -415,17 +424,20 @@ export function AudioModal({
 
 export function ReportModal({
   sources,
+  defaults,
   onClose,
   onGenerate,
 }: {
   sources: Source[];
+  /** Settings → Studio Defaults seeds the initial report type. */
+  defaults?: { type: ReportType };
   onClose: () => void;
   onGenerate: (opts: ReportOptions) => void;
 }) {
-  const [type, setType] = useState<ReportType>("study-guide");
+  const [type, setType] = useState<ReportType>(defaults?.type ?? "study-guide");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [customPrompt, setCustomPrompt] = useState("");
-  const [name, setName] = useState(REPORT_TYPE_LABELS["study-guide"]);
+  const [name, setName] = useState(REPORT_TYPE_LABELS[defaults?.type ?? "study-guide"]);
 
   /** Switch report type; the saved name follows unless the user renamed it. */
   const changeType = (t: ReportType) => {

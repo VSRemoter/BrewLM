@@ -5,6 +5,7 @@ import {
   addSource,
   cloneNotebook,
   createChat,
+  ensureChat,
   deleteAllChats,
   deleteArtifacts,
   deleteChat,
@@ -140,19 +141,17 @@ export default function NotebookView({
     [notebook.id, refreshSources]
   );
 
-  // Load per-notebook data; guarantee at least one chat exists and select the
-  // most recently active one.
+  // Load per-notebook data; guarantee at least one chat exists (atomic in the
+  // DB — StrictMode's double-mount can't duplicate it) and select the most
+  // recently active one.
   useEffect(() => {
     setTitleDraft(notebook.title);
     refreshSources();
     refreshArtifacts();
     let cancelled = false;
     (async () => {
-      let list = await refreshChats();
-      if (list.length === 0) {
-        await createChat(notebook.id);
-        list = await refreshChats();
-      }
+      await ensureChat(notebook.id);
+      const list = await refreshChats();
       if (!cancelled) {
         setChats(list);
         setActiveChatId((cur) =>

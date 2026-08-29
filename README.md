@@ -49,7 +49,7 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 ### Customization & organization
 - **Clone & Template**: `/clone "<title>" [yes|no]` duplicates a notebook exactly (sources + chats + studio). **Use as template** on the homepage makes a sources-only starter copy.
 - **Folders** with `/move`, **star** pinning, **rename** chats and notebooks, per-notebook covers and chat backgrounds.
-- **Themes** — 12 built-in (Original, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix, plus the multi-hue Lilac, Lagoon, Sunset, and Candy); switch instantly with `/theme <name>`.
+- **Settings page** with sidebar sections: Appearance (12 themes — Original, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix, plus the multi-hue Lilac, Lagoon, Sunset, and Candy — UI font, text size), AI Model (provider/key/model, optional temperature override, global custom instructions for chat), Studio Defaults, Audio Voices, Usage & Cost (per-model token ledger with cost estimates), Data & Storage (backup export/import, trash auto-empty, factory reset), Phone Pairing, and About & Updates (launch-time update check). Everything saves instantly.
 - Model switching per provider with autocomplete and custom model lists.
 
 ### Pair your phone

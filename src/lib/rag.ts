@@ -27,6 +27,7 @@ import {
 import { complete } from "./llm";
 import { activeKey, loadSettings } from "./settings";
 import type { Settings, Source, SourceChunk } from "./types";
+import { addUsage, newUsageAccumulator, recordAccumulated } from "./usage";
 
 const CHUNK_SIZE = 1200;
 const CHUNK_OVERLAP = 150;
@@ -468,48 +469,57 @@ async function condenseTo(
 ): Promise<string> {
   const goal = focus || "a comprehensive, detailed representation of the full notebook material";
   let notes = items;
-  for (let pass = 0; pass < 4; pass++) {
-    const joined = notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n");
-    if (joined.length <= targetChars) return joined;
+  // Fold every map-reduce call into one usage event: a 400-page notebook fires
+  // ~100 completions per condensation, and the dashboard should show the true
+  // total cost — without 100 phantom generations.
+  const acc = newUsageAccumulator();
+  try {
+    for (let pass = 0; pass < 4; pass++) {
+      const joined = notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n");
+      if (joined.length <= targetChars) return joined;
 
-    const groups: CondenseItem[] = [];
-    let cur: CondenseItem | null = null;
-    for (const item of notes) {
-      if (cur && cur.text.length + item.text.length > MAP_GROUP_CHARS) {
-        groups.push(cur);
-        cur = { label: item.label, text: item.text };
-      } else if (cur) {
-        cur = { label: cur.label, text: `${cur.text}\n\n${item.text}` };
-      } else {
-        cur = { label: item.label, text: item.text };
+      const groups: CondenseItem[] = [];
+      let cur: CondenseItem | null = null;
+      for (const item of notes) {
+        if (cur && cur.text.length + item.text.length > MAP_GROUP_CHARS) {
+          groups.push(cur);
+          cur = { label: item.label, text: item.text };
+        } else if (cur) {
+          cur = { label: cur.label, text: `${cur.text}\n\n${item.text}` };
+        } else {
+          cur = { label: item.label, text: item.text };
+        }
       }
-    }
-    if (cur) groups.push(cur);
+      if (cur) groups.push(cur);
 
-    const next = await mapPool(groups.slice(0, MAX_GROUPS_PER_LEVEL), CONDENSE_POOL, async (g) => {
-      const note = (
-        await complete({
-          provider: settings.provider,
-          apiKey: activeKey(settings),
-          model: settings.model,
-          maxTokens: 1024,
-          messages: [
-            {
-              role: "user",
-              content:
-                `Below is an excerpt from "${g.label}". Extract everything relevant to ${goal} ` +
-                `as dense bullet notes (max 400 words): key facts, arguments, figures, dates, names, ` +
-                `definitions, caveats. Quote specifics exactly; write nothing that isn't in the excerpt.\n\n${g.text}`,
-            },
-          ],
-        })
-      ).trim();
-      return { label: g.label, text: note };
-    });
-    if (next.length === 0) return joined.slice(0, targetChars);
-    notes = next;
+      const next = await mapPool(groups.slice(0, MAX_GROUPS_PER_LEVEL), CONDENSE_POOL, async (g) => {
+        const note = (
+          await complete({
+            provider: settings.provider,
+            apiKey: activeKey(settings),
+            model: settings.model,
+            maxTokens: 1024,
+            onUsage: (u) => addUsage(acc, u),
+            messages: [
+              {
+                role: "user",
+                content:
+                  `Below is an excerpt from "${g.label}". Extract everything relevant to ${goal} ` +
+                  `as dense bullet notes (max 400 words): key facts, arguments, figures, dates, names, ` +
+                  `definitions, caveats. Quote specifics exactly; write nothing that isn't in the excerpt.\n\n${g.text}`,
+              },
+            ],
+          })
+        ).trim();
+        return { label: g.label, text: note };
+      });
+      if (next.length === 0) return joined.slice(0, targetChars);
+      notes = next;
+    }
+    return notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n").slice(0, targetChars);
+  } finally {
+    void recordAccumulated("studio", settings.provider, settings.model, acc);
   }
-  return notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n").slice(0, targetChars);
 }
 
 /**

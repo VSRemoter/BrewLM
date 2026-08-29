@@ -46,6 +46,20 @@ export interface StudioParsed {
   title: string;
 }
 
+/**
+ * Settings → Studio Defaults, threaded into parsing so a bare /flashcards or
+ * /audio honors the user's configured defaults. Explicit args still win.
+ */
+export type StudioDefaults = {
+  defFlashcardsAmount?: Amount;
+  defFlashcardsDifficulty?: Difficulty;
+  defQuizAmount?: Amount;
+  defQuizDifficulty?: Difficulty;
+  defAudioMode?: AudioMode;
+  defAudioFormat?: AudioFormat;
+  defAudioLength?: AudioLength;
+};
+
 const cardAmount = (t: string, counts: Record<Amount, number>): Amount | null => {
   if (t === "compact" || t === "default" || t === "more") return t;
   const hit = (Object.entries(counts) as [Amount, number][]).find(([, n]) => String(n) === t);
@@ -58,10 +72,12 @@ const isDifficulty = (t: string): t is Difficulty =>
 /** amount + difficulty + focus from a token list, for flashcards/quiz. */
 function splitCardArgs(
   args: string[],
-  counts: Record<Amount, number>
+  counts: Record<Amount, number>,
+  defAmount: Amount = "default",
+  defDifficulty: Difficulty = "medium"
 ): { amount: Amount; difficulty: Difficulty; focus: string } {
-  let amount: Amount = "default";
-  let difficulty: Difficulty = "medium";
+  let amount: Amount = defAmount;
+  let difficulty: Difficulty = defDifficulty;
   const focus: string[] = [];
   for (const tok of args) {
     const t = tok.toLowerCase();
@@ -82,7 +98,7 @@ const USAGE: Record<string, string> = {
   research: "`/research <topic>` — a topic is required",
 };
 
-export function parseStudioCommand(raw: string): StudioParsed | string {
+export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): StudioParsed | string {
   const m = /^\/(\w+)\s*([\s\S]*)$/i.exec(raw);
   if (!m) return "Not a Studio command.";
   const tool = m[1].toLowerCase();
@@ -91,7 +107,12 @@ export function parseStudioCommand(raw: string): StudioParsed | string {
 
   switch (tool) {
     case "flashcards": {
-      const { amount, difficulty, focus } = splitCardArgs(args, FLASHCARD_COUNTS);
+      const { amount, difficulty, focus } = splitCardArgs(
+        args,
+        FLASHCARD_COUNTS,
+        defs.defFlashcardsAmount,
+        defs.defFlashcardsDifficulty
+      );
       const n = FLASHCARD_COUNTS[amount];
       return {
         cmd: {
@@ -103,7 +124,12 @@ export function parseStudioCommand(raw: string): StudioParsed | string {
       };
     }
     case "quiz": {
-      const { amount, difficulty, focus } = splitCardArgs(args, QUIZ_COUNTS);
+      const { amount, difficulty, focus } = splitCardArgs(
+        args,
+        QUIZ_COUNTS,
+        defs.defQuizAmount,
+        defs.defQuizDifficulty
+      );
       const n = QUIZ_COUNTS[amount];
       return {
         cmd: {
@@ -128,9 +154,9 @@ export function parseStudioCommand(raw: string): StudioParsed | string {
           title: "Audio overview",
         };
       }
-      let format: AudioFormat = "deep-dive";
-      let length: AudioLength = "standard";
-      let mode: AudioMode = "conversation";
+      let format: AudioFormat = defs.defAudioFormat ?? "deep-dive";
+      let length: AudioLength = defs.defAudioLength ?? "standard";
+      let mode: AudioMode = defs.defAudioMode ?? "conversation";
       const knownFormat = Object.keys(AUDIO_FORMAT_LABELS) as AudioFormat[];
       const knownLength = Object.keys(AUDIO_LENGTH_LABELS) as AudioLength[];
       const focus: string[] = [];
