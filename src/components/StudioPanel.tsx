@@ -697,6 +697,37 @@ const StudioPanel = forwardRef<
   };
 
   /** Cancel any pending debounce and save now. Returns the final title. */
+  /**
+   * One-click generation honors Settings → Studio Defaults, exactly like the
+   * customize modals and slash commands: flashcards/quiz get amount +
+   * difficulty, audio gets mode/format/length.
+   */
+  const oneClickPrompt = (kind: ArtifactKind): string | undefined => {
+    if (kind === "flashcards")
+      return buildFlashcardsPrompt({
+        amount: settings.defFlashcardsAmount,
+        difficulty: settings.defFlashcardsDifficulty,
+        sourceIds: [],
+        description: "",
+      });
+    if (kind === "quiz")
+      return buildQuizPrompt({
+        amount: settings.defQuizAmount,
+        difficulty: settings.defQuizDifficulty,
+        sourceIds: [],
+        description: "",
+      });
+    return undefined; // mindmap has no configurable defaults
+  };
+
+  const oneClickAudio = (): AudioOptions => ({
+    format: settings.defAudioFormat,
+    length: settings.defAudioLength,
+    mode: settings.defAudioMode,
+    sourceIds: [],
+    description: "",
+  });
+
   const settleRename = async (a: Artifact, rawTitle: string): Promise<string> => {
     if (renameTimerRef.current) {
       clearTimeout(renameTimerRef.current);
@@ -744,7 +775,7 @@ const StudioPanel = forwardRef<
             return genAudio(
               cmd.opts
                 ? { ...cmd.opts, sourceIds: []}
-                : undefined
+                : oneClickAudio()
             );
           case "research":
             return genResearch(cmd.title, "");
@@ -778,11 +809,11 @@ const StudioPanel = forwardRef<
               role="button"
               tabIndex={0}
               onClick={() =>
-                setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title }) })
+                setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) })
               }
               onKeyDown={(e) => {
                 if (e.key === "Enter")
-                  setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title }) });
+                  setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) });
               }}
               className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
                 generating !== null
@@ -802,11 +833,11 @@ const StudioPanel = forwardRef<
             role="button"
             tabIndex={0}
             onClick={() =>
-              setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(undefined, title) })
+              setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) })
             }
             onKeyDown={(e) => {
               if (e.key === "Enter")
-                setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(undefined, title) });
+                setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) });
             }}
             className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
               generating !== null

@@ -15,6 +15,7 @@ import {
   FLASHCARD_COUNTS,
   QUIZ_COUNTS,
   REPORT_FORMATS,
+  REPORT_TYPE_LABELS,
   buildFlashcardsPrompt,
   buildMindmapPrompt,
   buildQuizPrompt,
@@ -24,6 +25,7 @@ import {
   type AudioLength,
   type AudioMode,
   type Difficulty,
+  type ReportType,
 } from "./studio";
 
 /** Audio options without the source scoping (commands always use all sources). */
@@ -58,6 +60,7 @@ export type StudioDefaults = {
   defAudioMode?: AudioMode;
   defAudioFormat?: AudioFormat;
   defAudioLength?: AudioLength;
+  defReportType?: ReportType;
 };
 
 const cardAmount = (t: string, counts: Record<Amount, number>): Amount | null => {
@@ -147,13 +150,8 @@ export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): Stud
         title: "Mind map",
       };
     case "audio": {
-      if (args.length === 0) {
-        return {
-          cmd: { tool, opts: null },
-          notice: "Generating an audio overview…",
-          title: "Audio overview",
-        };
-      }
+      // Bare /audio flows through the same path: unspecified dims come from
+      // the user's Studio Defaults (or the base fallbacks when unset).
       let format: AudioFormat = defs.defAudioFormat ?? "deep-dive";
       let length: AudioLength = defs.defAudioLength ?? "standard";
       let mode: AudioMode = defs.defAudioMode ?? "conversation";
@@ -177,10 +175,20 @@ export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): Stud
     }
     case "report": {
       if (args.length === 0) {
+        // Bare /report → the user's default report type (Summary when unset;
+        // "custom" can't be a bare default — it needs instructions).
+        const t = defs.defReportType;
+        if (t && t !== "custom") {
+          return {
+            cmd: { tool, label: REPORT_TYPE_LABELS[t], prompt: buildReportPrompt(t, "") },
+            notice: `Writing a ${REPORT_TYPE_LABELS[t].toLowerCase()}…`,
+            title: REPORT_TYPE_LABELS[t],
+          };
+        }
         const f = REPORT_FORMATS[0]; // Summary is the base one-click report
         return {
           cmd: { tool, label: f.label, prompt: f.prompt },
-          notice: `Writing a summary…`,
+          notice: "Writing a summary…",
           title: "Summary",
         };
       }

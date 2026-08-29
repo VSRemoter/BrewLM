@@ -17,6 +17,7 @@ import {
   MessageSquarePlus,
   Network,
   Palette,
+  Type,
   Pencil,
   Plus,
   Search,
@@ -66,6 +67,7 @@ import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { recordUsage } from "../lib/usage";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
+import { FONTS, chooseFont } from "../lib/fonts";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
 import { BrewingStatus, IconButton } from "./ui";
 
@@ -100,7 +102,7 @@ interface ChatCommand {
   /** True when the command inserts a partial draft (expects an argument). */
   takesArgs: boolean;
   /** Argument kind with its own autocomplete popup. */
-  autocomplete?: "theme" | "model";
+  autocomplete?: "theme" | "model" | "font";
 }
 
 /** Registry behind the `/` autocomplete palette. */
@@ -134,6 +136,14 @@ const COMMANDS: ChatCommand[] = [
     icon: Palette,
     takesArgs: true,
     autocomplete: "theme",
+  },
+  {
+    cmd: "/font",
+    usage: "/font <name>",
+    desc: "Switch the interface font (e.g. /font Typewriter)",
+    icon: Type,
+    takesArgs: true,
+    autocomplete: "font",
   },
   {
     cmd: "/new",
@@ -317,6 +327,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/help\` — shows this guide.
 - \`/move <folder>\` — files this notebook into a folder (folder names autocomplete); \`/move out\` returns it to the homepage root.
 - \`/theme <name>\` — switches the app theme instantly (names autocomplete). Available: ${THEMES.map((t) => t.name).join(", ")}. Also changeable in Settings.
+- \`/font <name>\` — switches the interface font instantly (names autocomplete). Available: ${FONTS.map((f) => f.name).join(", ")}. Also changeable in Settings.
 - \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
@@ -619,11 +630,15 @@ export default function ChatPanel({
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
   const [themeQuery, setThemeQuery] = useState<{ query: string; active: number } | null>(null);
+  const [fontQuery, setFontQuery] = useState<{ query: string; active: number } | null>(null);
   const [modelQuery, setModelQuery] = useState<{ query: string; active: number } | null>(null);
   const [models, setModels] = useState<string[]>([]);
   // Mirror of settings.theme so "/theme" updates the "current" marker instantly.
   const [theme, setTheme] = useState(settings.theme);
   useEffect(() => setTheme(settings.theme), [settings.theme]);
+  // Mirror of settings.font so "/font" updates the "current" marker instantly.
+  const [font, setFont] = useState(settings.font);
+  useEffect(() => setFont(settings.font), [settings.font]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -741,6 +756,7 @@ export default function ChatPanel({
       setDraft(`${c.cmd} `);
       if (c.cmd === "/move") setMoveQuery({ query: "", active: 0 });
       if (c.autocomplete === "theme") setThemeQuery({ query: "", active: 0 });
+      if (c.autocomplete === "font") setFontQuery({ query: "", active: 0 });
       if (c.autocomplete === "model") setModelQuery({ query: "", active: 0 });
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
@@ -818,9 +834,9 @@ export default function ChatPanel({
 
   /* ----------------------------- /theme command ----------------------------- */
 
-  /** `/theme`, `/theme wine` at the start of the draft. */
+  /** `/theme`, `/themes`, `/theme wine` at the start of the draft. */
   const detectTheme = (value: string): string | null => {
-    const m = /^\/theme(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+    const m = /^\/themes?(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
     if (!m) return null;
     return m[2] ?? "";
   };
@@ -828,8 +844,8 @@ export default function ChatPanel({
   const themeHits = useMemo(() => {
     if (themeQuery === null) return [];
     const q = themeQuery.query.trim().toLowerCase();
-    const hits = q ? THEMES.filter((t) => t.name.toLowerCase().includes(q)) : THEMES;
-    return hits.slice(0, 8);
+    // No cap: all themes are listed (the popup scrolls when it gets tall).
+    return q ? THEMES.filter((t) => t.name.toLowerCase().includes(q)) : THEMES;
   }, [themeQuery]);
   const themeActiveIdx = Math.min(themeQuery?.active ?? 0, Math.max(themeHits.length - 1, 0));
 
@@ -847,7 +863,7 @@ export default function ChatPanel({
 
   /** Execute /theme locally (no LLM). Returns true when `text` was a command. */
   const runThemeCommand = async (text: string): Promise<boolean> => {
-    const m = /^\/theme(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    const m = /^\/themes?(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
     if (!m) return false;
     const raw = (m[2] ?? "").trim();
     let reply: string;
@@ -863,6 +879,59 @@ export default function ChatPanel({
         reply = `Theme set to **${hit.name}** — ${hit.blurb}.`;
       } else {
         reply = `No theme named “${raw}”. Available: ${THEMES.map((t) => t.name).join(", ")}.`;
+      }
+    }
+    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
+    setMsgs((prev) => [...prev, replyMsg]);
+    return true;
+  };
+
+  /* ----------------------------- /font command ------------------------------ */
+
+  /** `/font`, `/fonts`, `/font typewriter` at the start of the draft. */
+  const detectFont = (value: string): string | null => {
+    const m = /^\/fonts?(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+    if (!m) return null;
+    return m[2] ?? "";
+  };
+
+  const fontHits = useMemo(() => {
+    if (fontQuery === null) return [];
+    const q = fontQuery.query.trim().toLowerCase();
+    return q ? FONTS.filter((f) => f.name.toLowerCase().includes(q)) : FONTS;
+  }, [fontQuery]);
+  const fontActiveIdx = Math.min(fontQuery?.active ?? 0, Math.max(fontHits.length - 1, 0));
+
+  const acceptFont = (name: string) => {
+    setDraft(`/font "${name}" `);
+    setFontQuery(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      autoSize(ta);
+    });
+  };
+
+  /** Execute /font locally (no LLM). Returns true when `text` was a command. */
+  const runFontCommand = async (text: string): Promise<boolean> => {
+    const m = /^\/fonts?(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    if (!m) return false;
+    const raw = (m[2] ?? "").trim();
+    let reply: string;
+    if (!raw) {
+      reply = `Current font: **${FONTS.find((f) => f.id === font)?.name ?? font}**. Pick one: ${FONTS.map((f) => `\`/font ${f.name}\``).join(" · ")}`;
+    } else {
+      const hit = FONTS.find(
+        (f) => f.name.toLowerCase() === raw.toLowerCase() || f.id === raw.toLowerCase()
+      );
+      if (hit) {
+        await chooseFont(hit.id);
+        setFont(hit.id);
+        reply = `Font set to **${hit.name}**.`;
+      } else {
+        reply = `No font named “${raw}”. Available: ${FONTS.map((f) => f.name).join(", ")}.`;
       }
     }
     const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
@@ -1064,8 +1133,16 @@ export default function ChatPanel({
     }
 
     // /theme is a local app command — switch the palette, no LLM call.
-    if (/^\/theme(\s|$)/i.test(text)) {
+    if (/^\/themes?(\s|$)/i.test(text)) {
       await runThemeCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /font is a local app command — switch the interface font, no LLM call.
+    if (/^\/fonts?(\s|$)/i.test(text)) {
+      await runFontCommand(text);
       onChatActivity?.(chatId, isFirst ? text : undefined);
       textareaRef.current?.focus();
       return;
@@ -1851,6 +1928,41 @@ export default function ChatPanel({
               </p>
             </div>
           )}
+          {/* /font suggestions */}
+          {fontQuery !== null && fontHits.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="max-h-56 overflow-y-auto py-1">
+                {fontHits.map((f, i) => (
+                  <button
+                    key={f.id}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptFont(f.name);
+                    }}
+                    onMouseEnter={() => setFontQuery((q) => (q ? { ...q, active: i } : q))}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
+                      i === fontActiveIdx ? "bg-hover" : ""
+                    }`}
+                  >
+                    <span className="shrink-0 text-[13px] font-medium" style={{ fontFamily: f.stack }}>
+                      {f.name}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3" style={{ fontFamily: f.stack }}>
+                      The quick brown fox jumps over the lazy dog
+                    </span>
+                    {font === f.id && (
+                      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                        current
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+                ↑↓ navigate · Enter to pick · Esc to dismiss
+              </p>
+            </div>
+          )}
           {/* /move folder suggestions */}
           {moveQuery !== null && (moveHits.length > 0 || showRootMove) && (
             <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
@@ -1966,12 +2078,17 @@ export default function ChatPanel({
                 setDraft(e.target.value);
                 autoSize(e.target);
                 const mv = detectMove(e.target.value);
-                const cmd = mv === null ? detectCommand(e.target.value) : null;
-                const th = mv === null && cmd === null ? detectTheme(e.target.value) : null;
-                const md = mv === null && cmd === null && th === null ? detectModel(e.target.value) : null;
+                // Theme/font match exact `/theme(s)` / `/font(s)` (+ args), so they
+                // take priority over the generic palette — bare tokens open their
+                // full pickers (all themes / all fonts) immediately.
+                const th = mv === null ? detectTheme(e.target.value) : null;
+                const ft = mv === null && th === null ? detectFont(e.target.value) : null;
+                const cmd = mv === null && th === null && ft === null ? detectCommand(e.target.value) : null;
+                const md = mv === null && th === null && ft === null && cmd === null ? detectModel(e.target.value) : null;
                 setCmdQuery(null);
                 setMoveQuery(null);
                 setThemeQuery(null);
+                setFontQuery(null);
                 setModelQuery(null);
                 if (cmd !== null) {
                   setCmdQuery({ query: cmd, active: 0 });
@@ -1983,6 +2100,9 @@ export default function ChatPanel({
                   setMention(null);
                 } else if (th !== null) {
                   setThemeQuery({ query: th, active: 0 });
+                  setMention(null);
+                } else if (ft !== null) {
+                  setFontQuery({ query: ft, active: 0 });
                   setMention(null);
                 } else if (md !== null) {
                   setModelQuery({ query: md, active: 0 });
@@ -2043,6 +2163,29 @@ export default function ChatPanel({
                   if (e.key === "Escape") {
                     e.preventDefault();
                     setThemeQuery(null);
+                    return;
+                  }
+                }
+                if (fontQuery !== null) {
+                  const count = fontHits.length;
+                  if (e.key === "ArrowDown" && count > 0) {
+                    e.preventDefault();
+                    setFontQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) + 1) % count });
+                    return;
+                  }
+                  if (e.key === "ArrowUp" && count > 0) {
+                    e.preventDefault();
+                    setFontQuery((q) => q && { ...q, active: (Math.min(q.active, count - 1) - 1 + count) % count });
+                    return;
+                  }
+                  if ((e.key === "Enter" || e.key === "Tab") && count > 0) {
+                    e.preventDefault();
+                    acceptFont(fontHits[fontActiveIdx].name);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setFontQuery(null);
                     return;
                   }
                 }
