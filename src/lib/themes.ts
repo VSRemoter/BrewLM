@@ -10,8 +10,15 @@ export interface ThemeDef {
 
 export const THEMES: ThemeDef[] = [
   {
+    id: "brew",
+    name: "Brew",
+    blurb: "Signature orange on white",
+    swatch: { canvas: "#fff8f3", panel: "#ffffff", accent: "#f2541b", ink: "#2b1709" },
+  },
+  {
+    // id kept as "original" so existing saved preferences still resolve.
     id: "original",
-    name: "Original",
+    name: "Daylight",
     blurb: "Clean light neutral",
     swatch: { canvas: "#fafafa", panel: "#ffffff", accent: "#171717", ink: "#171717" },
   },
@@ -64,12 +71,6 @@ export const THEMES: ThemeDef[] = [
     swatch: { canvas: "#f5f3fc", panel: "#ffffff", accent: "#7c5cff", ink: "#2d2342" },
   },
   {
-    id: "lagoon",
-    name: "Lagoon",
-    blurb: "Breezy aqua white",
-    swatch: { canvas: "#effaf8", panel: "#ffffff", accent: "#0db5a6", ink: "#123b39" },
-  },
-  {
     id: "sunset",
     name: "Sunset",
     blurb: "Plum dusk, amber glow",
@@ -83,7 +84,7 @@ export const THEMES: ThemeDef[] = [
   },
 ];
 
-export const DEFAULT_THEME = "original";
+export const DEFAULT_THEME = "brew";
 
 /** Swaps palettes instantly by flipping the root data-theme attribute. */
 export function applyTheme(id: string): void {

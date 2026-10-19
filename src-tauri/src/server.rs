@@ -686,7 +686,7 @@ async fn preferences_handler(State(st): State<ServerState>, Path(key): Path<Stri
         .await;
     let theme = match row {
         Ok(Some(r)) => r.get::<String, _>("value"),
-        _ => "original".to_string(),
+        _ => "brew".to_string(),
     };
     no_store_json(json!({ "theme": theme, "scope": dev.scope })).into_response()
 }

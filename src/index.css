@@ -2,7 +2,7 @@
 
 /* ==========================================================================
    BrewLM design tokens.
-   @theme emits the "Original" palette to :root; every other theme overrides
+   @theme emits the "Daylight" palette to :root; every other theme overrides
    the same vars beneath its [data-theme="…"] selector. All components use
    these tokens, so the whole app recolors instantly.
    ========================================================================== */
@@ -15,7 +15,7 @@
      falls back to the theme's stack (e.g. Matrix remaps --font-sans to mono). */
   --font-ui: var(--font-sans);
 
-  /* Original — light, neutral */
+  /* Daylight (id "original") — light, neutral */
   --color-canvas: #fafafa;
   --color-panel: #ffffff;
   --color-edge: #e5e5e5;
@@ -299,35 +299,36 @@
   --color-pre-ink: #e6dcff;
 }
 
-/* -------------------------------- Lagoon --------------------------------- */
-[data-theme="lagoon"] {
+/* --------------------------------- Brew ---------------------------------- */
+/* The default: warm white with BrewLM's logo orange. */
+[data-theme="brew"] {
   color-scheme: light;
-  --color-canvas: #effaf8;
+  --color-canvas: #fff8f3;
   --color-panel: #ffffff;
-  --color-edge: #d3ece8;
-  --color-edge-soft: #e2f3f0;
-  --color-ink: #123b39;
-  --color-ink-2: #4d7c76;
-  --color-ink-3: #93bdb6;
-  --color-accent: #0db5a6;
+  --color-edge: #f3e1d4;
+  --color-edge-soft: #f9ece2;
+  --color-ink: #2b1709;
+  --color-ink-2: #7a5341;
+  --color-ink-3: #b39079;
+  --color-accent: #f2541b;
   --color-accent-ink: #ffffff;
-  --color-hover: #dcf1ee;
-  --color-hover-soft: #e8f6f4;
+  --color-hover: #ffede0;
+  --color-hover-soft: #fff4ec;
   --color-danger: #dc2626;
-  --color-danger-bg: #fef2f3;
-  --color-danger-edge: #f0b6bf;
-  --color-ok: #0c8a5f;
-  --color-ok-bg: #e6f8f0;
-  --color-ok-edge: #7edcb9;
+  --color-danger-bg: #fef2f2;
+  --color-danger-edge: #f1b8b8;
+  --color-ok: #15803d;
+  --color-ok-bg: #f0fdf4;
+  --color-ok-edge: #7ed9a0;
   --color-warn: #b45309;
   --color-warn-bg: #fff8e6;
   --color-warn-edge: #f3cd72;
-  --color-link: #0a94ad;
-  --color-select: #cdeae5;
-  --color-scroll: #bfe0da;
-  --color-code-bg: #e9f6f4;
-  --color-pre-bg: #0f3a36;
-  --color-pre-ink: #c9f0ea;
+  --color-link: #d9480f;
+  --color-select: #ffdcc6;
+  --color-scroll: #efd2be;
+  --color-code-bg: #fff0e5;
+  --color-pre-bg: #2b1709;
+  --color-pre-ink: #ffe6d5;
 }
 
 /* --------------------------------- Sunset -------------------------------- */
