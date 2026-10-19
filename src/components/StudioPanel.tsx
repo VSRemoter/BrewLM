@@ -14,13 +14,14 @@ import {
   X,
 } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, updateArtifact } from "../lib/db";
+import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
 import {
   condenseNotebook,
   condensedSystemPrompt,
   ensureIndexed,
   indexSource,
+  isRetrievable,
   MAP_REDUCE_THRESHOLD,
   rankChunks,
 } from "../lib/rag";
@@ -202,8 +203,7 @@ const StudioPanel = forwardRef<
     </span>
   );
 
-  const isTextSource = (s: Source) =>
-    s.type !== "context" && s.content && !s.content.startsWith("data:");
+  const isTextSource = isRetrievable;
 
   const textSources = sources.filter(isTextSource);
 
@@ -231,7 +231,7 @@ const StudioPanel = forwardRef<
 
   /** Prompt-usable source text; over the threshold, reports condense exhaustively. */
   const sourceChars = (scoped: Source[]) =>
-    scoped.filter(isTextSource).reduce((n, s) => n + s.content.length, 0);
+    scoped.filter(isTextSource).reduce((n, s) => n + sourceText(s).length, 0);
 
   /**
    * Sources to ground a generation on. Constitutions always pass through;

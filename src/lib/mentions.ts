@@ -1,5 +1,6 @@
 /** @-mentions: reference sources and saved LLM outputs (artifacts) in chat. */
 
+import { sourceText } from "./db";
 import type { Artifact, Source } from "./types";
 
 export interface MentionItem {
@@ -84,7 +85,7 @@ export function buildMentionCatalog(sources: Source[], artifacts: Artifact[] = [
       title: s.title,
       group: "source" as const,
       type: s.type,
-      text: s.content && !s.content.startsWith("data:") ? s.content : null,
+      text: sourceText(s) && !sourceText(s).startsWith("data:") ? sourceText(s) : null,
     })),
     ...artifacts.map((a) => ({
       id: a.id,

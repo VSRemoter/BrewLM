@@ -4,6 +4,8 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 // for exactly these environments.
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { SourceType } from "./types";
+import { extractFileText } from "./extractors";
+import { fetchYouTubeTranscript, isYouTubeUrl } from "./youtube";
 
 // Belt-and-braces for environments without ES2024 Promise.withResolvers.
 type WithResolvers = {
@@ -56,20 +58,24 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 export const ACCEPT_STRING =
-  ".pdf,.txt,.md,.markdown,.csv,.json,.html,text/*,image/*,audio/*";
+  ".pdf,.pptx,.docx,.xlsx,.epub,.rtf,.txt,.md,.markdown,.csv,.json,.html,text/*,image/*,audio/*,video/*";
 
 export function classifyFile(file: File): SourceType {
   if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
     return "pdf";
   if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("audio/")) return "audio";
+  // Video is transcribed from its soundtrack, so it rides the audio path.
+  if (file.type.startsWith("audio/") || file.type.startsWith("video/")) return "audio";
   if (file.type.startsWith("text/") || /\.(md|markdown|txt|csv|json)$/i.test(file.name))
     return "text";
   return "file";
 }
 
-export async function extractPdfText(file: File): Promise<string> {
-  const data = new Uint8Array(await file.arrayBuffer());
+export async function extractPdfText(file: Blob): Promise<string> {
+  return extractPdfBytes(new Uint8Array(await file.arrayBuffer()));
+}
+
+async function extractPdfBytes(data: Uint8Array): Promise<string> {
   const pdf = await pdfjs.getDocument({ data }).promise;
   const parts: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -139,21 +145,41 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
   } catch {
     throw new Error("That doesn't look like a valid URL.");
   }
+  // Video pages are player boilerplate as HTML; read the transcript instead.
+  if (isYouTubeUrl(parsed.toString())) return fetchYouTubeTranscript(parsed.toString());
 
   const res = await tauriFetch(parsed.toString(), {
     method: "GET",
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,text/plain",
+      Accept: "text/html,application/xhtml+xml,text/plain,application/pdf;q=0.9,*/*;q=0.5",
     },
     connectTimeout: 20000,
   });
   if (!res.ok) throw new Error(`Couldn't fetch that page (HTTP ${res.status}).`);
 
-  const contentType = res.headers.get("content-type") ?? "";
-  const raw = await res.text();
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+  const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "") || parsed.hostname;
 
+  // Linked PDFs: extract their text like an uploaded PDF, not as raw bytes.
+  if (contentType.includes("pdf") || /\.pdf$/i.test(parsed.pathname)) {
+    const text = await extractPdfBytes(new Uint8Array(await res.arrayBuffer()));
+    if (text.trim().length < 200)
+      throw new Error("That PDF has almost no extractable text (it looks scanned/image-only). Download it, run OCR, then add the file.");
+    return { title: fileName, text: text.slice(0, 200_000) };
+  }
+  if (/^(image|audio|video)\//.test(contentType))
+    throw new Error("That link points to a media file, not a web page — download it and add it with the upload button so the AI can read it.");
+  // Linked documents (.docx/.xlsx/.pptx/.epub/.rtf…): same extractor as uploads.
+  if (/octet-stream|zip|officedocument|msword|ms-excel|ms-powerpoint|epub|rtf/.test(contentType)) {
+    const bytes = await res.arrayBuffer();
+    const { text } = await extractFileText(new File([bytes], fileName, { type: contentType }));
+    if (!text.trim()) throw new Error("That file was downloaded but has no readable text.");
+    return { title: fileName, text };
+  }
+
+  const raw = await res.text();
   if (!contentType.includes("html")) {
     return { title: parsed.hostname, text: raw.slice(0, 200_000) };
   }

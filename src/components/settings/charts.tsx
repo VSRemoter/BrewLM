@@ -23,7 +23,7 @@ export function fmtMetric(v: number, metric: Metric): string {
 
 function fmtAxis(v: number, metric: Metric): string {
   if (v === 0) return "0";
-  if (metric === "cost") return `$${v >= 10 ? Math.round(v) : v.toFixed(2)}`;
+  if (metric === "cost") return `$${v >= 10 ? Math.round(v) : v >= 0.1 ? v.toFixed(2) : String(+v.toFixed(3))}`;
   return fmtTokens(v);
 }
 
@@ -33,6 +33,37 @@ function niceCeil(v: number): number {
   const base = Math.pow(10, Math.floor(Math.log10(v)));
   for (const m of [1, 2, 2.5, 5, 10]) if (m * base >= v) return m * base;
   return 10 * base;
+}
+
+/** Monotone cubic (Fritsch–Carlson) path — smooth, but never overshoots below zero. */
+function smoothPath(pts: [number, number][]): string {
+  const n = pts.length;
+  if (n < 3) return pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+  const d: number[] = [];
+  for (let i = 0; i < n - 1; i++) d.push((pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0]));
+  const m = [d[0], ...d.slice(1).map((v, i) => (v * d[i] <= 0 ? 0 : (v + d[i]) / 2)), d[n - 2]];
+  for (let i = 0; i < n - 1; i++) {
+    if (d[i] === 0) {
+      m[i] = m[i + 1] = 0;
+      continue;
+    }
+    const a = m[i] / d[i];
+    const b = m[i + 1] / d[i];
+    const h = a * a + b * b;
+    if (h > 9) {
+      const t = 3 / Math.sqrt(h);
+      m[i] = t * a * d[i];
+      m[i + 1] = t * b * d[i];
+    }
+  }
+  let out = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[i + 1];
+    const dx = (x1 - x0) / 3;
+    out += ` C${(x0 + dx).toFixed(1)},${(y0 + m[i] * dx).toFixed(1)} ${(x1 - dx).toFixed(1)},${(y1 - m[i + 1] * dx).toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`;
+  }
+  return out;
 }
 
 /** Observe an element's content width (for 1:1 SVG rendering). */
@@ -63,8 +94,8 @@ export function ActivityChart({
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
-  const H = 240;
-  const L = 56;
+  const H = 220;
+  const L = 48;
   const R = 14;
   const T = 14;
   const B = 28;
@@ -74,11 +105,11 @@ export function ActivityChart({
   const n = buckets.length;
 
   const values = buckets.map((b) => bucketValue(b, metric));
-  const max = niceCeil(Math.max(...values, 1));
+  const max = niceCeil(Math.max(...values, metric === "cost" ? 0.01 : 1));
   const x = (i: number) => (n <= 1 ? L + pw / 2 : L + (i / (n - 1)) * pw);
   const y = (v: number) => T + ph - (v / max) * ph;
 
-  const line = values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const line = smoothPath(values.map((v, i) => [x(i), y(v)]));
   const area = n > 1 ? `${line} L${x(n - 1).toFixed(1)},${T + ph} L${x(0).toFixed(1)},${T + ph} Z` : null;
   const labelStep = Math.max(1, Math.ceil(n / 7));
 
@@ -98,18 +129,18 @@ export function ActivityChart({
         <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block" role="img" aria-label="Usage over time">
           <defs>
             <linearGradient id="usage-area" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.16} />
-              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0.02} />
+              <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.22} />
+              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0} />
             </linearGradient>
           </defs>
 
           {/* gridlines + y labels */}
-          {Array.from({ length: 5 }, (_, g) => {
-            const v = (max * g) / 4;
+          {Array.from({ length: 3 }, (_, g) => {
+            const v = (max * g) / 2;
             const gy = y(v);
             return (
               <g key={g}>
-                <line x1={L} x2={W - R} y1={gy} y2={gy} stroke="var(--color-edge-soft)" strokeWidth={1} />
+                <line x1={L} x2={W - R} y1={gy} y2={gy} stroke="var(--color-edge-soft)" strokeWidth={1} strokeDasharray={g === 0 ? undefined : "2 4"} />
                 <text x={L - 8} y={gy} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--color-ink-3)">
                   {fmtAxis(v, metric)}
                 </text>
@@ -141,6 +172,16 @@ export function ActivityChart({
               y2={T + ph}
               stroke="var(--color-ink-3)"
               strokeDasharray="3 3"
+            />
+          )}
+          {hover != null && (
+            <circle
+              cx={x(hover)}
+              cy={y(values[hover])}
+              r={4}
+              fill="var(--color-panel)"
+              stroke="var(--color-accent)"
+              strokeWidth={2}
             />
           )}
 
@@ -189,63 +230,5 @@ export function ActivityChart({
         </div>
       )}
     </div>
-  );
-}
-
-export interface Slice {
-  label: string;
-  value: number;
-  color: string;
-}
-
-/** Donut with a centered total — segments get native tooltips. */
-export function DonutChart({
-  slices,
-  center,
-  sub,
-  size = 150,
-}: {
-  slices: Slice[];
-  center: string;
-  sub: string;
-  size?: number;
-}) {
-  const total = slices.reduce((s, x) => s + x.value, 0);
-  if (total <= 0) return null;
-  const r = 56;
-  const c = 2 * Math.PI * r;
-  let acc = 0;
-  return (
-    <svg width={size} height={size} viewBox="0 0 150 150" role="img" aria-label="Share by model">
-      <g transform="rotate(-90 75 75)">
-        {slices.map((s) => {
-          const frac = s.value / total;
-          const dash = Math.max(0.5, frac * c - 2);
-          const el = (
-            <circle
-              key={s.label}
-              cx={75}
-              cy={75}
-              r={r}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={16}
-              strokeDasharray={`${dash} ${c - dash}`}
-              strokeDashoffset={-acc * c}
-            >
-              <title>{`${s.label} — ${(frac * 100).toFixed(1)}%`}</title>
-            </circle>
-          );
-          acc += frac;
-          return el;
-        })}
-      </g>
-      <text x={75} y={73} textAnchor="middle" fontSize={18} fontWeight={600} fill="var(--color-ink)">
-        {center}
-      </text>
-      <text x={75} y={89} textAnchor="middle" fontSize={8.5} letterSpacing={1.5} fill="var(--color-ink-3)">
-        {sub}
-      </text>
-    </svg>
   );
 }

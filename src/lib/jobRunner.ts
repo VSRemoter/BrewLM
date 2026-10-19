@@ -15,11 +15,12 @@ import {
   listMessages,
   listSources,
   renameChat,
+  sourceText,
   touchChat,
   touchNotebook,
 } from "./db";
 import { complete, extractJson } from "./llm";
-import { downscaleGeneratedImages, stripHistoryImages } from "./genImage";
+import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
   condensedSystemPrompt,
@@ -45,7 +46,6 @@ import {
   type Difficulty,
 } from "./studio";
 import { parseScript, synthesizeScript } from "./tts";
-import type { Source } from "./types";
 import { recordUsage } from "./usage";
 
 const POLL_MS = 3000;
@@ -171,7 +171,12 @@ async function runChatJob(p: {
       ],
     })
   ).trim();
-  const answer = await downscaleGeneratedImages(reply || "(no response)");
+  const answer = await storeGeneratedImages(reply || "(no response)", {
+    notebookId: p.notebook_id,
+    chatId,
+    prompt: p.content,
+    model: settings.model,
+  });
   await addMessage(chatId, p.notebook_id, "assistant", answer);
   await touchChat(chatId);
   await touchNotebook(p.notebook_id);
@@ -187,8 +192,7 @@ async function runChatJob(p: {
 
 /* -------------------------------- generate -------------------------------- */
 
-const isTextSource = (s: Source) =>
-  s.type !== "context" && s.content.length > 0 && !s.content.startsWith("data:");
+const isTextSource = isRetrievable;
 
 interface GenOpts {
   amount: Amount;
@@ -247,7 +251,7 @@ async function runGenerateJob(p: {
   /** Total prompt-usable text — decides direct generation vs. cached full-coverage condense. */
   const totalSourceChars = grounding
     .filter(isRetrievable)
-    .reduce((sum, s) => sum + s.content.length, 0);
+    .reduce((sum, s) => sum + sourceText(s).length, 0);
   const ask = async (prompt: string, opts: { exhaustive?: boolean } = {}) => {
     // Huge notebooks: cached whole-notebook condensation so every tool covers
     // ALL sources (the expensive pass is computed once, then shared).

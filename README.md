@@ -23,7 +23,8 @@ BrewLM turns your own materials — PDFs, web pages, notes, images, audio — in
 
 ### Notebook workspaces
 - Notebooks group **sources** (left), **chat** (center), and **Studio outputs** (right).
-- Sources: pasted text, fetched webpages (CORS-free via Tauri HTTP), PDFs, images, audio, and generic files — plus optional "Constitution" reference docs.
+- Sources: pasted text, fetched webpages (CORS-free via Tauri HTTP), **YouTube links (the video's transcript, title, and description)**, linked PDFs/Office files, PDFs, Office docs (`.docx`, `.xlsx`, `.pptx` — text extracted per document/sheet/slide), eBooks (`.epub`), RTF, images, audio, video, and plain-text files (UTF-8 or Windows-1252). Unreadable binaries are rejected with a clear message instead of being stored as junk — plus optional "Constitution" reference docs.
+- **Everything is model-readable**: images are described and OCR'd by a vision model, and audio/video is transcribed (OpenAI or OpenRouter key; up to 25 MB), once at upload. That text is what chat, retrieval, and Studio use. The source viewer shows exactly "What the AI sees", and media added before a suitable key existed is processed automatically before the next question.
 - Homepage with folders, grid/list views, sorting, search, cover images on cards, starring (pinning), multi-select bulk actions (move / trash / restore / delete), and a Trash with restore & permanent delete.
 
 ### Grounded chat

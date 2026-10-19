@@ -39,6 +39,8 @@ export interface Source {
   title: string;
   content: string;
   mime: string | null;
+  /** Model-readable text for image/audio sources (description / transcript); "" otherwise. */
+  text: string;
   /** 1 = pinned to the top of the sources list (below the constitution). */
   pinned: number;
   created_at: number;
@@ -126,6 +128,8 @@ export interface Settings {
   ttsInstructions: string;
   /** Sampling temperature; null = provider default (the param is never sent). */
   temperature: number | null;
+  /** OpenRouter Image API model used by /image (separate from the chat model). */
+  imageModel: string;
   /* Studio defaults — seed the customize modals and slash commands. */
   defFlashcardsAmount: Amount;
   defFlashcardsDifficulty: Difficulty;

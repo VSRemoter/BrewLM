@@ -287,6 +287,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/d/{key}/api/notebooks/{id}/sources/url", post(source_url_handler))
         .route("/d/{key}/api/artifacts/{id}", get(artifact_handler))
         .route("/d/{key}/api/artifacts/{id}/audio", get(audio_handler))
+        .route("/d/{key}/api/images/{id}", get(image_handler))
         .route("/d/{key}/api/chat", post(chat_handler))
         .route("/d/{key}/api/generate", post(generate_handler))
         .route("/d/{key}/api/jobs/{id}", get(job_handler))
@@ -1164,6 +1165,19 @@ fn html_to_text(html: &str, fallback_title: &str) -> (String, String) {
     (title.trim().to_string(), collapsed.trim().to_string())
 }
 
+const YOUTUBE_PENDING: &str =
+    "[YouTube video — transcript pending. BrewLM on the desktop fetches it before the next answer.]";
+
+fn is_youtube_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    let h = h
+        .strip_prefix("www.")
+        .or_else(|| h.strip_prefix("m."))
+        .or_else(|| h.strip_prefix("music."))
+        .unwrap_or(&h);
+    matches!(h, "youtube.com" | "youtu.be" | "youtube-nocookie.com")
+}
+
 #[derive(Deserialize)]
 struct SourceUrlBody {
     url: String,
@@ -1193,6 +1207,37 @@ async fn source_url_handler(
         Ok(u) => u,
         Err(m) => return err_json(StatusCode::BAD_REQUEST, &m),
     };
+
+    // A YouTube watch page is player boilerplate; queue the link instead and
+    // let the desktop webview (src/lib/youtube.ts) swap in the transcript
+    // before the next chat/generation. Must match YOUTUBE_PENDING there.
+    if is_youtube_host(url.host_str().unwrap_or("")) {
+        let sid = random_id();
+        let title = "YouTube video (transcript pending)";
+        let res = sqlx::query(
+            "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES (?, ?, 'link', ?, ?, ?, ?)",
+        )
+        .bind(&sid)
+        .bind(&id)
+        .bind(title)
+        .bind(YOUTUBE_PENDING)
+        .bind(url.as_str())
+        .bind(now_ms())
+        .execute(&st.pool)
+        .await;
+        return match res {
+            Ok(_) => {
+                let _ = sqlx::query("UPDATE notebooks SET updated_at = ? WHERE id = ?")
+                    .bind(now_ms())
+                    .bind(&id)
+                    .execute(&st.pool)
+                    .await;
+                log_activity(&st.pool, &dev.id, "source.url", title).await;
+                no_store_json(json!({ "id": sid, "title": title })).into_response()
+            }
+            Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+        };
+    }
 
     let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none()) // re-validate every hop
@@ -1617,6 +1662,35 @@ async fn audio_handler(
     }
 }
 
+/// Generated image from the library (`brewimg:<id>` references in chat messages).
+async fn image_handler(State(st): State<ServerState>, Path((key, id)): Path<(String, String)>) -> Response {
+    if let Err(r) = auth_device(&st, &key, false).await {
+        return r;
+    }
+    let row = sqlx::query("SELECT mime, data FROM images WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&st.pool)
+        .await;
+    let row = match row {
+        Ok(Some(r)) => r,
+        // Missing table (no image ever generated) reads as not found too.
+        Ok(None) | Err(_) => return (StatusCode::NOT_FOUND, "image not found").into_response(),
+    };
+    let mime: String = row.get("mime");
+    let data: String = row.get("data");
+    let Ok(bytes) = B64.decode(data.trim()) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "bad base64").into_response();
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CONTENT_LENGTH, bytes.len())
+        // Images are immutable once saved; the URL carries the device key.
+        .header(header::CACHE_CONTROL, "private, max-age=86400")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
 /* ---------------------------------- tests ---------------------------------- */
 
 #[cfg(test)]
@@ -1651,6 +1725,11 @@ mod tests {
             "CREATE TABLE messages (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
              role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, chat_id TEXT)",
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE images (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
+             chat_id TEXT NOT NULL DEFAULT '', prompt TEXT NOT NULL DEFAULT '', \
+             model TEXT NOT NULL DEFAULT '', mime TEXT NOT NULL, data TEXT NOT NULL, \
+             width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0, \
+             parent_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)",
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -1695,6 +1774,11 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO images (id, notebook_id, mime, data, created_at) VALUES ('img1', 'nb1', 'image/png', ?, 1)")
+            .bind(B64.encode([137u8, 80, 78, 71]))
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO settings VALUES ('theme', 'ocean')")
             .execute(&pool)
             .await
@@ -1726,6 +1810,30 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn serves_library_images() {
+        let (app, _dir) = fixture().await;
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/d/{READ_KEY}/api/images/img1")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), &[137u8, 80, 78, 71]);
+
+        let missing = app
+            .clone()
+            .oneshot(get(&format!("/d/{FULL_KEY}/api/images/nope")))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let unauth = app.oneshot(get("/d/WRONG/api/images/img1")).await.unwrap();
+        assert_eq!(unauth.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

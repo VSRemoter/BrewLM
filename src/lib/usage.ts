@@ -10,7 +10,7 @@ import { getDb, uid } from "./db";
 import type { StreamUsage } from "./llm";
 import type { Provider } from "./types";
 
-export type UsageKind = "chat" | "studio" | "research";
+export type UsageKind = "chat" | "studio" | "research" | "sources" | "image";
 
 export interface UsageEvent {
   id: string;
@@ -36,7 +36,8 @@ export async function recordUsage(
   const output = u.output ?? 0;
   const cachedRead = u.cachedRead ?? 0;
   const cachedWrite = u.cachedWrite ?? 0;
-  if (!input && !output && !cachedRead && !cachedWrite) return;
+  // Image generations may report only a cost.
+  if (!input && !output && !cachedRead && !cachedWrite && !u.costUsd) return;
   const d = await getDb();
   await d.execute(
     `INSERT INTO usage_events

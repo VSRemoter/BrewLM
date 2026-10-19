@@ -2,7 +2,9 @@ import { Check, ExternalLink, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { supportsTemperature } from "../../lib/llm";
 import {
+  DEFAULT_IMAGE_MODEL,
   defaultModelFor,
+  IMAGE_MODEL_PRESETS,
   loadModelList,
   PROVIDER_LABELS,
   saveModelList,
@@ -230,6 +232,38 @@ export default function AiModelSection({
           for your other models.
         </Footnote>
       )}
+
+      {/* Image generation (/image) */}
+      <Card>
+        <div className="py-3">
+          <div className="text-[13px] font-medium text-ink">Image model</div>
+          <div className="mt-0.5 mb-2.5 text-[12px] leading-relaxed text-ink-3">
+            Used by <code>/image</code>. It runs separately from your chat model and gets only your
+            prompt — no sources or chat history — so each picture costs just the image. If your
+            selected chat model is itself an image model, that one is used instead. Needs an
+            OpenRouter key.
+          </div>
+          <input
+            list="image-models"
+            value={settings.imageModel}
+            onChange={(e) => patch({ imageModel: e.target.value })}
+            onBlur={(e) => !e.target.value.trim() && patch({ imageModel: DEFAULT_IMAGE_MODEL })}
+            placeholder={DEFAULT_IMAGE_MODEL}
+            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+          />
+          <datalist id="image-models">
+            {IMAGE_MODEL_PRESETS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          {!settings.openrouterKey && (
+            <p className="mt-2 text-[12px] text-ink-3">
+              No OpenRouter key yet — select OpenRouter above to add one (you can switch your chat
+              provider back afterwards; keys are kept separately).
+            </p>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

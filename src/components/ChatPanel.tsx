@@ -10,6 +10,7 @@ import {
   FolderClosed,
   GraduationCap,
   Image,
+  ImagePlus,
   Layers,
   Link,
   ListPlus,
@@ -35,12 +36,14 @@ import {
   addMessage,
   clearMessages,
   findFolderByName,
+  getImage,
   listFolders,
   moveNotebookToFolder,
   renameChat,
   setNotebookGrounded,
   setNotebookStarred,
   setSetting,
+  sourceText,
 } from "../lib/db";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
@@ -52,8 +55,27 @@ import {
   type MentionItem,
 } from "../lib/mentions";
 import { isAbortError, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
-import { downscaleGeneratedImages, stripHistoryImages } from "../lib/genImage";
-import { ensureIndexed, rankChunks, type RetrievedChunk } from "../lib/rag";
+import {
+  imageAlt,
+  imageIdsIn,
+  imageRef,
+  libraryImageAsReference,
+  libraryImageUrl,
+  saveImageToLibrary,
+  storeGeneratedImages,
+  stripHistoryImages,
+  unresolvedImageIds,
+  withLibraryImages,
+} from "../lib/genImage";
+import {
+  editCapableModels,
+  generateImages,
+  isImageApiModel,
+  maxImagesPerRequest,
+  maxInputReferences,
+  supportedAspectRatios,
+} from "../lib/imageApi";
+import { ensureIndexed, isRetrievable, rankChunks, type RetrievedChunk } from "../lib/rag";
 import { webAnswer } from "../lib/research";
 import {
   activeKey,
@@ -179,6 +201,34 @@ const COMMANDS: ChatCommand[] = [
     desc: "One-shot web answer with cited sources (provider search)",
     icon: Search,
     takesArgs: true,
+  },
+  {
+    cmd: "/image",
+    usage: "/image [16:9] <prompt>",
+    desc: "Generate a picture with your image model — no chat context sent",
+    icon: Image,
+    takesArgs: true,
+  },
+  {
+    cmd: "/edit",
+    usage: "/edit <change>",
+    desc: "Change the latest picture — sends only that image + your instruction",
+    icon: ImagePlus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/remix",
+    usage: "/remix <idea>",
+    desc: "New picture inspired by the latest one (style, subject, layout)",
+    icon: ImagePlus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/more",
+    usage: "/more",
+    desc: "More like the latest picture — reruns its prompt, no context",
+    icon: Image,
+    takesArgs: false,
   },
   {
     cmd: "/return",
@@ -350,6 +400,8 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
 - \`/search <query>\` — one-shot web answer, right here in chat, with numbered source links. Your provider bills web searches per query, so this only runs when you ask; for a deep multi-source dossier use \`/research\` instead.
+- \`/image [ratio] <prompt>\` — generates a picture with your **Image model** (Settings → AI Model), e.g. \`/image 16:9 a watercolor fox in snow\`. Only your prompt is sent — no sources or chat history — so you pay just for the image (about $0.03 with the default model). Needs an OpenRouter key. Later chat turns see a one-line description of the image, never the pixels. If your selected model is itself an image model (e.g. via \`/model qwen/qwen-image-2.1-turbo\`), \`/image\` uses it, and plain messages generate images too — a message right after a picture edits that picture (start with \`/image\` for a fresh one).
+- \`/edit <change>\` — changes the latest picture, e.g. \`/edit make the sky stormy\`. \`/remix <idea>\` makes a new picture inspired by it, and \`/more\` reruns its prompt for another take. Hover any generated picture for **Edit**, **Remix** and **More like this** on that specific one. Only that single picture (downscaled) and your words are sent — never the chat or sources. Editing needs an image model that accepts a reference picture; BrewLM tells you if yours can't.
 AI Studio results are saved as artifacts in the Studio panel (right) — reopen, download, or add them back as sources from there. No arguments = the same defaults as clicking the tool card. Queued AI actions consume tokens when they run.
 
 ## Privacy
@@ -386,11 +438,7 @@ export function buildSystemPrompt(
   // retrieval cost; @-mentions (below) remain as the user's explicit override.
   const knowledge = grounded
     ? sources.filter(
-        (s) =>
-          s.type !== "context" &&
-          s.content &&
-          !s.content.startsWith("data:") &&
-          !mentionedSourceIds.has(s.id)
+        (s) => isRetrievable(s) && !mentionedSourceIds.has(s.id)
       )
     : [];
 
@@ -452,11 +500,12 @@ export function buildSystemPrompt(
       for (const s of knowledge) {
         if (budget <= 0) break;
         const cap = Math.min(MAX_SOURCE_CHARS, budget);
+        const body = sourceText(s);
         const trimmed =
-          s.content.length > cap
-            ? s.content.slice(0, cap) +
-              `\n[…truncated — only the first ${cap} of ${s.content.length} characters shown; other parts of this source exist]`
-            : s.content;
+          body.length > cap
+            ? body.slice(0, cap) +
+              `\n[…truncated — only the first ${cap} of ${body.length} characters shown; other parts of this source exist]`
+            : body;
         sections.push(`### ${s.title} (${s.type})\n${trimmed}`);
         included.add(s.id);
         budget -= trimmed.length;
@@ -522,9 +571,12 @@ export function selectChatHistory(all: ChatMessage[]): ChatMessage[] {
   let budget = MAX_HISTORY_CHARS;
   for (let i = capped.length - 1; i >= 0; i--) {
     const m = capped[i];
-    if (kept.length > 0 && m.content.length > budget) break;
+    // Measure what the model will actually receive: image embeds are stripped
+    // before sending, so their base64 must not eat the budget.
+    const size = stripHistoryImages(m.content).length;
+    if (kept.length > 0 && size > budget) break;
     kept.unshift(m);
-    budget -= m.content.length;
+    budget -= size;
   }
   return kept;
 }
@@ -622,6 +674,12 @@ export default function ChatPanel({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  /** Picture a hover Edit/Remix picked for the /edit or /remix being typed. */
+  const [imageTarget, setImageTarget] = useState<{ id: string; alt: string } | null>(null);
+  // The pick lasts only while the draft is still that command.
+  useEffect(() => {
+    if (imageTarget && !/^\/(edit|remix)(\s|$)/i.test(draft)) setImageTarget(null);
+  }, [draft, imageTarget]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Provider-reported token usage per assistant message (this session only). */
@@ -1095,6 +1153,19 @@ export default function ChatPanel({
     if (streaming === null) void hydrateMermaid(scrollRef.current);
   }, [streaming, messages]);
 
+  // Images finish loading after layout; keep the view pinned to the bottom if
+  // it was there (load doesn't bubble, so listen in the capture phase).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onLoad = (e: Event) => {
+      if ((e.target as HTMLElement).tagName !== "IMG") return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) el.scrollTop = el.scrollHeight;
+    };
+    el.addEventListener("load", onLoad, true);
+    return () => el.removeEventListener("load", onLoad, true);
+  }, []);
+
   const keyed = activeKey(settings);
 
   /**
@@ -1102,7 +1173,7 @@ export default function ChatPanel({
    * loop calls this in sequence; `streamingRef` mirrors the LLM busy state
    * synchronously so a chained runSend never hits a stale-closure block.
    */
-  const runSend = async (text: string): Promise<void> => {
+  const runSend = async (text: string, opts?: { imageId?: string }): Promise<void> => {
     if (!text || streamingRef.current || !chatId) return;
     setError(null);
     // First "real" user message = first that isn't a /queue command — lets a
@@ -1313,6 +1384,175 @@ export default function ChatPanel({
       return;
     }
 
+    // Image API turns, each carrying ONLY the prompt (no sources, no history):
+    // /image draws fresh; /edit and /remix add the single picture being
+    // changed as a reference; /more reruns a picture's stored prompt. Every
+    // picture costs just the image, and later chat turns see a one-line
+    // description of it, never the pixels. With an image model selected as
+    // the active model, plain messages work the same way — and a message
+    // right after a picture edits that picture.
+    const activeIsImageModel =
+      settings.provider === "openrouter" && (await isImageApiModel(settings.model));
+    const imgCmd = /^\/(image|img|edit|remix|more)(?=\s|$)/i.exec(text)?.[1].toLowerCase();
+    if (imgCmd || (activeIsImageModel && !text.startsWith("/"))) {
+      let prompt = imgCmd ? text.replace(/^\/\w+\s*/, "").trim() : text;
+      let ratio: string | undefined;
+      const rm = /^(\d+(?:\.\d+)?:\d+(?:\.\d+)?)(\s+|$)/.exec(prompt);
+      if (rm) {
+        ratio = rm[1];
+        prompt = prompt.slice(rm[0].length).trim();
+      }
+      const say = async (body: string) => {
+        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
+        setMsgs((prev) => [...prev, replyMsg]);
+      };
+      // The selected model wins when it is an image model; otherwise the
+      // dedicated Image model setting.
+      let model = activeIsImageModel ? settings.model : settings.imageModel;
+      let mode: "new" | "edit" | "remix" | "more" =
+        imgCmd === "edit" || imgCmd === "remix" || imgCmd === "more" ? imgCmd : "new";
+      // Target: the picture a hover action picked, else the chat's latest one.
+      let targetId: string | undefined;
+      if (mode !== "new") {
+        targetId = opts?.imageId;
+        for (let i = history.length - 1; !targetId && i >= 0; i--) {
+          if (history[i].role === "assistant") targetId = imageIdsIn(history[i].content).pop();
+        }
+      }
+      // Plain message right after a picture → edit that picture (when the
+      // model can take a reference; otherwise it simply draws fresh).
+      let followUp = false;
+      const prev = history[history.length - 2];
+      if (!imgCmd && prev?.role === "assistant" && (await maxInputReferences(model)) > 0) {
+        const prevId = imageIdsIn(prev.content).pop();
+        if (prevId) {
+          mode = "edit";
+          targetId = prevId;
+          followUp = true;
+        }
+      }
+      const source = targetId ? await getImage(targetId) : null;
+      if (followUp && !source) {
+        mode = "new"; // picture above is gone — just draw fresh
+        followUp = false;
+      }
+
+      if (!settings.openrouterKey) {
+        await say(
+          "Pictures use OpenRouter's image models. Add an OpenRouter API key in **Settings → AI Model** (select OpenRouter to enter it — you can switch your chat provider back afterwards)."
+        );
+      } else if (mode === "new" && !prompt) {
+        await say(
+          "What should I draw? e.g. `/image a watercolor fox in snow`, or add a shape first: `/image 16:9 a misty mountain lake at dawn`."
+        );
+      } else if (mode !== "new" && !targetId) {
+        await say("There's no picture in this chat yet — make one first with `/image <prompt>`.");
+      } else if (mode !== "new" && !source) {
+        await say("That picture is no longer in the image library, so there's nothing to work from.");
+      } else if ((mode === "edit" || mode === "remix") && !prompt) {
+        await say(
+          mode === "edit"
+            ? "What should I change? e.g. `/edit make the sky stormy` or `/edit remove the text`."
+            : "What should the remix be? e.g. `/remix same style, but a city at night`."
+        );
+      } else {
+        // "More like this" stays on the model that drew the original.
+        if (mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
+          model = source.model;
+        }
+        const canReference = (await maxInputReferences(model)) > 0;
+        if ((mode === "edit" || mode === "remix") && !canReference) {
+          const alts = (await editCapableModels()).map((m) => `\`${m}\``).join(", ");
+          await say(
+            `**${model}** can't edit pictures — it doesn't accept a reference image. ${
+              alts ? `Models that can: ${alts}. ` : ""
+            }Pick one under **Settings → AI Model → Image model**${
+              activeIsImageModel ? " or switch with `/model <id>`" : ""
+            }.`
+          );
+        } else {
+          streamingRef.current = true;
+          setStreaming("");
+          const ctrl = new AbortController();
+          abortRef.current = ctrl;
+          try {
+            // The one picture sent as a reference: the target for edit/remix;
+            // for "more", whatever the original itself was made from.
+            const refId =
+              mode === "edit" || mode === "remix" ? source!.id : mode === "more" && canReference ? source!.parent_id : "";
+            const refUri = refId ? await libraryImageAsReference(refId) : null;
+            const apiPrompt =
+              mode === "more"
+                ? source!.prompt
+                : mode === "remix"
+                  ? `Create a new image inspired by the reference image (keep its style and mood): ${prompt}`
+                  : prompt;
+            // Keep the original's shape unless the user named one.
+            if (!ratio && source && source.width > 0 && source.height > 0) {
+              const want = source.width / source.height;
+              const best = (await supportedAspectRatios(model))
+                ?.map((r) => {
+                  const [w, h] = r.split(":").map(Number);
+                  return { r, diff: Math.abs(w / h - want) / want };
+                })
+                .filter((x) => Number.isFinite(x.diff))
+                .sort((a, b) => a.diff - b.diff)[0];
+              if (best && best.diff < 0.05) ratio = best.r;
+            }
+            const result = await generateImages({
+              apiKey: settings.openrouterKey,
+              model,
+              prompt: apiPrompt,
+              aspectRatio: ratio,
+              references: refUri ? [refUri] : undefined,
+              n: mode === "more" ? Math.min(2, await maxImagesPerRequest(model)) : 1,
+              signal: ctrl.signal,
+            });
+            if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
+            void recordUsage("image", "openrouter", model, result.usage);
+            // Alt text is the description later chat turns see.
+            const alt =
+              mode === "edit"
+                ? `${prompt} (edit of: ${source!.prompt})`
+                : mode === "remix"
+                  ? `${prompt} (remix of: ${source!.prompt})`
+                  : apiPrompt;
+            const refs: string[] = [];
+            for (const uri of result.images) {
+              const id = await saveImageToLibrary(uri, {
+                notebookId,
+                chatId,
+                prompt: apiPrompt,
+                model,
+                parentId: refUri ? refId : undefined,
+              });
+              refs.push(imageRef(id, alt));
+            }
+            const cost = result.usage.costUsd;
+            const label = { new: null, edit: "edit", remix: "remix", more: "more like this" }[mode];
+            const caption = [label, model, result.aspectRatio, cost != null ? `$${cost.toFixed(3)}` : null]
+              .filter(Boolean)
+              .join(" · ");
+            const unsupported =
+              ratio && !result.aspectRatio && rm ? ` — ${ratio} isn't available on this model, so it used its default shape` : "";
+            const hint = followUp ? " — edited the picture above; start with `/image` for a fresh one" : "";
+            await say(`${refs.join("\n\n")}\n\n*${caption}${unsupported}*${hint}`);
+          } catch (e) {
+            if (!(isAbortError(e) || ctrl.signal.aborted)) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          } finally {
+            abortRef.current = null;
+            streamingRef.current = false;
+            setStreaming(null);
+          }
+        }
+      }
+      onChatActivity?.(chatId, isFirst ? `Image: ${imageAlt(prompt || source?.prompt || "…")}` : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
     // /search <query> — one-shot web answer with cited links (provider search,
     // billed per query — that's why it's a command, not a background toggle).
     if (/^\/search(\s|$)/i.test(text)) {
@@ -1518,8 +1758,10 @@ export default function ChatPanel({
       }
       // Cancelled right at the tail? Discard rather than save a cut-off answer.
       if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      // Generated images persist downscaled (~100 KB instead of megabytes).
-      const savedText = acc ? await downscaleGeneratedImages(acc) : acc;
+      // Generated images move into the image library; the message keeps a reference.
+      const savedText = acc
+        ? await storeGeneratedImages(acc, { notebookId, chatId, prompt: text, model: settings.model })
+        : acc;
       const assistantMsg = await addMessage(chatId, notebookId, "assistant", savedText || "(no response)");
       if (usage) setUsageByMsg((prev) => ({ ...prev, [assistantMsg.id]: usage as StreamUsage }));
       setMsgs((prev) => [...prev, assistantMsg]);
@@ -1613,8 +1855,28 @@ export default function ChatPanel({
     setThemeQuery(null);
     setModelQuery(null);
     // modelQuery cleared above
-    await runSend(text);
+    const target = /^\/(edit|remix)(\s|$)/i.test(text) ? imageTarget?.id : undefined;
+    setImageTarget(null);
+    await runSend(text, { imageId: target });
     void drainQueue();
+  };
+
+  /** Hover actions on a generated picture in a bubble. */
+  const onImageAction = (action: string, id: string, alt: string) => {
+    if (action === "more") {
+      if (streamingRef.current) return;
+      void runSend("/more", { imageId: id }).then(() => drainQueue());
+      return;
+    }
+    const cmd = action === "remix" ? "/remix " : "/edit ";
+    setDraft(cmd);
+    setImageTarget({ id, alt });
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(cmd.length, cmd.length);
+    });
   };
   return (
     <section
@@ -1768,7 +2030,14 @@ export default function ChatPanel({
         ) : (
           <div className="mx-auto max-w-2xl px-5 py-6">
             {messages.map((m) => (
-              <Bubble key={m.id} role={m.role} content={m.content} items={catalog} usage={usageByMsg[m.id]} />
+              <Bubble
+                key={m.id}
+                role={m.role}
+                content={m.content}
+                items={catalog}
+                usage={usageByMsg[m.id]}
+                onImageAction={streaming === null ? onImageAction : undefined}
+              />
             ))}
             {streaming !== null && (
               <div className="anim-fade-up mb-5 flex justify-start">
@@ -1832,6 +2101,21 @@ export default function ChatPanel({
           </div>
         )}
         <div className="relative mx-auto max-w-2xl">
+          {imageTarget && (
+            <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11.5px] text-ink-3">
+              <ImagePlus size={12} strokeWidth={1.8} className="shrink-0" />
+              <span className="min-w-0 truncate">
+                {/^\/remix/i.test(draft) ? "Remixing" : "Editing"}: {imageTarget.alt}
+              </span>
+              <button
+                onClick={() => setImageTarget(null)}
+                className="shrink-0 text-ink-3 transition-colors hover:text-ink"
+                title="Use the latest picture instead"
+              >
+                ×
+              </button>
+            </div>
+          )}
           {/* / command palette */}
           {cmdQuery !== null && cmdHits.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
@@ -2313,15 +2597,33 @@ function Bubble({
   content,
   items,
   usage,
+  onImageAction,
 }: {
   role: "user" | "assistant";
   content: string;
   items: MentionItem[];
   usage?: StreamUsage;
+  /** Edit / Remix / More like this on a library picture (absent while busy). */
+  onImageAction?: (action: string, id: string, alt: string) => void;
 }) {
   const segments = useMemo(
     () => (role === "user" ? segmentMentions(content, items) : []),
     [role, content, items]
+  );
+  // Library image URLs resolve async; bump re-renders once they're known.
+  const [imgTick, setImgTick] = useState(0);
+  useEffect(() => {
+    const pending = unresolvedImageIds(content);
+    if (pending.length === 0) return;
+    let live = true;
+    Promise.all(pending.map(libraryImageUrl)).then(() => live && setImgTick((t) => t + 1));
+    return () => {
+      live = false;
+    };
+  }, [content]);
+  const html = useMemo(
+    () => (role === "assistant" ? withLibraryImages(renderMarkdown(content)) : ""),
+    [role, content, imgTick] // imgTick: re-run once library URLs resolve
   );
   if (role === "user") {
     return (
@@ -2347,7 +2649,17 @@ function Bubble({
   return (
     <div className="anim-fade-up mb-5 flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed">
-        <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }} />
+        <div
+          className={`md${onImageAction ? "" : " img-actions-off"}`}
+          dangerouslySetInnerHTML={{ __html: html }}
+          onClick={(e) => {
+            const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-img-action]");
+            if (!btn || !onImageAction) return;
+            const id = btn.dataset.imgId!;
+            const alt = btn.closest(".brewimg-wrap")?.querySelector("img")?.getAttribute("alt") ?? "";
+            onImageAction(btn.dataset.imgAction!, id, alt);
+          }}
+        />
         {usage && (
           <div className="mt-2 border-t border-edge-soft pt-1.5 text-[10.5px] text-ink-3">
             {[

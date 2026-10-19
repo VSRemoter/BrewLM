@@ -37,6 +37,20 @@ export const MODEL_PRESETS: Record<Provider, string[]> = {
   ],
 };
 
+/** Default /image model: cheap (~$0.03/image) and supports aspect ratios. */
+export const DEFAULT_IMAGE_MODEL = "google/gemini-3.1-flash-lite-image";
+
+/** Suggestions for Settings → Image model (any OpenRouter Image API id works). */
+export const IMAGE_MODEL_PRESETS = [
+  "google/gemini-3.1-flash-lite-image",
+  "google/gemini-3.1-flash-image",
+  "google/gemini-3-pro-image",
+  "openai/gpt-image-2",
+  "openai/gpt-image-1-mini",
+  "black-forest-labs/flux.2-klein-4b",
+  "bytedance-seed/seedream-4.5",
+];
+
 export const PROVIDER_LABELS: Record<Provider, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
@@ -138,6 +152,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   ttsVoiceSam: (s) => s.ttsVoiceSam,
   ttsInstructions: (s) => s.ttsInstructions,
   temperature: (s) => (s.temperature == null ? "" : String(s.temperature)),
+  imageModel: (s) => s.imageModel,
   defFlashcardsAmount: (s) => s.defFlashcardsAmount,
   defFlashcardsDifficulty: (s) => s.defFlashcardsDifficulty,
   defQuizAmount: (s) => s.defQuizAmount,
@@ -157,7 +172,7 @@ export async function loadSettings(): Promise<Settings> {
     ttsProvider, openaiTtsKey, openrouterTtsKey, elevenlabsKey, ttsModel, ttsVoiceAlex, ttsVoiceSam, ttsInstructions,
     temperature, defFlashcardsAmount, defFlashcardsDifficulty,
     defQuizAmount, defQuizDifficulty, defAudioMode, defAudioFormat, defAudioLength,
-    defReportType, trashRetentionDays, updateCheckOnLaunch,
+    defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -184,6 +199,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("defReportType"),
     getSetting("trashRetentionDays"),
     getSetting("updateCheckOnLaunch"),
+    getSetting("imageModel"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -238,6 +254,7 @@ export async function loadSettings(): Promise<Settings> {
     ttsVoiceSam: scrubVoice(ttsVoiceSam) || DEFAULT_TTS.ttsVoiceSam,
     ttsInstructions: ttsInstructions || DEFAULT_TTS.ttsInstructions,
     temperature: safeTemp,
+    imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
     defFlashcardsAmount: pick(defFlashcardsAmount, AMOUNTS, DEFAULT_BEHAVIOR.defFlashcardsAmount),
     defFlashcardsDifficulty: pick(defFlashcardsDifficulty, DIFFICULTIES, DEFAULT_BEHAVIOR.defFlashcardsDifficulty),
     defQuizAmount: pick(defQuizAmount, AMOUNTS, DEFAULT_BEHAVIOR.defQuizAmount),

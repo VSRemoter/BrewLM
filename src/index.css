@@ -547,6 +547,54 @@ body {
   margin: 0.5em 0 0.75em;
   object-fit: contain;
 }
+.md img[data-brewimg]:not([src]) {
+  width: 240px;
+  height: 240px;
+  background: var(--color-edge-soft);
+}
+.md .brewimg-wrap {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+.md .brewimg-actions {
+  position: absolute;
+  top: calc(0.5em + 8px);
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.md .brewimg-wrap:hover .brewimg-actions,
+.md .brewimg-actions:focus-within {
+  opacity: 1;
+}
+.md.img-actions-off .brewimg-actions {
+  display: none;
+}
+.md .brewimg-actions button {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  background: rgb(0 0 0 / 0.6);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.md .brewimg-actions button:hover {
+  background: rgb(0 0 0 / 0.8);
+}
+.md img[data-brewimg].missing {
+  width: auto;
+  height: auto;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--color-ink-3);
+}
 .md .svg-embed {
   margin: 0.5em 0 0.75em;
   padding: 10px;

@@ -21,10 +21,12 @@ import {
   indexedSourceIds,
   replaceChunks,
   setSetting,
+  sourceText,
   unembeddedSourceIds,
   uid,
 } from "./db";
 import { complete } from "./llm";
+import { ensureMediaText } from "./media";
 import { activeKey, loadSettings } from "./settings";
 import type { Settings, Source, SourceChunk } from "./types";
 import { addUsage, newUsageAccumulator, recordAccumulated } from "./usage";
@@ -38,9 +40,12 @@ const EMBED_DIMS = 512;
 /** Above this much source text, report tools condense instead of retrieving. */
 export const MAP_REDUCE_THRESHOLD = 45_000;
 
-/** True for sources that carry prompt-usable text (not constitutions/binaries). */
-export const isRetrievable = (s: Source) =>
-  s.type !== "context" && s.content.length > 0 && !s.content.startsWith("data:");
+/** True for sources that carry prompt-usable text (not constitutions or media still lacking a description/transcript). */
+export const isRetrievable = (s: Source) => {
+  if (s.type === "context") return false;
+  const text = sourceText(s);
+  return text.length > 0 && !text.startsWith("data:");
+};
 
 /* -------------------------------- chunking -------------------------------- */
 
@@ -242,7 +247,7 @@ export async function indexSource(
   if (opts.onlyIfEmbeddable && embedTargets(s).length === 0) return;
   inFlight.add(source.id);
   try {
-    const raw = chunkText(source.content);
+    const raw = chunkText(sourceText(source));
     if (raw.length === 0) return;
     const embeddings = await embedAll(
       raw.map((c) => c.text),
@@ -275,10 +280,13 @@ export async function indexSource(
  * once per key per app session, so a broken key never storms.
  */
 export async function ensureIndexed(sources: Source[], settings?: Settings): Promise<void> {
+  const s = settings ?? (await loadSettings());
+  // Media without a description/transcript (and queued YouTube links) get
+  // their text first, so they're retrievable in this very prompt.
+  await ensureMediaText(sources, s);
   const textual = sources.filter(isRetrievable);
   if (textual.length === 0) return;
   const notebookId = textual[0].notebook_id;
-  const s = settings ?? (await loadSettings());
 
   const indexed = await indexedSourceIds(notebookId);
   for (const src of textual.filter((x) => !indexed.has(x.id))) {
@@ -540,7 +548,7 @@ export async function condenseSources(
     const chunks = await chunksForSource(src.id);
     const bodies = chunks.length
       ? chunks.map((c) => c.text)
-      : [src.content.slice(0, MAP_GROUP_CHARS)];
+      : [sourceText(src).slice(0, MAP_GROUP_CHARS)];
     // Pre-group chunks so level 1 starts near MAP_GROUP_CHARS per item.
     let cur = "";
     for (const b of bodies) {
@@ -561,7 +569,7 @@ export async function condenseSources(
 function notebookSignature(sources: Source[]): string {
   return sources
     .filter(isRetrievable)
-    .map((s) => `${s.id}:${s.content.length}`)
+    .map((s) => `${s.id}:${sourceText(s).length}`)
     .sort()
     .join("|");
 }

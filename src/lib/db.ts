@@ -102,6 +102,11 @@ async function initDb(): Promise<Database> {
   if (!srcCols.some((c) => c.name === "pinned")) {
     await db.execute("ALTER TABLE sources ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
+  // Media sources (image/audio) keep their data URL in `content`; `text` holds
+  // what the model reads instead — an image description/OCR or a transcript.
+  if (!srcCols.some((c) => c.name === "text")) {
+    await db.execute("ALTER TABLE sources ADD COLUMN text TEXT NOT NULL DEFAULT ''");
+  }
   const artCols = await db.select<{ name: string }[]>("PRAGMA table_info(artifacts)");
   if (!artCols.some((c) => c.name === "pinned")) {
     await db.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
@@ -196,6 +201,24 @@ async function initDb(): Promise<Database> {
       cost_usd REAL
     )`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts)`);
+  // Generated-image library. Chat messages reference rows here as
+  // `![alt](brewimg:<id>)` instead of embedding megabytes of base64, so chat
+  // rows stay small and past images never leak into LLM context. `data` is
+  // raw base64 (no data: prefix).
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS images (
+      id TEXT PRIMARY KEY,
+      notebook_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      mime TEXT NOT NULL,
+      data TEXT NOT NULL,
+      width INTEGER NOT NULL DEFAULT 0,
+      height INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    )`);
   return db;
 }
 
@@ -302,8 +325,8 @@ export async function cloneNotebook(
 
   for (const s of await listSources(srcId)) {
     await d.execute(
-      "INSERT INTO sources (id, notebook_id, type, title, content, mime, pinned, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-      [uid(), nb.id, s.type, s.title, s.content, s.mime, s.pinned ?? 0, now]
+      "INSERT INTO sources (id, notebook_id, type, title, content, mime, pinned, text, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [uid(), nb.id, s.type, s.title, s.content, s.mime, s.pinned ?? 0, s.text ?? "", now]
     );
   }
   if (opts.includeArtifacts ?? true) {
@@ -414,6 +437,7 @@ export async function deleteNotebook(id: string): Promise<void> {
   await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
+  await pruneOrphanImages();
 }
 
 /**
@@ -422,6 +446,8 @@ export async function deleteNotebook(id: string): Promise<void> {
  * number of notebooks purged.
  */
 export async function purgeExpiredTrash(days: number): Promise<number> {
+  // Also sweeps images orphaned by deletions made outside this module (phone).
+  await pruneOrphanImages();
   if (days <= 0) return 0;
   const cutoff = Date.now() - days * 86_400_000;
   const d = await getDb();
@@ -510,7 +536,8 @@ export async function addSource(
   type: SourceType,
   title: string,
   content: string,
-  mime: string | null = null
+  mime: string | null = null,
+  text = ""
 ): Promise<Source> {
   const d = await getDb();
   const src: Source = {
@@ -520,12 +547,13 @@ export async function addSource(
     title,
     content,
     mime,
+    text,
     pinned: 0,
     created_at: Date.now(),
   };
   await d.execute(
-    "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    [src.id, src.notebook_id, src.type, src.title, src.content, src.mime, src.created_at]
+    "INSERT INTO sources (id, notebook_id, type, title, content, mime, text, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [src.id, src.notebook_id, src.type, src.title, src.content, src.mime, src.text, src.created_at]
   );
   await touchNotebook(notebookId);
   return src;
@@ -544,6 +572,23 @@ export async function updateSource(
   ]);
   // Edited content invalidates its retrieval chunks (re-indexed lazily).
   await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
+}
+
+/** Store the model-readable text of a media source (and drop stale chunks). */
+export async function setSourceText(id: string, text: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE sources SET text = $1 WHERE id = $2", [text, id]);
+  await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
+}
+
+/**
+ * The text the model reads for a source. Text sources are their content;
+ * image/audio sources hold a data URL (or a too-large placeholder) there, so
+ * their description/transcript lives in `text` ("" = not extracted yet).
+ */
+export function sourceText(s: Source): string {
+  if (s.type === "image" || s.type === "audio" || s.content.startsWith("data:")) return s.text ?? "";
+  return s.content;
 }
 
 export async function setSourcePinned(id: string, pinned: boolean): Promise<void> {
@@ -645,6 +690,53 @@ export async function addMessage(
 export async function clearMessages(chatId: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
+  await pruneOrphanImages();
+}
+
+/* ---------------------------- Image library ---------------------------- */
+
+export interface LibraryImage {
+  id: string;
+  notebook_id: string;
+  chat_id: string;
+  prompt: string;
+  model: string;
+  mime: string;
+  /** Raw base64, no data: prefix. */
+  data: string;
+  width: number;
+  height: number;
+  parent_id: string;
+  created_at: number;
+}
+
+export async function addImage(img: Omit<LibraryImage, "id" | "created_at">): Promise<string> {
+  const d = await getDb();
+  const id = uid();
+  await d.execute(
+    "INSERT INTO images (id, notebook_id, chat_id, prompt, model, mime, data, width, height, parent_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    [id, img.notebook_id, img.chat_id, img.prompt, img.model, img.mime, img.data, img.width, img.height, img.parent_id, Date.now()]
+  );
+  return id;
+}
+
+export async function getImage(id: string): Promise<LibraryImage | null> {
+  const d = await getDb();
+  const rows = await d.select<LibraryImage[]>("SELECT * FROM images WHERE id = $1", [id]);
+  return rows[0] ?? null;
+}
+
+/**
+ * Drop images no message references any more. Messages are the only owners
+ * (clones share image rows by reference), so this is the single cleanup path.
+ */
+export async function pruneOrphanImages(): Promise<void> {
+  const d = await getDb();
+  // Grace period: an image is saved a moment before the message that cites it.
+  await d.execute(
+    "DELETE FROM images WHERE created_at < $1 AND NOT EXISTS (SELECT 1 FROM messages m WHERE instr(m.content, 'brewimg:' || images.id) > 0)",
+    [Date.now() - 10 * 60_000]
+  );
 }
 
 /* --------------------------------- Chats ------------------------------- */
@@ -709,6 +801,7 @@ export async function deleteChat(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM messages WHERE chat_id = $1", [id]);
   await d.execute("DELETE FROM chats WHERE id = $1", [id]);
+  await pruneOrphanImages();
 }
 
 /* ------------------------------ Artifacts ------------------------------ */
@@ -789,6 +882,7 @@ export async function deleteAllChats(notebookId: string): Promise<number> {
   const d = await getDb();
   await d.execute("DELETE FROM messages WHERE notebook_id = $1", [notebookId]);
   const res = await d.execute("DELETE FROM chats WHERE notebook_id = $1", [notebookId]);
+  await pruneOrphanImages();
   return res.rowsAffected;
 }
 
@@ -851,6 +945,7 @@ export async function clearAllData(): Promise<void> {
     "jobs",
     "activity",
     "usage_events",
+    "images",
     "settings",
   ]) {
     await d.execute(`DELETE FROM ${t}`);

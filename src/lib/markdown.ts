@@ -21,6 +21,8 @@ function inline(s: string): string {
       /!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[a-zA-Z0-9.+-]+;base64,[^)\s]+)\)/g,
       '<img src="$2" alt="$1" loading="lazy"/>'
     )
+    // image-library references; ChatPanel hydrates src from the DB
+    .replace(/!\[([^\]]*)\]\(brewimg:([a-zA-Z0-9-]+)\)/g, '<img data-brewimg="$2" alt="$1"/>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 

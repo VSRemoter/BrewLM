@@ -20,6 +20,7 @@ export default function SourceViewModal({
   const isConstitution = source.type === "context";
   const isImage = source.type === "image" && source.content.startsWith("data:");
   const isAudio = source.type === "audio" && source.content.startsWith("data:");
+  const isMedia = source.type === "image" || source.type === "audio";
   const isTextLike = !isImage && !isAudio;
   const dirty =
     title.trim() !== source.title || content !== source.content;
@@ -87,7 +88,34 @@ export default function SourceViewModal({
           />
         ) : isAudio ? (
           <audio controls src={source.content} className="w-full" />
-        ) : (
+        ) : null}
+
+        {/* media: the description/transcript is all the model ever reads */}
+        {isMedia && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
+              What the AI sees
+            </span>
+            {source.text ? (
+              <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-2">
+                {source.text}
+              </div>
+            ) : !source.content.startsWith("data:") ? (
+              <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-3">
+                Nothing — this file was too large to {source.type === "image" ? "analyze" : "transcribe"}. Split or
+                compress it and add it again.
+              </p>
+            ) : (
+              <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-3">
+                Not readable yet — BrewLM will {source.type === "image" ? "describe this image" : "transcribe this recording"} before
+                your next question once a suitable API key is set in Settings
+                {source.type === "audio" ? " (OpenAI or OpenRouter)" : ""}.
+              </p>
+            )}
+          </div>
+        )}
+
+        {isTextLike && !isMedia && (
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
