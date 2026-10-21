@@ -182,7 +182,7 @@ export function renderMarkdown(src: string): string {
         li--; // outer loop re-increments
         const head = rows[0] ?? [];
         const body = rows.slice(2);
-        html += "<table><thead><tr>";
+        html += '<div class="md-table"><table><thead><tr>';
         for (const c of head) html += `<th>${inline(c)}</th>`;
         html += "</tr></thead><tbody>";
         for (const r of body) {
@@ -190,7 +190,7 @@ export function renderMarkdown(src: string): string {
           for (const c of r) html += `<td>${inline(c)}</td>`;
           html += "</tr>";
         }
-        html += "</tbody></table>";
+        html += "</tbody></table></div>";
         continue;
       }
       const h = t.match(/^(#{1,3})\s+(.*)$/);

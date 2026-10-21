@@ -13,6 +13,7 @@ import {
   AUDIO_FORMAT_DESCS,
   AUDIO_FORMAT_LABELS,
   AUDIO_LENGTH_LABELS,
+  AUDIO_LENGTH_MINUTES,
   AUDIO_MODE_DESCS,
   AUDIO_MODE_LABELS,
   DIFFICULTY_LABELS,
@@ -406,7 +407,7 @@ export function AudioModal({
       </Field>
       <Field label="Length">
         <Segmented
-          options={AUDIO_LENGTHS.map((id) => ({ id, label: AUDIO_LENGTH_LABELS[id] }))}
+          options={AUDIO_LENGTHS.map((id) => ({ id, label: AUDIO_LENGTH_LABELS[id], hint: `~${AUDIO_LENGTH_MINUTES[id]} min` }))}
           value={length}
           onChange={setLength}
         />

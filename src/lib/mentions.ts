@@ -17,6 +17,8 @@ export interface MentionItem {
 export function artifactText(a: Artifact): string | null {
   try {
     switch (a.kind) {
+      case "drawing":
+        return null; // the user's own sketch — never sent to the AI
       case "notes":
       case "report":
       case "mindmap":
@@ -37,7 +39,7 @@ export function artifactText(a: Artifact): string | null {
         if (!Array.isArray(d?.script)) return null;
         const lines = (d.script as { speaker?: string; text?: string }[])
           .filter((t) => typeof t?.text === "string" && t.text.trim())
-          .map((t) => `${t.speaker ?? "Host"}: ${t.text!.trim()}`);
+          .map((t) => `${t.speaker === "Sam" ? "Co-Host" : "Host"}: ${t.text!.trim()}`);
         return lines.join("\n") || null;
       }
       case "flashcards": {
@@ -87,7 +89,8 @@ export function buildMentionCatalog(sources: Source[], artifacts: Artifact[] = [
       type: s.type,
       text: sourceText(s) && !sourceText(s).startsWith("data:") ? sourceText(s) : null,
     })),
-    ...artifacts.map((a) => ({
+    // Drawings stay out of @mentions: they're for the user, not the AI.
+    ...artifacts.filter((a) => a.kind !== "drawing").map((a) => ({
       id: a.id,
       title: a.title,
       group: "output" as const,

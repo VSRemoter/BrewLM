@@ -166,26 +166,37 @@ export function Segmented<T extends string>({
   value,
   onChange,
 }: {
-  options: { id: T; label: string }[];
+  /** `hint` is a muted secondary value shown after the label, e.g. a count. */
+  options: { id: T; label: string; hint?: string }[];
   value: T;
   onChange: (id: T) => void;
 }) {
+  // Equal-width columns sized to the widest label; wraps only if the space is truly too narrow.
   return (
-    <div className="flex rounded-lg border border-edge bg-canvas p-0.5" role="radiogroup">
-      {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          role="radio"
-          aria-checked={o.id === value}
-          onClick={() => onChange(o.id)}
-          className={`flex-1 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors ${
-            o.id === value ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink"
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div
+      className="grid auto-cols-fr grid-flow-col rounded-lg border border-edge bg-canvas p-0.5"
+      role="radiogroup"
+    >
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(o.id)}
+            className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors ${
+              on ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink"
+            }`}
+          >
+            {o.label}
+            {o.hint && (
+              <span className={`ml-1.5 whitespace-nowrap tabular-nums ${on ? "text-ink-3" : "opacity-70"}`}>{o.hint}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

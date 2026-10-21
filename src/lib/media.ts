@@ -22,6 +22,7 @@ const VISION_MODELS: Record<Provider, string> = {
   openai: "gpt-4o-mini",
   openrouter: "google/gemini-2.5-flash",
   anthropic: "claude-haiku-4-5-20251001",
+  local: "", // media reading only uses the cloud providers listed in `allowed`
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
 const OPENAI_TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];

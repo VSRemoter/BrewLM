@@ -27,6 +27,7 @@ import {
 } from "./db";
 import { complete } from "./llm";
 import { ensureMediaText } from "./media";
+import { contextBudget, loadLocalServer, localHeaders } from "./local";
 import { activeKey, loadSettings } from "./settings";
 import type { Settings, Source, SourceChunk } from "./types";
 import { addUsage, newUsageAccumulator, recordAccumulated } from "./usage";
@@ -98,10 +99,19 @@ interface EmbedTarget {
   url: string;
   key: string;
   model: string;
+  /** Local servers: no `dimensions` param (most ignore or reject it). */
+  local?: boolean;
 }
 
 /** Candidate embeddings providers, best first; returns null when none work. */
 function embedTargets(s: Settings): EmbedTarget[] {
+  // Local provider: embed on the user's own server or not at all — source text
+  // never goes to a cloud API just because a cloud key happens to be saved.
+  if (s.provider === "local") {
+    return s.localBaseUrl && s.localEmbedModel
+      ? [{ url: "", key: s.localKey, model: s.localEmbedModel, local: true }]
+      : [];
+  }
   const targets: EmbedTarget[] = [];
   if (s.provider === "openai" && s.openaiKey)
     targets.push({
@@ -128,10 +138,13 @@ function embedTargets(s: Settings): EmbedTarget[] {
 async function embedBatch(texts: string[], targets: EmbedTarget[]): Promise<number[][] | null> {
   for (const t of targets) {
     try {
-      const res = await tauriFetch(t.url, {
+      const url = t.local ? `${(await loadLocalServer()).baseUrl}/embeddings` : t.url;
+      const res = await tauriFetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t.key}` },
-        body: JSON.stringify({ model: t.model, input: texts, dimensions: EMBED_DIMS }),
+        headers: t.local ? localHeaders(t.key) : { "Content-Type": "application/json", Authorization: `Bearer ${t.key}` },
+        body: JSON.stringify(
+          t.local ? { model: t.model, input: texts } : { model: t.model, input: texts, dimensions: EMBED_DIMS }
+        ),
         connectTimeout: 30000,
       });
       if (!res.ok) continue;
@@ -296,7 +309,7 @@ export async function ensureIndexed(sources: Source[], settings?: Settings): Pro
   // Stale-embedding backfill.
   const targets = embedTargets(s);
   if (targets.length === 0) return;
-  const fingerprint = `${s.provider}:${targets.map((t) => t.key.slice(-4)).join(",")}`;
+  const fingerprint = `${s.provider}:${targets.map((t) => `${t.model}/${t.key.slice(-4)}`).join(",")}`;
   const stale = await unembeddedSourceIds(notebookId);
   for (const src of textual) {
     const attemptKey = `${src.id}:${fingerprint}`;
@@ -397,7 +410,11 @@ export async function rankChunks(
       for (const c of live) {
         if (!c.embedding) continue;
         try {
-          scored.push({ c, score: cosine(qv, JSON.parse(c.embedding) as number[]) });
+          const v = JSON.parse(c.embedding) as number[];
+          // Vectors from a different embedding model (e.g. cloud vs local) aren't
+          // comparable; skip them and let BM25 take over if too few remain.
+          if (v.length !== qv.length) continue;
+          scored.push({ c, score: cosine(qv, v) });
         } catch {
           /* corrupt embedding row — BM25 will cover it */
         }
@@ -454,7 +471,6 @@ export async function rankChunks(
 
 /* ------------------------- map-reduce condensation ------------------------ */
 
-const MAP_GROUP_CHARS = 20_000;
 const MAX_GROUPS_PER_LEVEL = 60;
 /** Parallel condense calls per pass — keeps a whole-book condense under a minute. */
 const CONDENSE_POOL = 4;
@@ -466,7 +482,7 @@ interface CondenseItem {
 
 /**
  * Reduce `items` to ≤ targetChars of dense notes via repeated LLM passes.
- * Each pass groups items up to MAP_GROUP_CHARS and condenses each group, so
+ * Each pass groups items up to the budget's condenseGroup and condenses each group, so
  * arbitrarily large material converges (400-page PDF: ~100 groups → ~7 notes).
  */
 async function condenseTo(
@@ -486,10 +502,17 @@ async function condenseTo(
       const joined = notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n");
       if (joined.length <= targetChars) return joined;
 
+      // Huge material gets bigger groups rather than a dropped tail: every
+      // pass covers ALL of the text in roughly MAX_GROUPS_PER_LEVEL calls.
+      const total = notes.reduce((n, item) => n + item.text.length, 0);
+      // Local models: groups must fit the window, even if that means more calls.
+      const groupCap = contextBudget(settings).condenseGroup;
+      const groupChars =
+        settings.provider === "local" ? groupCap : Math.max(groupCap, Math.ceil(total / MAX_GROUPS_PER_LEVEL));
       const groups: CondenseItem[] = [];
       let cur: CondenseItem | null = null;
       for (const item of notes) {
-        if (cur && cur.text.length + item.text.length > MAP_GROUP_CHARS) {
+        if (cur && cur.text.length + item.text.length > groupChars) {
           groups.push(cur);
           cur = { label: item.label, text: item.text };
         } else if (cur) {
@@ -500,7 +523,7 @@ async function condenseTo(
       }
       if (cur) groups.push(cur);
 
-      const next = await mapPool(groups.slice(0, MAX_GROUPS_PER_LEVEL), CONDENSE_POOL, async (g) => {
+      const next = await mapPool(groups, CONDENSE_POOL, async (g) => {
         const note = (
           await complete({
             provider: settings.provider,
@@ -542,17 +565,18 @@ export async function condenseSources(
   onPhase?: (phase: string) => void
 ): Promise<string> {
   const textual = sources.filter(isRetrievable).slice(0, 12);
+  const groupCap = contextBudget(settings).condenseGroup;
   // Chunk-level starting points keep even huge single sources fully covered.
   const items: CondenseItem[] = [];
   for (const src of textual) {
     const chunks = await chunksForSource(src.id);
     const bodies = chunks.length
       ? chunks.map((c) => c.text)
-      : [sourceText(src).slice(0, MAP_GROUP_CHARS)];
-    // Pre-group chunks so level 1 starts near MAP_GROUP_CHARS per item.
+      : [sourceText(src).slice(0, groupCap)];
+    // Pre-group chunks so level 1 starts near groupCap per item.
     let cur = "";
     for (const b of bodies) {
-      if (cur && cur.length + b.length > MAP_GROUP_CHARS) {
+      if (cur && cur.length + b.length > groupCap) {
         items.push({ label: src.title, text: cur });
         cur = b;
       } else {
@@ -562,7 +586,7 @@ export async function condenseSources(
     if (cur) items.push({ label: src.title, text: cur });
   }
   onPhase?.(`Condensing ${textual.length} sources (full coverage)…`);
-  return condenseTo(items, settings, focus, 28_000);
+  return condenseTo(items, settings, focus, Math.min(28_000, contextBudget(settings).sources));
 }
 
 /** Changes whenever a source is added, removed, or its content edited. */
@@ -580,7 +604,31 @@ function notebookSignature(sources: Source[]): string {
  * Studio tool (report, flashcards, quiz, mindmap, audio) then reuses the
  * same notes until any source changes.
  */
+/** Condensations in progress, so parallel Studio jobs share one pass instead of each running it. */
+const condensing = new Map<string, Promise<string>>();
+
 export async function condenseNotebook(
+  notebookId: string,
+  sources: Source[],
+  settings: Settings,
+  onPhase?: (phase: string) => void
+): Promise<string> {
+  const key = `${notebookId}:${notebookSignature(sources)}`;
+  const running = condensing.get(key);
+  if (running) {
+    onPhase?.("Waiting for the notebook summary another tool is building…");
+    return running;
+  }
+  const work = condenseNotebookOnce(notebookId, sources, settings, onPhase);
+  condensing.set(key, work);
+  try {
+    return await work;
+  } finally {
+    condensing.delete(key);
+  }
+}
+
+async function condenseNotebookOnce(
   notebookId: string,
   sources: Source[],
   settings: Settings,

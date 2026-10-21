@@ -188,10 +188,10 @@ const M_THEMES = {
   brew:     { name:'Brew',     scheme:'light',font:null, v:{ bg:'#fff8f3', panel:'#ffffff', panel2:'#f9ece2', edge:'#f3e1d4', ink:'#2b1709', ink2:'#7a5341', ink3:'#b39079', accent:'#f2541b' } },
   original: { name:'Daylight', scheme:'light', font:null, v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#8a8a8a', accent:'#171717' } },
   midnight: { name:'Midnight', scheme:'dark', font:null, v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a1a1aa', ink3:'#6e6e78', accent:'#f4f4f5' } },
-  forest:   { name:'Forest',   scheme:'dark', font:null, v:{ bg:'#0c1410', panel:'#121f18', panel2:'#192b21', edge:'#24402f', ink:'#e8f2ea', ink2:'#9cb8a6', ink3:'#64826f', accent:'#3ecf8e' } },
-  ocean:    { name:'Ocean',    scheme:'dark', font:null, v:{ bg:'#081120', panel:'#0f1c31', panel2:'#16283f', edge:'#223a5c', ink:'#e7effc', ink2:'#9ab1d1', ink3:'#61789c', accent:'#4da2ff' } },
-  copper:   { name:'Copper',   scheme:'dark', font:null, v:{ bg:'#170e08', panel:'#221509', panel2:'#2f1e0e', edge:'#432c17', ink:'#f6ebdf', ink2:'#c9a88c', ink3:'#92725a', accent:'#e8853d' } },
-  wine:     { name:'Wine',     scheme:'dark', font:null, v:{ bg:'#140a10', panel:'#1f1119', panel2:'#2b161f', edge:'#41232f', ink:'#f7e9f0', ink2:'#c09aac', ink3:'#8a6175', accent:'#d85674' } },
+  forest:   { name:'Forest',   scheme:'dark', font:null, v:{ bg:'#0f1412', panel:'#161d1a', panel2:'#1f2824', edge:'#2b3631', ink:'#eef2ec', ink2:'#aab5ad', ink3:'#7a877f', accent:'#4cc38a' } },
+  ocean:    { name:'Ocean',    scheme:'dark', font:null, v:{ bg:'#0b111c', panel:'#121a28', panel2:'#1b2434', edge:'#273347', ink:'#edf2f9', ink2:'#a9b4c5', ink3:'#76839a', accent:'#4ea6ff' } },
+  copper:   { name:'Copper',   scheme:'dark', font:null, v:{ bg:'#14100d', panel:'#1c1713', panel2:'#28211b', edge:'#382e26', ink:'#f5eee6', ink2:'#bcae9f', ink3:'#918372', accent:'#e8873f' } },
+  wine:     { name:'Wine',     scheme:'dark', font:null, v:{ bg:'#140f13', panel:'#1c161b', panel2:'#2a1f27', edge:'#3a2c35', ink:'#f6eff3', ink2:'#bcabb5', ink3:'#93808b', accent:'#e0607e' } },
   rose:     { name:'Rose',     scheme:'light',font:null, v:{ bg:'#fdf1f6', panel:'#ffffff', panel2:'#f8e2ec', edge:'#f2d3e1', ink:'#3f1a2d', ink2:'#93536f', ink3:'#c18ba6', accent:'#ec4899' } },
   matrix:   { name:'Matrix',   scheme:'dark', font:'"SF Mono", ui-monospace, Menlo, monospace',
               v:{ bg:'#010603', panel:'#04140b', panel2:'#082014', edge:'#11452a', ink:'#a3f7bf', ink2:'#52b96f', ink3:'#2d7a44', accent:'#22e05c' } },
@@ -624,6 +624,7 @@ async function pollJob(id, maxSeconds) {
 function renderStudioTab(pane, nb) {
   const groups = { audio: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
   for (const a of nb.artifacts) {
+    if (a.kind === 'drawing') continue; // desktop-only sketchpad
     if (a.kind === 'audio') groups.audio.push(a);
     else if (a.kind === 'flashcards') groups.flashcards.push(a);
     else if (a.kind === 'quiz') groups.quiz.push(a);

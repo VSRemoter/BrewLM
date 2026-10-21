@@ -9,8 +9,13 @@
 
 import { unzipSync } from "fflate";
 
-/** Beyond this, a source row (and its embedding cost) grows unwieldy. */
-const MAX_EXTRACT_CHARS = 200_000;
+/**
+ * Sanity guard only (~2,500 pages). Chat never sends a whole source — it
+ * retrieves the relevant chunks — so full books are stored and searchable
+ * end-to-end; embedding even this much costs about a cent.
+ */
+export const MAX_SOURCE_CHARS = 5_000_000;
+const MAX_EXTRACT_CHARS = MAX_SOURCE_CHARS;
 const TRUNCATED_NOTE = "\n\n[Truncated — the file is too large to embed in full.]";
 
 export interface ExtractedText {

@@ -107,6 +107,10 @@ async function initDb(): Promise<Database> {
   if (!srcCols.some((c) => c.name === "text")) {
     await db.execute("ALTER TABLE sources ADD COLUMN text TEXT NOT NULL DEFAULT ''");
   }
+  const chatCols = await db.select<{ name: string }[]>("PRAGMA table_info(chats)");
+  if (!chatCols.some((c) => c.name === "pinned")) {
+    await db.execute("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
   const artCols = await db.select<{ name: string }[]>("PRAGMA table_info(artifacts)");
   if (!artCols.some((c) => c.name === "pinned")) {
     await db.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
@@ -346,8 +350,8 @@ export async function cloneNotebook(
       const newId = uid();
       chatIdMap.set(c.id, newId);
       await d.execute(
-        "INSERT INTO chats (id, notebook_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-        [newId, nb.id, c.title, c.created_at, c.updated_at]
+        "INSERT INTO chats (id, notebook_id, title, pinned, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [newId, nb.id, c.title, c.pinned ?? 0, c.created_at, c.updated_at]
       );
     }
     for (const m of await d.select<ChatMessage[]>(
@@ -687,12 +691,6 @@ export async function addMessage(
   return msg;
 }
 
-export async function clearMessages(chatId: string): Promise<void> {
-  const d = await getDb();
-  await d.execute("DELETE FROM messages WHERE chat_id = $1", [chatId]);
-  await pruneOrphanImages();
-}
-
 /* ---------------------------- Image library ---------------------------- */
 
 export interface LibraryImage {
@@ -758,6 +756,7 @@ export async function createChat(notebookId: string, title = "New chat"): Promis
     title,
     created_at: now,
     updated_at: now,
+    pinned: 0,
   };
   await d.execute(
     "INSERT INTO chats (id, notebook_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
@@ -792,6 +791,12 @@ export async function renameChat(id: string, title: string): Promise<void> {
   await d.execute("UPDATE chats SET title = $1 WHERE id = $2", [title, id]);
 }
 
+/** Pinning is organizational — like starring, it must not bump updated_at. */
+export async function setChatPinned(id: string, pinned: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE chats SET pinned = $1 WHERE id = $2", [pinned ? 1 : 0, id]);
+}
+
 export async function touchChat(id: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE chats SET updated_at = $1 WHERE id = $2", [Date.now(), id]);
@@ -805,6 +810,13 @@ export async function deleteChat(id: string): Promise<void> {
 }
 
 /* ------------------------------ Artifacts ------------------------------ */
+
+/** One artifact as currently saved (null if it was deleted). */
+export async function getArtifact(id: string): Promise<Artifact | null> {
+  const d = await getDb();
+  const rows = await d.select<Artifact[]>("SELECT * FROM artifacts WHERE id = $1", [id]);
+  return rows[0] ?? null;
+}
 
 export async function listArtifacts(notebookId: string): Promise<Artifact[]> {
   const d = await getDb();

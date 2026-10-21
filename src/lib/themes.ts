@@ -31,26 +31,26 @@ export const THEMES: ThemeDef[] = [
   {
     id: "forest",
     name: "Forest",
-    blurb: "Elegant dark green",
-    swatch: { canvas: "#0c1410", panel: "#121f18", accent: "#3ecf8e", ink: "#e8f2ea" },
+    blurb: "Pine green with amber light",
+    swatch: { canvas: "#0f1412", panel: "#161d1a", accent: "#4cc38a", ink: "#eef2ec" },
   },
   {
     id: "ocean",
     name: "Ocean",
-    blurb: "Deep navy blue",
-    swatch: { canvas: "#081120", panel: "#0f1c31", accent: "#4da2ff", ink: "#e7effc" },
+    blurb: "Deep navy with sea-glass teal",
+    swatch: { canvas: "#0b111c", panel: "#121a28", accent: "#4ea6ff", ink: "#edf2f9" },
   },
   {
     id: "copper",
     name: "Copper",
-    blurb: "Warm roasted orange",
-    swatch: { canvas: "#170e08", panel: "#221509", accent: "#e8853d", ink: "#f6ebdf" },
+    blurb: "Roasted copper with verdigris",
+    swatch: { canvas: "#14100d", panel: "#1c1713", accent: "#e8873f", ink: "#f5eee6" },
   },
   {
     id: "wine",
     name: "Wine",
-    blurb: "Elegant burgundy red",
-    swatch: { canvas: "#140a10", panel: "#1f1119", accent: "#d85674", ink: "#f7e9f0" },
+    blurb: "Burgundy with champagne gold",
+    swatch: { canvas: "#140f13", panel: "#1c161b", accent: "#e0607e", ink: "#f6eff3" },
   },
   {
     id: "rose",
@@ -85,6 +85,13 @@ export const THEMES: ThemeDef[] = [
 ];
 
 export const DEFAULT_THEME = "brew";
+
+/** True for themes with a dark canvas (decides light/dark for embedded tools like Excalidraw). */
+export function isDarkTheme(id: string): boolean {
+  const hex = (THEMES.find((t) => t.id === id) ?? THEMES[0]).swatch.canvas.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+}
 
 /** Swaps palettes instantly by flipping the root data-theme attribute. */
 export function applyTheme(id: string): void {

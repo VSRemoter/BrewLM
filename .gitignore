@@ -25,3 +25,6 @@ dist-ssr
 
 # Tauri sidecar binaries (fetched by scripts/fetch-sidecars.sh)
 src-tauri/binaries/
+
+# Excalidraw fonts (copied by scripts/copy-excalidraw-fonts.mjs on npm install)
+public/excalidraw/

@@ -1,12 +1,14 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { Check, ChevronLeft, ChevronRight, Download, FilePlus2, Play, RotateCw, Square } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Download, FilePlus2, Play, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactText } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
+import { SPEAKER_LABEL } from "../lib/tts";
+import { MinimizeButton, PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
 import { Modal, GhostButton, IconButton } from "./ui";
 
 /** Filesystem-safe name for downloads. */
@@ -26,6 +28,7 @@ export default function ArtifactView({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [added, setAdded] = useState(false);
+  const player = usePlayer();
   const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -93,6 +96,9 @@ export default function ArtifactView({
       wide
       actions={
         <>
+          {artifact.kind === "audio" && player.track?.id === artifact.id && (
+            <MinimizeButton onMinimize={onClose} />
+          )}
           <IconButton
             onClick={addToSources}
             label={added ? "Added to sources" : "Add to sources"}
@@ -128,7 +134,7 @@ export default function ArtifactView({
         />
       )}
       {artifact.kind === "research" && <ResearchView data={artifact.data} />}
-      {artifact.kind === "audio" && <AudioView data={artifact.data} />}
+      {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
       </div>
     </Modal>
   );
@@ -455,10 +461,6 @@ function ResearchView({ data }: { data: string }) {
 
 /* ------------------------------ Audio view ------------------------------ */
 
-interface ScriptTurn {
-  speaker: "Alex" | "Sam";
-  text: string;
-}
 interface AudioData {
   audio: string | null;
   script: ScriptTurn[];
@@ -491,102 +493,40 @@ function parseAudio(data: string): AudioData | null {
 
 const SPEECH_OK = typeof window !== "undefined" && "speechSynthesis" in window;
 
-/** Pick two distinct voices (prefer English) — one per host. */
-function pickVoices(): Promise<[SpeechSynthesisVoice | null, SpeechSynthesisVoice | null]> {
-  return new Promise((resolve) => {
-    const pick = () => {
-      const all = window.speechSynthesis.getVoices();
-      if (!all.length) return false;
-      const en = all.filter((v) => v.lang.toLowerCase().startsWith("en"));
-      const pool = en.length >= 2 ? en : all;
-      resolve([pool[0] ?? null, pool[1] ?? pool[0] ?? null]);
-      return true;
-    };
-    if (pick()) return;
-    window.speechSynthesis.onvoiceschanged = () => pick();
-    setTimeout(() => pick(), 1500);
-  });
-}
-
-function AudioView({ data }: { data: string }) {
+/** The overview's player + script. Playback lives in the app-wide player, so it outlives this modal. */
+function AudioView({ id, title, data }: { id: string; title: string; data: string }) {
   const parsed = useMemo(() => parseAudio(data), [data]);
-  const [speaking, setSpeaking] = useState(false);
-  const [current, setCurrent] = useState<number | null>(null);
-  const runRef = useRef(0);
+  const player = usePlayer();
+  const { setOpenId } = player;
 
-  // stop speech when the modal unmounts
-  useEffect(
-    () => () => {
-      runRef.current++;
-      if (SPEECH_OK) window.speechSynthesis.cancel();
-    },
-    []
-  );
+  // While this modal is open the mini player steps aside for this track.
+  useEffect(() => {
+    setOpenId(id);
+    return () => setOpenId(null);
+  }, [id, setOpenId]);
 
   if (!parsed) return <ParseError />;
   const { audio, script, note } = parsed;
-
-  const stop = () => {
-    runRef.current++;
-    if (SPEECH_OK) window.speechSynthesis.cancel();
-    setSpeaking(false);
-    setCurrent(null);
-  };
-
-  const play = async () => {
-    if (!SPEECH_OK) return;
-    stop();
-    const run = ++runRef.current;
-    const [va, vb] = await pickVoices().catch((): [null, null] => [null, null]);
-    if (runRef.current !== run) return;
-    setSpeaking(true);
-    let i = 0;
-    const step = () => {
-      if (runRef.current !== run) return;
-      if (i >= script.length) {
-        setSpeaking(false);
-        setCurrent(null);
-        return;
-      }
-      setCurrent(i);
-      const u = new SpeechSynthesisUtterance(script[i].text);
-      const voice = script[i].speaker === "Alex" ? va : vb;
-      if (voice) u.voice = voice;
-      u.rate = 1;
-      u.onend = () => {
-        if (runRef.current === run) {
-          i++;
-          step();
-        }
-      };
-      u.onerror = u.onend;
-      window.speechSynthesis.speak(u);
-    };
-    step();
-  };
+  const loaded = player.track?.id === id;
+  const current = loaded ? player.line : null;
+  const start = () => player.play({ id, title, src: audio, script });
 
   return (
     <div className="flex flex-col gap-3">
-      {audio ? (
+      {loaded ? (
         <div>
-          <audio controls src={audio} className="w-full" />
+          <PlayerControls />
           <p className="mt-1.5 text-[11px] text-ink-3">
-            Synthesized with OpenAI text-to-speech (voices: nova &amp; onyx).
+            {audio ? "Keeps playing if you minimize or close this — controls stay in the corner." : `Read with your computer's voices${note ? ` · ${note}` : ""} — keeps playing if you minimize this.`}
           </p>
         </div>
-      ) : SPEECH_OK ? (
+      ) : audio || SPEECH_OK ? (
         <div className="flex items-center gap-3">
-          {speaking ? (
-            <GhostButton onClick={stop}>
-              <Square size={11} className="mr-1.5 inline" /> Stop
-            </GhostButton>
-          ) : (
-            <GhostButton onClick={play}>
-              <Play size={11} className="mr-1.5 inline" /> Play with system voices
-            </GhostButton>
-          )}
+          <GhostButton onClick={start}>
+            <Play size={11} className="mr-1.5 inline" /> {audio ? "Play" : "Play with system voices"}
+          </GhostButton>
           <span className="text-[11px] text-ink-3">
-            Played locally with your Mac's voices{note ? ` · ${note}` : ""}
+            {audio ? "Synthesized audio overview" : `Played locally with your computer's voices${note ? ` · ${note}` : ""}`}
           </span>
         </div>
       ) : (
@@ -599,12 +539,14 @@ function AudioView({ data }: { data: string }) {
         {script.map((t, i) => (
           <p
             key={i}
+            onClick={!audio && loaded ? () => player.seek(i) : undefined}
+            title={!audio && loaded ? "Read from here" : undefined}
             className={`text-[12.5px] leading-relaxed ${
               current === i ? "-mx-1.5 rounded-md bg-hover-soft px-1.5" : ""
-            }`}
+            } ${!audio && loaded ? "cursor-pointer hover:text-ink" : ""}`}
           >
             <span className={`font-semibold ${t.speaker === "Alex" ? "text-accent" : "text-ink"}`}>
-              {t.speaker}:
+              {SPEAKER_LABEL[t.speaker]}:
             </span>{" "}
             <span className="text-ink-2">{t.text}</span>
           </p>

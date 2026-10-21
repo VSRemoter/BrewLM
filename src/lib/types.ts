@@ -75,9 +75,12 @@ export interface Chat {
   title: string;
   created_at: number;
   updated_at: number;
+  /** 1 = pinned to the top of Recent chats. */
+  pinned: number;
 }
 
-export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research";
+/** "drawing" is the user's own Excalidraw sketch — never sent to the AI. */
+export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research" | "drawing";
 
 export interface Artifact {
   id: string;
@@ -90,7 +93,8 @@ export interface Artifact {
   created_at: number;
 }
 
-export type Provider = "openrouter" | "openai" | "anthropic";
+/** "local" = any OpenAI-compatible server the user runs (Ollama, LM Studio, llama.cpp…). */
+export type Provider = "openrouter" | "openai" | "anthropic" | "local";
 
 /** Where Audio overviews get their voices from. */
 export type TtsProvider = "system" | "openai" | "openrouter" | "elevenlabs";
@@ -100,7 +104,7 @@ export type Amount = "compact" | "default" | "more";
 export type Difficulty = "easy" | "medium" | "hard";
 export type AudioFormat = "deep-dive" | "brief" | "debate" | "critique";
 export type AudioLength = "short" | "standard" | "long";
-/** Conversation = two hosts (Alex & Sam); Solo = a single narrator (Alex). */
+/** Conversation = two hosts (Host & Co-Host); Solo = a single narrator (the Host). Stored ids: Alex = Host, Sam = Co-Host. */
 export type AudioMode = "conversation" | "solo";
 export type ReportType = "study-guide" | "briefing-doc" | "analysis" | "custom";
 
@@ -109,6 +113,14 @@ export interface Settings {
   openrouterKey: string;
   openaiKey: string;
   anthropicKey: string;
+  /** Local server base URL including /v1, e.g. http://localhost:11434/v1 ("" = not set up). */
+  localBaseUrl: string;
+  /** Optional bearer token for local servers that require one. */
+  localKey: string;
+  /** Embedding model on the local server ("" = keyword search only, nothing leaves the machine). */
+  localEmbedModel: string;
+  /** The local model's context window in tokens; sizes how much source text is sent. */
+  localContext: number;
   model: string;
   theme: string;
   /** UI font id from fonts.ts ("system" follows the theme's default stack). */
@@ -130,6 +142,8 @@ export interface Settings {
   temperature: number | null;
   /** OpenRouter Image API model used by /image (separate from the chat model). */
   imageModel: string;
+  /** Model for /research and /search, per chat provider; missing or "" = the main model. */
+  researchModels: Partial<Record<Provider, string>>;
   /* Studio defaults — seed the customize modals and slash commands. */
   defFlashcardsAmount: Amount;
   defFlashcardsDifficulty: Difficulty;
@@ -143,6 +157,10 @@ export interface Settings {
   trashRetentionDays: number;
   /** Check GitHub Releases for a newer version on launch. */
   updateCheckOnLaunch: boolean;
+  /** Ease mouse-wheel scrolling instead of WebKit's hard per-notch jumps. */
+  smoothScroll: boolean;
+  /** Token counts + cost under each AI reply (/details toggles). */
+  showDetails: boolean;
 }
 
 export interface Flashcard {

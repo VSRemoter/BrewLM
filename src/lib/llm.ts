@@ -1,3 +1,5 @@
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { budgetForContext, loadLocalServer, localHeaders } from "./local";
 import type { Provider } from "./types";
 
 export interface LlmMessage {
@@ -56,8 +58,9 @@ export function isAbortError(e: unknown): boolean {
 
 /**
  * Streams a chat completion, yielding text deltas.
- * All three providers are called directly from the webview — each allows
+ * Cloud providers are called directly from the webview — each allows
  * browser-direct access (Anthropic requires the dangerous-direct-browser-access header).
+ * Local servers go through the Rust backend instead (no CORS setup needed).
  */
 export async function* streamChat(opts: StreamOptions): AsyncGenerator<string> {
   if (opts.provider === "anthropic") {
@@ -75,15 +78,18 @@ export async function complete(opts: StreamOptions): Promise<string> {
 }
 
 async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<string> {
-  const base =
-    opts.provider === "openrouter"
+  const local = opts.provider === "local" ? await loadLocalServer() : null;
+  if (local && !local.baseUrl) throw new Error("Set your local server address in Settings → AI Model.");
+  if (local && !opts.model.trim()) throw new Error("Pick a local model in Settings → AI Model.");
+  const base = local
+    ? `${local.baseUrl}/chat/completions`
+    : opts.provider === "openrouter"
       ? "https://openrouter.ai/api/v1/chat/completions"
       : "https://api.openai.com/v1/chat/completions";
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${opts.apiKey}`,
-  };
+  const headers: Record<string, string> = local
+    ? localHeaders(local.key)
+    : { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` };
   if (opts.provider === "openrouter") {
     headers["HTTP-Referer"] = "https://brewlm.app";
     headers["X-Title"] = "BrewLM";
@@ -112,9 +118,13 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     stream: true,
     stream_options: { include_usage: true },
   };
+  // Local windows are small: never ask for more output than the budget leaves room for.
+  const maxTokens = local
+    ? Math.min(opts.maxTokens ?? 4096, budgetForContext(local.context).maxOutput)
+    : opts.maxTokens ?? 4096;
   // o1/o3/gpt-5-class models reject `max_tokens` outright — the request fails.
-  if (isReasoningModel(opts.model)) body.max_completion_tokens = opts.maxTokens ?? 4096;
-  else body.max_tokens = opts.maxTokens ?? 4096;
+  if (isReasoningModel(opts.model)) body.max_completion_tokens = maxTokens;
+  else body.max_tokens = maxTokens;
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
@@ -129,11 +139,14 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     body.temperature = opts.temperature;
   }
 
-  const res = await fetch(base, {
+  const res = await (local ? tauriFetch : fetch)(base, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     signal: opts.signal,
+  }).catch((e) => {
+    if (local && !isAbortError(e)) throw new Error(`Couldn't reach your local server at ${local.baseUrl}. Is it running?`);
+    throw e;
   });
   if (!res.ok) throw new Error(await apiError(res));
   if (!res.body) throw new Error("Empty response body");
@@ -300,7 +313,7 @@ async function apiError(res: Response): Promise<string> {
   let detail = "";
   try {
     const json = await res.json();
-    detail = json.error?.message ?? JSON.stringify(json);
+    detail = json.error?.message ?? (typeof json.error === "string" ? json.error : JSON.stringify(json));
   } catch {
     detail = await res.text().catch(() => "");
   }

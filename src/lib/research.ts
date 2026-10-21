@@ -1,5 +1,5 @@
 import { complete, extractJson, type StreamUsage } from "./llm";
-import { activeKey } from "./settings";
+import { activeKey, researchModelFor } from "./settings";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
 import { recordUsage } from "./usage";
@@ -177,11 +177,11 @@ async function searchAnthropic(
 
 async function searchWeb(query: string, settings: Settings, signal?: AbortSignal): Promise<WebHit[]> {
   if (settings.provider === "anthropic" && settings.anthropicKey)
-    return searchAnthropic(query, settings.anthropicKey, settings.model, signal);
+    return searchAnthropic(query, settings.anthropicKey, researchModelFor(settings), signal);
   if (settings.provider === "openai" && settings.openaiKey)
     return searchOpenAI(query, settings.openaiKey, signal);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return searchOpenRouter(query, settings.openrouterKey, settings.model, signal);
+    return searchOpenRouter(query, settings.openrouterKey, researchModelFor(settings), signal);
   return [];
 }
 
@@ -338,11 +338,13 @@ export async function webAnswer(opts: {
   const { query, settings, system, signal } = opts;
   const q = `${query.trim()}\n\n(Answer using current information from the web.)`;
   if (settings.provider === "anthropic" && settings.anthropicKey)
-    return answerAnthropic(q, settings.anthropicKey, settings.model, system, signal);
+    return answerAnthropic(q, settings.anthropicKey, researchModelFor(settings), system, signal);
   if (settings.provider === "openai" && settings.openaiKey)
     return answerOpenAI(q, settings.openaiKey, system, signal);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return answerOpenRouter(q, settings.openrouterKey, settings.model, system, signal);
+    return answerOpenRouter(q, settings.openrouterKey, researchModelFor(settings), system, signal);
+  if (settings.provider === "local")
+    throw new Error("Web search isn't available with a local model. It runs through a cloud provider's search, so switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use /search.");
   throw new Error("Add an API key in Settings first — web search runs through your provider.");
 }
 
@@ -369,17 +371,20 @@ export async function deepResearch(opts: {
 }): Promise<ResearchOutcome> {
   const { settings, title, description, signal, onPhase = () => {} } = opts;
   const key = activeKey(settings);
+  if (settings.provider === "local")
+    throw new Error("Deep research needs web search, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to run it.");
   if (!key) throw new Error("Add an API key first.");
+  const model = researchModelFor(settings);
 
   const ask = (prompt: string, system?: string): Promise<string> =>
     complete({
       provider: settings.provider,
       apiKey: key,
-      model: settings.model,
+      model,
       maxTokens: 4096,
       temperature: settings.temperature ?? undefined,
       signal,
-      onUsage: (u) => void recordUsage("research", settings.provider, settings.model, u),
+      onUsage: (u) => void recordUsage("research", settings.provider, model, u),
       messages: [
         ...(system ? [{ role: "system" as const, content: system }] : []),
         { role: "user" as const, content: prompt },

@@ -6,6 +6,7 @@ import {
   Loader2,
   Network,
   Pencil,
+  PenLine,
   Pin,
   SlidersHorizontal,
   StickyNote,
@@ -13,7 +14,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError } from "../lib/llm";
 import {
@@ -25,14 +26,15 @@ import {
   MAP_REDUCE_THRESHOLD,
   rankChunks,
 } from "../lib/rag";
+import { cancelStudioJob, startStudioJob, throwIfCancelled, useStudioJobs } from "../lib/studioJobs";
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
+import { contextBudget } from "../lib/local";
 import { recordUsage } from "../lib/usage";
 import { formatTime } from "../lib/source";
 import {
   REPORT_FORMATS,
   REPORT_TYPE_LABELS,
-  buildAudioPrompt,
   buildFlashcardsPrompt,
   buildMindmapPrompt,
   buildQuizPrompt,
@@ -41,9 +43,12 @@ import {
   type ReportOptions,
 } from "../lib/studio";
 import type { StudioCommand } from "../lib/studioCommands";
-import { parseScript, synthesizeScript } from "../lib/tts";
+import { writeAudioScript } from "../lib/audioScript";
+import { parseScript, scriptLine, synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
+import DrawingView from "./DrawingView";
+import { isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
@@ -97,22 +102,10 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
   report: FileText,
   audio: AudioLines,
   research: Telescope,
+  drawing: PenLine,
 };
 
 /* ---------------------------------- Audio --------------------------------- */
-
-const AUDIO_PROMPT = `You are writing a podcast-style "audio overview" of my sources, performed by two hosts: Alex (curious explainer) and Sam (engaged co-host).
-
-Output EXACTLY one turn per line, in this exact format:
-Alex: <spoken line>
-Sam: <spoken line>
-
-Rules:
-- 14 to 18 turns total, starting with Alex and alternating naturally.
-- Spoken language only: no markdown, no headings, no bullet points, no emojis, no stage directions or sound-effects like [intro music].
-- Conversational and lively: Sam asks questions, reacts, and paraphrases; Alex explains clearly.
-- Open by naming the topic of the sources; close with the 2–3 biggest takeaways.
- - Stay strictly grounded in the sources — no fabricated facts.`;
 
 /** Tools with a customize modal (deep research already opens its own). */
 type CustomizeKind = "flashcards" | "quiz" | "mindmap" | "audio" | "report";
@@ -144,10 +137,12 @@ const StudioPanel = forwardRef<
   onSourcesChanged,
   onOpenSettings,
 }, ref) {
-  const [generating, setGenerating] = useState<ArtifactKind | null>(null);
-  const [genPhase, setGenPhase] = useState<string | null>(null);
+  /** This notebook's generations in flight — several can run at once. */
+  const jobs = useStudioJobs(notebookId);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
+  /** The drawing open in the sketchpad. */
+  const [drawing, setDrawing] = useState<Artifact | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
@@ -167,13 +162,17 @@ const StudioPanel = forwardRef<
   const [reviseAudio, setReviseAudio] = useState(false);
   /** Which modal action is busy (disables both buttons; shows the spinner). */
   const [reviseBusy, setReviseBusy] = useState<"new" | "replace" | null>(null);
-  /** Aborts the one in-flight generation (only one runs at a time). */
-  const abortRef = useRef<AbortController | null>(null);
-
-  /** The X on a running tool card: cancel the job, save nothing. */
-  const cancelGeneration = () => {
-    abortRef.current?.abort();
-  };
+  // A job ending (saved, failed or cancelled) refreshes the lists — also when
+  // it was started before the user left this notebook and came back.
+  const jobIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    const ids = jobs.map((j) => j.id);
+    if (jobIdsRef.current.some((id) => !ids.includes(id))) {
+      onArtifactsChanged();
+      onSourcesChanged?.();
+    }
+    jobIdsRef.current = ids;
+  }, [jobs, onArtifactsChanged, onSourcesChanged]);
 
   /** Abort-aware catch: user cancels are quiet, real errors go to the panel. */
   const failMsg = (e: unknown, prefix: string, signal: AbortSignal): string => {
@@ -182,26 +181,6 @@ const StudioPanel = forwardRef<
     setError(msg);
     return `${prefix} failed: ${msg}`;
   };
-
-  /** Running-status row shared by every tool card, with a cancel X. */
-  const runningRow = (label: string) => (
-    <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11px] text-ink-3">
-      <Loader2 size={11} className="shrink-0 animate-spin" />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          cancelGeneration();
-        }}
-        title="Cancel generation"
-        aria-label="Cancel generation"
-        className="pointer-events-auto shrink-0 rounded p-0.5 text-ink-3 transition-colors hover:text-danger"
-      >
-        <X size={12} strokeWidth={2.2} />
-      </button>
-    </span>
-  );
 
   const isTextSource = isRetrievable;
 
@@ -218,15 +197,16 @@ const StudioPanel = forwardRef<
   const groundedSystem = async (
     scoped: Source[],
     query: string,
-    opts: { exhaustive?: boolean } = {}
+    opts: { exhaustive?: boolean; onPhase?: (phase: string) => void } = {}
   ): Promise<string> => {
     await ensureIndexed(scoped, settings);
     if (opts.exhaustive && sourceChars(scoped) > MAP_REDUCE_THRESHOLD) {
-      const notes = await condenseNotebook(notebookId, scoped, settings, (p) => setGenPhase(p));
+      const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase);
       return condensedSystemPrompt(notes);
     }
-    const retrieved = await rankChunks(scoped, query, settings, 30_000);
-    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined);
+    const budget = contextBudget(settings);
+    const retrieved = await rankChunks(scoped, query, settings, budget.sources);
+    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget });
   };
 
   /** Prompt-usable source text; over the threshold, reports condense exhaustively. */
@@ -236,10 +216,17 @@ const StudioPanel = forwardRef<
   /**
    * Sources to ground a generation on. Constitutions always pass through;
    * when the customize modal scopes to specific sources, only those are used
-   * as knowledge material.
+   * as knowledge material. No ids (undefined or []) = every source — one-click
+   * and slash-command runs pass [], and the modal can't submit an empty pick.
    */
   const scopedSources = (sourceIds?: string[]): Source[] =>
-    sourceIds ? sources.filter((s) => s.type === "context" || sourceIds.includes(s.id)) : sources;
+    sourceIds?.length ? sources.filter((s) => s.type === "context" || sourceIds.includes(s.id)) : sources;
+
+  /** Small spinner on a tool card while any of its jobs is running. */
+  const runningSpinner = (kind: ArtifactKind) =>
+    jobs.some((j) => j.kind === kind) && (
+      <Loader2 size={11} strokeWidth={2.2} className="animate-spin text-accent" aria-label="Running" />
+    );
 
   /** Hover icon on every tool card — opens its customize modal. */
   const customizeIcon = (kind: CustomizeKind, label: string) => (
@@ -272,9 +259,8 @@ const StudioPanel = forwardRef<
       setError(msg);
       return msg;
     }
-    setGenerating(tool.kind);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    const title = opts?.title?.trim() || tool.name;
+    const job = startStudioJob(notebookId, tool.kind, title, "Generating…");
     try {
       const prompt = opts?.prompt ?? tool.prompt;
       const raw = await complete({
@@ -283,10 +269,10 @@ const StudioPanel = forwardRef<
         model: settings.model,
         maxTokens: 4096,
         temperature: settings.temperature ?? undefined,
-        signal: ctrl.signal,
+        signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
-          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true }) },
+          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true, onPhase: job.setPhase }) },
           { role: "user", content: prompt },
         ],
       });
@@ -307,19 +293,17 @@ const StudioPanel = forwardRef<
         count = parsed.length;
       }
 
-      const title = opts?.title?.trim() || tool.name;
+      throwIfCancelled(job.signal);
       await addArtifact(notebookId, tool.kind, title, data);
-      onArtifactsChanged();
       return tool.kind === "flashcards"
         ? `Saved ${count} flashcards to Studio as “${title}”.`
         : tool.kind === "quiz"
           ? `Saved a ${count}-question quiz to Studio as “${title}”.`
           : `Saved a mind map to Studio as “${title}”.`;
     } catch (e) {
-      return failMsg(e, tool.name, ctrl.signal);
+      return failMsg(e, tool.name, job.signal);
     } finally {
-      abortRef.current = null;
-      setGenerating(null);
+      job.finish();
     }
   };
 
@@ -357,23 +341,20 @@ const StudioPanel = forwardRef<
       if (blocked !== "no-key") setError(msg);
       return msg;
     }
-    setGenerating("report");
-    setGenPhase(`Writing ${label.toLowerCase()}…`);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    const job = startStudioJob(notebookId, "report", label, `Writing ${label.toLowerCase()}…`);
     try {
       const scoped = scopedSources(sourceIds);
       // Bigger than a context window: groundedSystem runs the cached
       // whole-notebook condensation so the report covers EVERY source.
-      const system = await groundedSystem(scoped, prompt, { exhaustive: true });
-      setGenPhase(`Writing ${label.toLowerCase()}…`);
+      const system = await groundedSystem(scoped, prompt, { exhaustive: true, onPhase: job.setPhase });
+      job.setPhase(`Writing ${label.toLowerCase()}…`);
       const raw = await complete({
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
         maxTokens: 4096,
         temperature: settings.temperature ?? undefined,
-        signal: ctrl.signal,
+        signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
           { role: "system", content: system },
@@ -382,15 +363,13 @@ const StudioPanel = forwardRef<
       });
       const doc = raw.trim();
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
+      throwIfCancelled(job.signal);
       await addArtifact(notebookId, "report", label, doc);
-      onArtifactsChanged();
       return `Saved report “${label}” to Studio.`;
     } catch (e) {
-      return failMsg(e, "Report", ctrl.signal);
+      return failMsg(e, "Report", job.signal);
     } finally {
-      abortRef.current = null;
-      setGenerating(null);
-      setGenPhase(null);
+      job.finish();
     }
   };
 
@@ -409,27 +388,29 @@ const StudioPanel = forwardRef<
       if (blocked !== "no-key") setError(msg);
       return msg;
     }
-    setGenerating("audio");
-    setGenPhase("Drafting script…");
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    const title = saveTitle?.trim() || opts?.title?.trim() || "Audio overview";
+    const job = startStudioJob(notebookId, "audio", title, "Writing script…");
     try {
-      const audioPrompt = opts ? buildAudioPrompt(opts) : AUDIO_PROMPT;
-      const raw = await complete({
-        provider: settings.provider,
-        apiKey: activeKey(settings),
-        model: settings.model,
-        maxTokens: 4096,
-        temperature: settings.temperature ?? undefined,
-        signal: ctrl.signal,
-        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
-        messages: [
-          { role: "system", content: await groundedSystem(scopedSources(opts?.sourceIds), audioPrompt, { exhaustive: true }) },
-          { role: "user", content: audioPrompt },
-        ],
-      });
-
-      const turns = parseScript(raw);
+      const o = opts ?? oneClickAudio();
+      const scoped = scopedSources(o.sourceIds);
+      const turns = await writeAudioScript(
+        o,
+        async (prompt, focus) =>
+          complete({
+            provider: settings.provider,
+            apiKey: activeKey(settings),
+            model: settings.model,
+            maxTokens: 4096,
+            temperature: settings.temperature ?? undefined,
+            signal: job.signal,
+            onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+            messages: [
+              { role: "system", content: await groundedSystem(scoped, focus, { exhaustive: true, onPhase: job.setPhase }) },
+              { role: "user", content: prompt },
+            ],
+          }),
+        job.setPhase
+      );
       if (turns.length < 4)
         throw new Error("Couldn't produce a usable script — try again.");
 
@@ -437,31 +418,28 @@ const StudioPanel = forwardRef<
       let note: string | undefined;
       try {
         const result = await synthesizeScript(turns, settings, {
-          signal: ctrl.signal,
-          onProgress: (i, total) => setGenPhase(`Synthesizing audio ${i + 1}/${total}…`),
+          signal: job.signal,
+          onProgress: (i, total) => job.setPhase(`Synthesizing audio ${i + 1}/${total}…`),
         });
         audio = result.audio;
         note = result.note;
       } catch (e) {
-        if (isAbortError(e) || ctrl.signal.aborted) throw e;
+        if (isAbortError(e) || job.signal.aborted) throw e;
         note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
       }
 
-      const title = saveTitle?.trim() || opts?.title?.trim() || "Audio overview";
+      throwIfCancelled(job.signal);
       await addArtifact(
         notebookId,
         "audio",
         title,
         JSON.stringify({ audio, script: turns, note })
       );
-      onArtifactsChanged();
       return `Saved an audio overview to Studio as “${title}” — ${turns.length} turns${audio ? " · mp3 ready" : ""}${note ? ` · ${note}` : ""}.`;
     } catch (e) {
-      return failMsg(e, "Audio overview", ctrl.signal);
+      return failMsg(e, "Audio overview", job.signal);
     } finally {
-      abortRef.current = null;
-      setGenerating(null);
-      setGenPhase(null);
+      job.finish();
     }
   };
 
@@ -477,19 +455,17 @@ const StudioPanel = forwardRef<
       onOpenSettings();
       return "Add an API key in Settings first — I opened it for you.";
     }
-    setGenerating("research");
-    setGenPhase("Planning searches…");
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    const job = startStudioJob(notebookId, "research", title, "Planning searches…");
     try {
       const outcome = await deepResearch({
         settings,
         title,
         description,
-        signal: ctrl.signal,
-        onPhase: setGenPhase,
+        signal: job.signal,
+        onPhase: job.setPhase,
       });
 
+      throwIfCancelled(job.signal);
       await addArtifact(
         notebookId,
         "research",
@@ -503,20 +479,16 @@ const StudioPanel = forwardRef<
       );
 
       // ground future chats: import the read pages as link sources
-      setGenPhase("Saving sources…");
+      job.setPhase("Saving sources…");
       for (const p of outcome.pages) {
         const src = await addSource(notebookId, "link", p.title, p.text, p.url);
         void indexSource(src, settings);
       }
-      onSourcesChanged?.();
-      onArtifactsChanged();
       return `Saved research “${title}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
     } catch (e) {
-      return failMsg(e, "Deep research", ctrl.signal);
+      return failMsg(e, "Deep research", job.signal);
     } finally {
-      abortRef.current = null;
-      setGenerating(null);
-      setGenPhase(null);
+      job.finish();
     }
   };
 
@@ -536,7 +508,7 @@ const StudioPanel = forwardRef<
         const d = JSON.parse(a.data);
         if (a.kind === "research") return d.md ?? a.data;
         return (d.script ?? [])
-          .map((t: { speaker: string; text: string }) => `${t.speaker}: ${t.text}`)
+          .map((t: ScriptTurn) => scriptLine(t))
           .join("\n");
       } catch {
         return a.data;
@@ -559,11 +531,12 @@ const StudioPanel = forwardRef<
       "Return ONLY the revised markdown report — no preface, no commentary.",
     research:
       "Return ONLY the revised markdown report — no preface, no commentary. Keep the existing citation style (sources by title/url).",
-    audio: `Respond with the revised script only: one turn per line, exactly "Alex: <line>" or "Sam: <line>", 14-18 turns alternating starting with Alex. Spoken language only: no markdown, no emojis, no stage directions.`,
+    drawing: "", // drawings aren't revised by the AI
+    audio: `Respond with the revised script only: one turn per line, exactly "Host: <line>" or "Co-Host: <line>", alternating and starting with the Host, about as long as the current script unless the instruction says otherwise. The hosts never call each other by name. Spoken language only: no markdown, no emojis, no stage directions.`,
   };
 
-  /** Solo scripts rewrite with a single-voice contract, so Sam never comes back. */
-  const REVISE_FORMAT_AUDIO_SOLO = `Respond with the revised script only: one segment per line, exactly "Alex: <line>", 14-18 segments by a single narrator. Spoken language only: no markdown, no emojis, no stage directions.`;
+  /** Solo scripts rewrite with a single-voice contract, so the Co-Host never comes back. */
+  const REVISE_FORMAT_AUDIO_SOLO = `Respond with the revised script only: one segment per line, exactly "Host: <line>", by a single narrator who never names themselves, about as long as the current script unless the instruction says otherwise. Spoken language only: no markdown, no emojis, no stage directions.`;
 
   /** A stored audio artifact is solo when every turn belongs to Alex. */
   const isSoloAudio = (a: Artifact): boolean => {
@@ -750,9 +723,6 @@ const StudioPanel = forwardRef<
     ref,
     (): StudioPanelHandle => ({
       run: async (cmd) => {
-        if (generating !== null) {
-          return "Studio is already generating something — wait for it to finish first.";
-        }
         switch (cmd.tool) {
           case "flashcards": {
             const tool = TOOLS.find((t) => t.kind === "flashcards");
@@ -786,7 +756,15 @@ const StudioPanel = forwardRef<
 
   const viewArtifact = (a: Artifact) => {
     // kind-specific data already stored; reopen latest copy from props
-    setViewing(a);
+    if (a.kind === "drawing") setDrawing(a);
+    else setViewing(a);
+  };
+
+  /** Drawings: name it, save an empty canvas, open the sketchpad. */
+  const newDrawing = async (title: string) => {
+    const a = await addArtifact(notebookId, "drawing", title.trim() || "Drawing", JSON.stringify({ elements: [], files: {} }));
+    onArtifactsChanged();
+    setDrawing(a);
   };
 
   return (
@@ -815,17 +793,15 @@ const StudioPanel = forwardRef<
                 if (e.key === "Enter")
                   setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) });
               }}
-              className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
-                generating !== null
-                  ? "pointer-events-none opacity-50"
-                  : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
-              }`}
+              className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
             >
               {customizeIcon(t.kind as CustomizeKind, t.name)}
               <t.icon size={16} strokeWidth={1.8} className="text-ink" />
-              <span className="text-[12.5px] font-semibold leading-none">{t.name}</span>
+              <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                {t.name}
+                {runningSpinner(t.kind)}
+              </span>
               <span className="text-[11px] leading-tight text-ink-3">{t.desc}</span>
-              {generating === t.kind && runningRow("Generating…")}
             </div>
           ))}
           {/* Audio overview */}
@@ -839,19 +815,17 @@ const StudioPanel = forwardRef<
               if (e.key === "Enter")
                 setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) });
             }}
-            className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
-              generating !== null
-                ? "pointer-events-none opacity-50"
-                : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
-            }`}
+            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
           >
             {customizeIcon("audio", "Audio overview")}
             <AudioLines size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="text-[12.5px] font-semibold leading-none">Audio overview</span>
+            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+              Audio overview
+              {runningSpinner("audio")}
+            </span>
             <span className="text-[11px] leading-tight text-ink-3">
               Podcast-style conversation
             </span>
-            {generating === "audio" && runningRow(genPhase ?? "Generating…")}
           </div>
           {/* Report */}
           <div
@@ -861,32 +835,45 @@ const StudioPanel = forwardRef<
             onKeyDown={(e) => {
               if (e.key === "Enter") setReportOpen(true);
             }}
-            className={`group relative flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all ${
-              generating !== null
-                ? "pointer-events-none opacity-50"
-                : "cursor-pointer hover:border-ink-3 hover:shadow-sm"
-            }`}
+            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
           >
             {customizeIcon("report", "Report")}
             <FileText size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="text-[12.5px] font-semibold leading-none">Report</span>
+            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+              Report
+              {runningSpinner("report")}
+            </span>
             <span className="text-[11px] leading-tight text-ink-3">
               Study guide, summary, FAQ…
             </span>
-            {generating === "report" && runningRow(genPhase ?? "Generating…")}
+          </div>
+          {/* Drawings — the user's own sketchpad; never sent to the AI */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) });
+            }}
+            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
+          >
+            <PenLine size={16} strokeWidth={1.8} className="text-ink" />
+            <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
+            <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
           </div>
           {/* Deep research */}
           <button
             onClick={() => setResearchOpen(true)}
-            disabled={generating !== null}
-            className="col-span-2 flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm disabled:opacity-50"
+            className="col-span-2 flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
           >
             <Telescope size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="text-[12.5px] font-semibold leading-none">Deep research</span>
+            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+              Deep research
+              {runningSpinner("research")}
+            </span>
             <span className="text-[11px] leading-tight text-ink-3">
               Web-powered analysis with cited sources
             </span>
-            {generating === "research" && runningRow(genPhase ?? "Researching…")}
           </button>
         </div>
 
@@ -901,12 +888,36 @@ const StudioPanel = forwardRef<
           <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
             Saved
           </p>
-          {artifacts.length === 0 ? (
+          {artifacts.length === 0 && jobs.length === 0 ? (
             <p className="px-1 text-[12px] leading-relaxed text-ink-3">
               Generated study materials will appear here.
             </p>
           ) : (
             <div className="flex flex-col gap-1">
+              {/* In progress: live phase + cancel (saves nothing). */}
+              {jobs.map((j) => (
+                <div
+                  key={j.id}
+                  className="anim-fade-up flex w-full items-center gap-2.5 rounded-lg bg-hover-soft px-2 py-2"
+                  aria-busy="true"
+                >
+                  <Loader2 size={15} strokeWidth={1.8} className="shrink-0 animate-spin text-accent" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12.5px] font-medium">{j.title}</span>
+                    <span className="block truncate text-[11px] text-ink-3" title={j.phase}>
+                      {j.phase}
+                    </span>
+                  </span>
+                  <button
+                    onClick={() => cancelStudioJob(j.id)}
+                    className="shrink-0 rounded p-1 text-ink-3 transition-colors hover:text-danger"
+                    title="Cancel and remove"
+                    aria-label={`Cancel ${j.title}`}
+                  >
+                    <X size={13} strokeWidth={2.2} />
+                  </button>
+                </div>
+              ))}
               {/* Pinned first; stable sort keeps the rest newest-first. */}
               {[...artifacts].sort((x, y) => y.pinned - x.pinned).map((a) => {
                 const Icon = KIND_ICON[a.kind] ?? StickyNote;
@@ -922,7 +933,8 @@ const StudioPanel = forwardRef<
                   } else if (a.kind === "research") {
                     const d = JSON.parse(a.data);
                     subtitle = `${d.sources?.length ?? 0} sources read`;
-                  } else subtitle = formatTime(a.created_at);
+                  } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
+                  else subtitle = formatTime(a.created_at);
                 } catch {
                   subtitle = formatTime(a.created_at);
                 }
@@ -958,14 +970,16 @@ const StudioPanel = forwardRef<
                     >
                       <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
                     </button>
-                    <button
-                      onClick={() => openRevise(a)}
-                      className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
-                      title="Revise"
-                      aria-label={`Revise ${a.title}`}
-                    >
-                      <Pencil size={12.5} />
-                    </button>
+                    {a.kind !== "drawing" && (
+                      <button
+                        onClick={() => openRevise(a)}
+                        className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
+                        title="Revise"
+                        aria-label={`Revise ${a.title}`}
+                      >
+                        <Pencil size={12.5} />
+                      </button>
+                    )}
                     <button
                       onClick={async () => {
                         await deleteArtifact(a.id);
@@ -1107,6 +1121,18 @@ const StudioPanel = forwardRef<
           onGenerate={(opts) => {
             setCustomizing(null);
             genCustomReport(opts);
+          }}
+        />
+      )}
+
+      {drawing && (
+        <DrawingView
+          key={drawing.id}
+          artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
+          dark={isDarkTheme(settings.theme)}
+          onClose={() => {
+            setDrawing(null);
+            onArtifactsChanged();
           }}
         />
       )}

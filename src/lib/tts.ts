@@ -2,12 +2,21 @@
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { sseLines } from "./llm";
-import { DEFAULT_TTS_MODELS } from "./settings";
+import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
 import type { Settings } from "./types";
 
+/** A script line. Speakers keep their stored ids (Alex = host, Sam = co-host); users see SPEAKER_LABEL. */
 export interface ScriptTurn {
   speaker: "Alex" | "Sam";
   text: string;
+}
+
+/** What the hosts are called in scripts and on screen. */
+export const SPEAKER_LABEL: Record<ScriptTurn["speaker"], string> = { Alex: "Host", Sam: "Co-Host" };
+
+/** One script line as the model reads and writes it, e.g. "Co-Host: …". */
+export function scriptLine(t: ScriptTurn): string {
+  return `${SPEAKER_LABEL[t.speaker]}: ${t.text}`;
 }
 
 export interface TtsResult {
@@ -16,9 +25,6 @@ export interface TtsResult {
   /** User-facing explanation when audio is null (or a warning). */
   note?: string;
 }
-
-const OPENAI_VOICE_DEFAULTS = { Alex: "nova", Sam: "onyx" };
-const OPENROUTER_VOICE_DEFAULTS = { Alex: "nova", Sam: "onyx" };
 
 /** OpenAI audio models output raw pcm16 at 24kHz mono. */
 const PCM16_RATE = 24000;
@@ -170,6 +176,56 @@ async function speakScriptLine(
   );
 }
 
+/** gpt-audio models speak through chat completions; every other OpenRouter TTS model uses /audio/speech. */
+function isOpenRouterChatAudio(model: string): boolean {
+  return /gpt-audio/i.test(model);
+}
+
+/**
+ * One line through OpenRouter's OpenAI-compatible speech endpoint (Voxtral and
+ * other dedicated TTS models). The body is the audio file itself. An empty
+ * `voice` is left out so the model uses its own default.
+ */
+async function openRouterSpeech(
+  key: string,
+  model: string,
+  voice: string,
+  text: string,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  throwIfAborted(signal);
+  const resp = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://brewlm.app",
+      "X-Title": "BrewLM",
+    },
+    body: JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: "mp3" }),
+    signal,
+  });
+  if (!resp.ok) {
+    const raw = await resp.text();
+    let detail = raw.slice(0, 200);
+    try {
+      detail = (JSON.parse(raw) as { error?: { message?: string } }).error?.message ?? detail;
+    } catch {
+      /* keep raw */
+    }
+    if (/voice/i.test(detail))
+      throw new Error(
+        `“${model}” didn't accept the voice “${voice || "(default)"}”: ${detail} Set voices this model supports — they're listed on its OpenRouter page — with /voicehost and /voicecohost, or in Settings → Audio voices.`
+      );
+    if (/not a valid model|no endpoints|modalit/i.test(detail))
+      throw new Error(
+        `“${model}” isn't a text-to-speech model on OpenRouter. Pick one in Settings → Audio voices (e.g. ${DEFAULT_TTS_MODELS.openrouter} or mistralai/voxtral-mini-tts-3-0).`
+      );
+    throw new Error(`OpenRouter TTS HTTP ${resp.status}: ${detail}`);
+  }
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
 /** Encode mono float samples as a 16-bit PCM wav file. */
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
   const buf = new ArrayBuffer(44 + samples.length * 2);
@@ -199,19 +255,24 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
   return new Uint8Array(buf);
 }
 
-/** Parse a raw LLM script into speaker turns (Alex/Sam); capped at 24 turns. */
+/**
+ * Parse a raw LLM script into speaker turns. Reads "Host:" / "Co-Host:" (and
+ * the older "Alex:" / "Sam:"), tolerating list markers and bold names.
+ * Capped so a runaway reply can't queue thousands of TTS calls.
+ */
 export function parseScript(raw: string): ScriptTurn[] {
   const turns: ScriptTurn[] = [];
   for (const line of raw.split("\n")) {
-    const m = line.match(/^\s*[*-]?\s*(Alex|Sam)\s*:\s*(.+?)\s*$/i);
+    const m = line.match(/^\s*[*-]?\s*\**\s*(co-?\s?host|host|alex|sam)\s*\**\s*:\s*\**\s*(.+?)\s*$/i);
     if (m && m[2].trim()) {
+      const who = m[1].toLowerCase().replace(/[\s-]/g, "");
       turns.push({
-        speaker: m[1].toLowerCase() === "sam" ? "Sam" : "Alex",
+        speaker: who === "cohost" || who === "sam" ? "Sam" : "Alex",
         text: m[2].replace(/\*\*/g, "").trim(),
       });
     }
   }
-  return turns.slice(0, 24);
+  return turns.slice(0, 600);
 }
 
 export function chunksToBase64(chunks: Uint8Array[]): string {
@@ -256,8 +317,8 @@ export async function synthesizeScript(
         return { audio: null, note: "Add an OpenAI TTS key in Settings → Audio voices to synthesize audio." };
       const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.openai;
       const voices = {
-        Alex: settings.ttsVoiceAlex.trim() || OPENAI_VOICE_DEFAULTS.Alex,
-        Sam: settings.ttsVoiceSam.trim() || OPENAI_VOICE_DEFAULTS.Sam,
+        Alex: hostVoice(settings, "Alex"),
+        Sam: hostVoice(settings, "Sam"),
       };
       const instructions = settings.ttsInstructions.trim();
       const parts: Uint8Array[] = [];
@@ -286,11 +347,13 @@ export async function synthesizeScript(
       return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
     }
     /**
-     * OpenRouter: audio output via **streaming** chat completions — OpenRouter
-     * only routes OpenAI's audio models (gpt-audio / gpt-audio-mini), and
-     * delivers audio exclusively as base64 pcm16 in `delta.audio.data` SSE
-     * chunks. Turns are merged and wrapped in one wav header at the end.
-     * A steering system message makes the (conversational) model read verbatim.
+     * OpenRouter, two routes:
+     * - Dedicated TTS models (Voxtral…) use the OpenAI-compatible
+     *   /audio/speech endpoint; mp3 clips are joined like OpenAI's.
+     * - gpt-audio models only speak through **streaming** chat completions,
+     *   as base64 pcm16 in `delta.audio.data` SSE chunks. Turns are merged and
+     *   wrapped in one wav header at the end; a direct "read this" prompt
+     *   makes the (conversational) model read verbatim.
      */
     case "openrouter": {
       const key = settings.openrouterTtsKey.trim() || settings.openrouterKey;
@@ -298,9 +361,24 @@ export async function synthesizeScript(
         return { audio: null, note: "Add an OpenRouter key in Settings → Audio voices to synthesize audio." };
       const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.openrouter;
       const voices = {
-        Alex: settings.ttsVoiceAlex.trim() || OPENROUTER_VOICE_DEFAULTS.Alex,
-        Sam: settings.ttsVoiceSam.trim() || OPENROUTER_VOICE_DEFAULTS.Sam,
+        Alex: hostVoice(settings, "Alex"),
+        Sam: hostVoice(settings, "Sam"),
       };
+      if (!isOpenRouterChatAudio(model)) {
+        // hostVoice falls back to nova/onyx (gpt-audio voices); when a host has
+        // no usable voice of its own, leave it out so the model uses its default.
+        const own = (host: Host) => {
+          const raw = (host === "Alex" ? settings.ttsVoiceAlex : settings.ttsVoiceSam).trim();
+          return raw && voices[host] === raw ? raw : "";
+        };
+        const speech = { Alex: own("Alex"), Sam: own("Sam") };
+        const parts: Uint8Array[] = [];
+        for (let i = 0; i < turns.length; i++) {
+          onProgress?.(i, turns.length);
+          parts.push(await openRouterSpeech(key, model, speech[turns[i].speaker], turns[i].text, signal));
+        }
+        return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
+      }
       const clips: Float32Array[] = [];
       for (let i = 0; i < turns.length; i++) {
         throwIfAborted(signal);
@@ -321,8 +399,8 @@ export async function synthesizeScript(
       if (!key)
         return { audio: null, note: "Add an ElevenLabs API key in Settings → Audio voices to synthesize audio." };
       const voices = {
-        Alex: settings.ttsVoiceAlex.trim(),
-        Sam: settings.ttsVoiceSam.trim(),
+        Alex: hostVoice(settings, "Alex"),
+        Sam: hostVoice(settings, "Sam"),
       };
       if (!voices.Alex || (turns.some((t) => t.speaker === "Sam") && !voices.Sam))
         return { audio: null, note: "Set the host voice IDs (Settings → Audio voices) — ElevenLabs needs a voice ID for every speaker in the script." };

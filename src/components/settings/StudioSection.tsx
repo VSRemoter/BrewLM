@@ -2,6 +2,7 @@ import {
   AMOUNT_LABELS,
   AUDIO_FORMAT_LABELS,
   AUDIO_LENGTH_LABELS,
+  AUDIO_LENGTH_MINUTES,
   AUDIO_MODE_LABELS,
   DIFFICULTY_LABELS,
   FLASHCARD_COUNTS,
@@ -30,7 +31,8 @@ export default function StudioSection({
   const amounts = (counts: Record<Amount, number>) =>
     (Object.keys(AMOUNT_LABELS) as Amount[]).map((id) => ({
       id,
-      label: `${AMOUNT_LABELS[id]} · ${counts[id]}`,
+      label: AMOUNT_LABELS[id],
+      hint: String(counts[id]),
     }));
   const difficulties = (Object.keys(DIFFICULTY_LABELS) as Difficulty[]).map((id) => ({
     id,
@@ -107,6 +109,7 @@ export default function StudioSection({
             options={(Object.keys(AUDIO_LENGTH_LABELS) as AudioLength[]).map((id) => ({
               id,
               label: AUDIO_LENGTH_LABELS[id],
+              hint: `~${AUDIO_LENGTH_MINUTES[id]} min`,
             }))}
             value={settings.defAudioLength}
             onChange={(v) => patch({ defAudioLength: v })}
