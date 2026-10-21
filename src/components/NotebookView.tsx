@@ -12,6 +12,7 @@ import {
   deleteSources,
   listArtifacts,
   listChats,
+  setChatPinned,
   listSources,
   renameChat,
   renameNotebook,
@@ -120,9 +121,9 @@ export default function NotebookView({
 
   /** `/note <text>` in chat — save pasted text as a source. */
   const handleAddNote = useCallback(
-    async (text: string) => {
+    async (text: string, title?: string) => {
       const flat = text.replace(/\s+/g, " ").trim();
-      const title = flat.length > 42 ? flat.slice(0, 42).trimEnd() + "…" : flat || "Pasted note";
+      title ||= flat.length > 42 ? flat.slice(0, 42).trimEnd() + "…" : flat || "Pasted note";
       const src = await addSource(notebook.id, "text", title, text);
       refreshSources();
       return src;
@@ -359,6 +360,10 @@ export default function NotebookView({
                 await refreshChats();
               }}
               onDelete={handleDeleteChat}
+              onPin={async (chatId, pinned) => {
+                await setChatPinned(chatId, pinned);
+                await refreshChats();
+              }}
             />
           </div>
         </div>

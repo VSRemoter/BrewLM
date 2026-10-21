@@ -151,6 +151,7 @@ function priceFor(model: string): PriceEntry | null {
  * separately — subtract only for the OpenAI convention to avoid double-counting.
  */
 export function estimateCostUsd(e: UsageEvent): number | null {
+  if (e.provider === "local") return 0; // runs on the user's own hardware
   const p = priceFor(e.model);
   if (!p) return null;
   const freshInput =
@@ -162,6 +163,39 @@ export function estimateCostUsd(e: UsageEvent): number | null {
       e.cached_write * p.cacheWrite) /
     1_000_000
   );
+}
+
+/**
+ * Cost of one chat reply for the usage line under the bubble: the provider's
+ * billed amount when reported (OpenRouter), else a price-table estimate.
+ */
+export function replyCostUsd(
+  provider: Provider,
+  model: string,
+  u: StreamUsage
+): { usd: number; estimated: boolean } | null {
+  if (typeof u.costUsd === "number") return { usd: u.costUsd, estimated: false };
+  const usd = estimateCostUsd({
+    id: "",
+    ts: 0,
+    provider,
+    model,
+    kind: "chat",
+    input: u.input ?? 0,
+    output: u.output ?? 0,
+    cached_read: u.cachedRead ?? 0,
+    cached_write: u.cachedWrite ?? 0,
+    cost_usd: null,
+  });
+  return usd == null ? null : { usd, estimated: true };
+}
+
+/** Per-reply amounts are often fractions of a cent — keep 2 significant digits. */
+export function fmtReplyCost(usd: number): string {
+  if (usd === 0) return "$0";
+  if (usd < 0.0001) return "<$0.0001";
+  if (usd >= 0.1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toPrecision(2).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
 /* ------------------------------ Aggregations ------------------------------ */

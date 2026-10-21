@@ -116,8 +116,8 @@ export const AUDIO_MODE_LABELS: Record<AudioMode, string> = {
 };
 
 export const AUDIO_MODE_DESCS: Record<AudioMode, string> = {
-  conversation: "Two hosts banter back and forth (voices: Alex & Sam).",
-  solo: "One narrator talks you through the material (voice: Alex).",
+  conversation: "Two hosts — the Host and Co-Host — talk it through together.",
+  solo: "One narrator (the Host's voice) talks you through the material.",
 };
 
 export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
@@ -173,12 +173,30 @@ Rules: use "-" bullets, indent nested levels by exactly two spaces, keep each no
 
 /* ------------------------------ audio builder ------------------------------ */
 
-/** Turn targets per length — must stay within parseScript's 24-turn cap. */
-const AUDIO_LENGTH_TURNS: Record<AudioLength, string> = {
-  short: "8",
-  standard: "15",
-  long: "22",
+/** Target episode length per setting. */
+export const AUDIO_LENGTH_MINUTES: Record<AudioLength, number> = {
+  short: 5,
+  standard: 10,
+  long: 20,
 };
+
+/** Conversational speaking pace used to turn minutes into a word budget. */
+const WORDS_PER_MINUTE = 150;
+
+/**
+ * Parts an episode is written in. Short fits one request; longer episodes are
+ * outlined first and each part written on its own, so small models never have
+ * to produce thousands of words in one go.
+ */
+export const AUDIO_LENGTH_PARTS: Record<AudioLength, number> = {
+  short: 1,
+  standard: 3,
+  long: 6,
+};
+
+export function audioWordTarget(length: AudioLength): number {
+  return AUDIO_LENGTH_MINUTES[length] * WORDS_PER_MINUTE;
+}
 
 const AUDIO_FORMAT_RULES: Record<AudioFormat, string> = {
   "deep-dive":
@@ -186,7 +204,7 @@ const AUDIO_FORMAT_RULES: Record<AudioFormat, string> = {
   brief:
     "Be tight and punchy: only the essentials, short lines, no digressions or tangents.",
   debate:
-    "The hosts take opposing positions on the material's central claims — Alex argues for, Sam argues against. They challenge each other directly, concede genuinely good points, and close by synthesizing where they each land.",
+    "The hosts take opposing positions on the material's central claims — the Host argues for, the Co-Host argues against. They challenge each other directly, concede genuinely good points, and close by synthesizing where they each land.",
   critique:
     "The hosts critically analyze the material: what holds up, what's weak, hidden assumptions, gaps in coverage, and questionable claims — ending with an overall verdict.",
 };
@@ -203,41 +221,85 @@ const SOLO_FORMAT_RULES: Record<AudioFormat, string> = {
     "Critically analyze the material: what holds up, what's weak, hidden assumptions, gaps in coverage, and questionable claims — ending with an overall verdict.",
 };
 
-export function buildAudioPrompt(opts: AudioOptions): string {
+/** Who speaks, the line format and the style rules shared by every audio prompt. */
+function audioVoiceRules(opts: AudioOptions): string {
   if (opts.mode === "solo") {
-    return `You are writing a solo-narrated "audio overview" of my sources, voiced by a single narrator: Alex.
+    return `Voiced by a single narrator, the Host.
 
 Format: ${AUDIO_FORMAT_LABELS[opts.format]} — ${SOLO_FORMAT_RULES[opts.format]}
-Length: about ${AUDIO_LENGTH_TURNS[opts.length]} short spoken segments total.${
-      opts.description ? `\nFocus the narration especially on: ${opts.description}.` : ""
-    }
 
 Output EXACTLY one segment per line, in this exact format:
-Alex: <spoken line>
+Host: <spoken line>
 
 Rules:
 - Spoken language only: no markdown, no headings, no bullet points, no emojis, no stage directions or sound-effects like [intro music].
 - Natural, engaging narration — like a knowledgeable friend talking you through the material.
-- Open by naming what this episode covers; close with the 2–3 biggest takeaways.
+- The narrator never gives themselves a name.
 - Stay strictly grounded in the sources — no fabricated facts.`;
   }
-  return `You are writing a podcast-style "audio overview" of my sources, performed by two hosts: Alex (curious explainer) and Sam (engaged co-host).
+  return `Performed by two hosts: the Host (explains clearly) and the Co-Host (curious, engaged).
 
 Format: ${AUDIO_FORMAT_LABELS[opts.format]} — ${AUDIO_FORMAT_RULES[opts.format]}
-Length: about ${AUDIO_LENGTH_TURNS[opts.length]} dialogue turns total.${
-    opts.description ? `\nFocus the conversation especially on: ${opts.description}.` : ""
-  }
 
 Output EXACTLY one turn per line, in this exact format:
-Alex: <spoken line>
-Sam: <spoken line>
+Host: <spoken line>
+Co-Host: <spoken line>
 
 Rules:
-- Start with Alex and alternate naturally.
+- Alternate naturally; most turns are 2–4 sentences.
 - Spoken language only: no markdown, no headings, no bullet points, no emojis, no stage directions or sound-effects like [intro music].
 - Conversational and lively: the hosts react, question, and paraphrase each other.
-- Open by naming what this episode covers; close with the 2–3 biggest takeaways.
+- The hosts never call each other or themselves by name.
 - Stay strictly grounded in the sources — no fabricated facts.`;
+}
+
+const audioFocus = (opts: AudioOptions) =>
+  opts.description ? `\nFocus especially on: ${opts.description}.` : "";
+
+/** One-request script (Short episodes, and the fallback when an outline fails). */
+export function buildAudioPrompt(opts: AudioOptions): string {
+  const minutes = AUDIO_LENGTH_MINUTES[opts.length];
+  return `You are writing a ${minutes}-minute podcast-style "audio overview" of my sources. ${audioVoiceRules(opts)}
+
+Length: about ${audioWordTarget(opts.length)} spoken words in total (≈${minutes} minutes read aloud) — cover the material in real depth rather than skimming.${audioFocus(opts)}
+Open by naming what this episode covers ${opts.mode === "solo" ? "and start with the Host" : "with the Host speaking first"}; close with the 2–3 biggest takeaways.`;
+}
+
+/** Step 1 of a long episode: plan its parts. */
+export function buildAudioOutlinePrompt(opts: AudioOptions): string {
+  const parts = AUDIO_LENGTH_PARTS[opts.length];
+  return `Plan a ${AUDIO_LENGTH_MINUTES[opts.length]}-minute podcast-style "audio overview" of my sources (${AUDIO_FORMAT_LABELS[opts.format]} — ${opts.mode === "solo" ? SOLO_FORMAT_RULES[opts.format] : AUDIO_FORMAT_RULES[opts.format]}).${audioFocus(opts)}
+
+Split it into exactly ${parts} consecutive parts that together cover the most important material in my sources, in a sensible teaching order. The first part introduces the topic; the last part ends with the biggest takeaways.
+
+Return ONLY ${parts} lines, one per part, in this format:
+<short part title> — <one sentence on what this part covers, naming the specific concepts from the sources>`;
+}
+
+/** Step 2 of a long episode: write one part, continuing from the previous one. */
+export function buildAudioSectionPrompt(
+  opts: AudioOptions,
+  outline: string[],
+  index: number,
+  previousLines: string
+): string {
+  const parts = outline.length;
+  const words = Math.round(audioWordTarget(opts.length) / parts);
+  const first = index === 0;
+  const last = index === parts - 1;
+  const position = first
+    ? `This is the opening part: open by naming what this episode covers${opts.mode === "solo" ? "" : ", with the Host speaking first"}.`
+    : last
+      ? "This is the final part: wrap up with the 2–3 biggest takeaways of the whole episode and a short sign-off."
+      : "This is a middle part: no greetings, intros or sign-offs — carry straight on from where the previous part stopped.";
+  return `You are writing part ${index + 1} of ${parts} of a podcast-style "audio overview" of my sources. ${audioVoiceRules(opts)}
+
+Episode plan:
+${outline.map((o, i) => `${i + 1}. ${o}`).join("\n")}
+
+Write ONLY part ${index + 1}: ${outline[index]}
+Length: about ${words} spoken words for this part. Go into real depth on this part's material; leave the other parts' topics to them.
+${position}${previousLines ? `\n\nThe previous part ended with:\n${previousLines}\n\nContinue naturally from there without repeating it.` : ""}${audioFocus(opts)}`;
 }
 
 /* ------------------------------ report builder ----------------------------- */

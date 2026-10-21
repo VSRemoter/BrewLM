@@ -63,6 +63,11 @@ export async function isImageApiModel(model: string): Promise<boolean> {
   return (await loadModelSpecs()).has(model.trim());
 }
 
+/** Every Image API model id ([] if the list can't load). */
+export async function listImageModels(): Promise<string[]> {
+  return [...(await loadModelSpecs()).keys()];
+}
+
 /** Aspect ratios the model accepts, or null when unknown. */
 export async function supportedAspectRatios(model: string): Promise<string[] | null> {
   const spec = (await loadModelSpecs()).get(model);

@@ -2,9 +2,10 @@ import { Check } from "lucide-react";
 import { useState } from "react";
 import { chooseFont, FONTS } from "../../lib/fonts";
 import { chooseTheme, THEMES } from "../../lib/themes";
+import { setSmoothScroll } from "../../lib/smoothScroll";
 import { getZoom, setZoom } from "../../lib/zoom";
 import type { Settings } from "../../lib/types";
-import { Card, Row, SectionTitle, Slider } from "./controls";
+import { Card, Row, SectionTitle, Slider, Toggle } from "./controls";
 
 export default function AppearanceSection({
   settings,
@@ -53,6 +54,29 @@ export default function AppearanceSection({
               </button>
             )}
           </div>
+        </Row>
+        <Row
+          label="Smooth scrolling"
+          desc="Glides between mouse-wheel steps instead of jumping. Off uses the system's default scrolling."
+        >
+          <Toggle
+            label="Smooth scrolling"
+            checked={settings.smoothScroll}
+            onChange={(on) => {
+              patch({ smoothScroll: on });
+              setSmoothScroll(on);
+            }}
+          />
+        </Row>
+        <Row
+          label="Response details"
+          desc="Token counts and cost under each AI reply. /details in chat toggles this too."
+        >
+          <Toggle
+            label="Response details"
+            checked={settings.showDetails}
+            onChange={(on) => patch({ showDetails: on })}
+          />
         </Row>
       </Card>
 

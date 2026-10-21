@@ -37,7 +37,7 @@ export function artifactText(a: Artifact): string | null {
         if (!Array.isArray(d?.script)) return null;
         const lines = (d.script as { speaker?: string; text?: string }[])
           .filter((t) => typeof t?.text === "string" && t.text.trim())
-          .map((t) => `${t.speaker ?? "Host"}: ${t.text!.trim()}`);
+          .map((t) => `${t.speaker === "Sam" ? "Co-Host" : "Host"}: ${t.text!.trim()}`);
         return lines.join("\n") || null;
       }
       case "flashcards": {

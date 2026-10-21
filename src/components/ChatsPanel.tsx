@@ -1,5 +1,5 @@
-import { Check, MessageSquare, Pencil, Plus, X } from "lucide-react";
-import { useState } from "react";
+import { Check, MessageSquare, Pencil, Pin, Plus, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import { formatTime } from "../lib/source";
 import type { Chat } from "../lib/types";
 import { IconButton } from "./ui";
@@ -11,6 +11,7 @@ export default function ChatsPanel({
   onNew,
   onRename,
   onDelete,
+  onPin,
 }: {
   chats: Chat[];
   activeChatId: string | null;
@@ -18,7 +19,13 @@ export default function ChatsPanel({
   onNew: () => void;
   onRename: (chatId: string, title: string) => void;
   onDelete: (chatId: string) => void;
+  onPin: (chatId: string, pinned: boolean) => void;
 }) {
+  // Pinned first; each group keeps the incoming most-recent-first order.
+  const ordered = useMemo(
+    () => [...chats].sort((a, b) => (b.pinned ?? 0) - (a.pinned ?? 0)),
+    [chats]
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -48,7 +55,7 @@ export default function ChatsPanel({
             Conversations are saved here automatically.
           </p>
         ) : (
-          chats.map((chat) => {
+          ordered.map((chat) => {
             const active = chat.id === activeChatId;
             return (
               <div
@@ -124,6 +131,15 @@ export default function ChatsPanel({
                       <span className="mt-0.5 block text-[10.5px] text-ink-3">
                         {formatTime(chat.updated_at)}
                       </span>
+                    </button>
+                    <button
+                      onClick={() => onPin(chat.id, !chat.pinned)}
+                      className={`shrink-0 rounded p-1 transition-all hover:text-ink ${
+                        chat.pinned ? "text-accent" : "text-ink-3 opacity-0 group-hover:opacity-100"
+                      }`}
+                      title={chat.pinned ? "Unpin chat" : "Pin to top"}
+                    >
+                      <Pin size={12} fill={chat.pinned ? "currentColor" : "none"} />
                     </button>
                     <button
                       onClick={() => {

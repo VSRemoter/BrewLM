@@ -4,7 +4,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 // for exactly these environments.
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { SourceType } from "./types";
-import { extractFileText } from "./extractors";
+import { extractFileText, MAX_SOURCE_CHARS } from "./extractors";
 import { fetchYouTubeTranscript, isYouTubeUrl } from "./youtube";
 
 // Belt-and-braces for environments without ES2024 Promise.withResolvers.
@@ -167,7 +167,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     const text = await extractPdfBytes(new Uint8Array(await res.arrayBuffer()));
     if (text.trim().length < 200)
       throw new Error("That PDF has almost no extractable text (it looks scanned/image-only). Download it, run OCR, then add the file.");
-    return { title: fileName, text: text.slice(0, 200_000) };
+    return { title: fileName, text: text.slice(0, MAX_SOURCE_CHARS) };
   }
   if (/^(image|audio|video)\//.test(contentType))
     throw new Error("That link points to a media file, not a web page — download it and add it with the upload button so the AI can read it.");
@@ -181,7 +181,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
 
   const raw = await res.text();
   if (!contentType.includes("html")) {
-    return { title: parsed.hostname, text: raw.slice(0, 200_000) };
+    return { title: parsed.hostname, text: raw.slice(0, MAX_SOURCE_CHARS) };
   }
 
   const doc = new DOMParser().parseFromString(raw, "text/html");
@@ -194,7 +194,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     .replace(/\n\s*\n+/g, "\n\n")
     .trim();
   if (!text) throw new Error("The page loaded but no readable text was found.");
-  return { title: `${title}`, text: text.slice(0, 200_000) };
+  return { title: `${title}`, text: text.slice(0, MAX_SOURCE_CHARS) };
 }
 
 export function sourcePreview(content: string, max = 90): string {

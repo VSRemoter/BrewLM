@@ -26,8 +26,10 @@ import {
 import { loadSettings } from "./lib/settings";
 import { applyFont } from "./lib/fonts";
 import { applyTheme } from "./lib/themes";
+import { setSmoothScroll } from "./lib/smoothScroll";
 import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import type { Folder, Notebook, Settings } from "./lib/types";
+import { AudioPlayerProvider } from "./components/AudioPlayer";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -54,6 +56,11 @@ export default function App() {
   const reloadSettings = useCallback(async () => {
     setSettings(await loadSettings());
   }, []);
+
+  const smoothScroll = settings?.smoothScroll;
+  useEffect(() => {
+    if (smoothScroll !== undefined) setSmoothScroll(smoothScroll);
+  }, [smoothScroll]);
 
   useEffect(() => {
     (async () => {
@@ -110,120 +117,122 @@ export default function App() {
   const open = notebooks.find((n) => n.id === openId) ?? null;
 
   return (
-    <div className="h-full overflow-hidden bg-canvas text-ink">
-      {open ? (
-        <NotebookView
-          notebook={open}
-          settings={settings}
-          onBack={() => setOpenId(null)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onRenamed={refresh}
-          onNotebookMoved={refresh}
-          onSettingsChanged={reloadSettings}
-          onOpenNotebook={async (id) => {
-            // Refresh first so `open` resolves before the id changes.
-            await refresh();
-            setOpenId(id);
-          }}
-        />
-      ) : (
-        <Home
-          notebooks={notebooks}
-          trashedNotebooks={trashedNotebooks}
-          folders={folders}
-          updateInfo={updateInfo}
-          onDismissUpdate={() => setUpdateInfo(null)}
-          trashRetentionDays={settings.trashRetentionDays}
-          onOpen={setOpenId}
-          onSettings={() => setSettingsOpen(true)}
-          onCreate={async (title, description, folderId, cover) => {
-            const nb = await createNotebook(title, description, folderId);
-            if (cover) await setNotebookCover(nb.id, cover);
-            await refresh();
-            setOpenId(nb.id);
-          }}
-          onTrash={async (id) => {
-            await trashNotebook(id);
-            await refresh();
-          }}
-          onRestore={async (id) => {
-            await restoreNotebook(id);
-            await refresh();
-          }}
-          onDeleteForever={async (id) => {
-            await deleteNotebook(id);
-            await refresh();
-          }}
-          onMoveNotebookBulk={async (ids, folderId) => {
-            for (const id of ids) await moveNotebookToFolder(id, folderId);
-            await refresh();
-          }}
-          onTrashBulk={async (ids) => {
-            for (const id of ids) await trashNotebook(id);
-            await refresh();
-          }}
-          onRestoreBulk={async (ids) => {
-            for (const id of ids) await restoreNotebook(id);
-            await refresh();
-          }}
-          onDeleteForeverBulk={async (ids) => {
-            for (const id of ids) await deleteNotebook(id);
-            await refresh();
-          }}
-          onUpdateDetails={async (id, title, description) => {
-            await updateNotebookDetails(id, title, description);
-            await refresh();
-          }}
-          onToggleStar={async (id, starred) => {
-            await setNotebookStarred(id, starred);
-            await refresh();
-          }}
-          onSetCover={async (id, cover) => {
-            await setNotebookCover(id, cover);
-            await refresh();
-          }}
-          onMoveNotebook={async (id, folderId) => {
-            await moveNotebookToFolder(id, folderId);
-            await refresh();
-          }}
-          onCreateFolder={async (name, description, cover) => {
-            const f = await createFolder(name, description);
-            if (cover) await setFolderCover(f.id, cover);
-            await refresh();
-          }}
-          onUpdateFolder={async (id, name, description) => {
-            await updateFolderDetails(id, name, description);
-            await refresh();
-          }}
-          onSetFolderCover={async (id, cover) => {
-            await setFolderCover(id, cover);
-            await refresh();
-          }}
-          onDeleteFolder={async (id) => {
-            await deleteFolder(id);
-            await refresh();
-          }}
-          onUseTemplate={async (id) => {
-            const src = notebooks.find((n) => n.id === id);
-            if (!src) return;
-            await cloneNotebook(id, `${src.title} (copy)`, {
-              includeChats: false,
-              includeArtifacts: false,
-            });
-            await refresh();
-          }}
-        />
-      )}
+    <AudioPlayerProvider>
+      <div className="h-full overflow-hidden bg-canvas text-ink">
+        {open ? (
+          <NotebookView
+            notebook={open}
+            settings={settings}
+            onBack={() => setOpenId(null)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onRenamed={refresh}
+            onNotebookMoved={refresh}
+            onSettingsChanged={reloadSettings}
+            onOpenNotebook={async (id) => {
+              // Refresh first so `open` resolves before the id changes.
+              await refresh();
+              setOpenId(id);
+            }}
+          />
+        ) : (
+          <Home
+            notebooks={notebooks}
+            trashedNotebooks={trashedNotebooks}
+            folders={folders}
+            updateInfo={updateInfo}
+            onDismissUpdate={() => setUpdateInfo(null)}
+            trashRetentionDays={settings.trashRetentionDays}
+            onOpen={setOpenId}
+            onSettings={() => setSettingsOpen(true)}
+            onCreate={async (title, description, folderId, cover) => {
+              const nb = await createNotebook(title, description, folderId);
+              if (cover) await setNotebookCover(nb.id, cover);
+              await refresh();
+              setOpenId(nb.id);
+            }}
+            onTrash={async (id) => {
+              await trashNotebook(id);
+              await refresh();
+            }}
+            onRestore={async (id) => {
+              await restoreNotebook(id);
+              await refresh();
+            }}
+            onDeleteForever={async (id) => {
+              await deleteNotebook(id);
+              await refresh();
+            }}
+            onMoveNotebookBulk={async (ids, folderId) => {
+              for (const id of ids) await moveNotebookToFolder(id, folderId);
+              await refresh();
+            }}
+            onTrashBulk={async (ids) => {
+              for (const id of ids) await trashNotebook(id);
+              await refresh();
+            }}
+            onRestoreBulk={async (ids) => {
+              for (const id of ids) await restoreNotebook(id);
+              await refresh();
+            }}
+            onDeleteForeverBulk={async (ids) => {
+              for (const id of ids) await deleteNotebook(id);
+              await refresh();
+            }}
+            onUpdateDetails={async (id, title, description) => {
+              await updateNotebookDetails(id, title, description);
+              await refresh();
+            }}
+            onToggleStar={async (id, starred) => {
+              await setNotebookStarred(id, starred);
+              await refresh();
+            }}
+            onSetCover={async (id, cover) => {
+              await setNotebookCover(id, cover);
+              await refresh();
+            }}
+            onMoveNotebook={async (id, folderId) => {
+              await moveNotebookToFolder(id, folderId);
+              await refresh();
+            }}
+            onCreateFolder={async (name, description, cover) => {
+              const f = await createFolder(name, description);
+              if (cover) await setFolderCover(f.id, cover);
+              await refresh();
+            }}
+            onUpdateFolder={async (id, name, description) => {
+              await updateFolderDetails(id, name, description);
+              await refresh();
+            }}
+            onSetFolderCover={async (id, cover) => {
+              await setFolderCover(id, cover);
+              await refresh();
+            }}
+            onDeleteFolder={async (id) => {
+              await deleteFolder(id);
+              await refresh();
+            }}
+            onUseTemplate={async (id) => {
+              const src = notebooks.find((n) => n.id === id);
+              if (!src) return;
+              await cloneNotebook(id, `${src.title} (copy)`, {
+                includeChats: false,
+                includeArtifacts: false,
+              });
+              await refresh();
+            }}
+          />
+        )}
 
-      {settingsOpen && (
-        <SettingsPage
-          updateInfo={updateInfo}
-          onClose={() => {
-            setSettingsOpen(false);
-            reloadSettings();
-          }}
-        />
-      )}
-    </div>
+        {settingsOpen && (
+          <SettingsPage
+            updateInfo={updateInfo}
+            onClose={() => {
+              setSettingsOpen(false);
+              reloadSettings();
+            }}
+          />
+        )}
+      </div>
+    </AudioPlayerProvider>
   );
 }

@@ -2,15 +2,19 @@ import {
   AlignLeft,
   Anchor,
   ArrowUp,
+  ArrowLeftRight,
   ArrowUpFromLine,
   AudioLines,
   BookOpen,
+  Check,
   Copy,
+  FilePlus2,
   FileText,
   FolderClosed,
   GraduationCap,
   Image,
   ImagePlus,
+  Info,
   Layers,
   Link,
   ListPlus,
@@ -34,7 +38,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addMessage,
-  clearMessages,
   findFolderByName,
   getImage,
   listFolders,
@@ -55,6 +58,7 @@ import {
   type MentionItem,
 } from "../lib/mentions";
 import { isAbortError, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
   imageIdsIn,
@@ -79,28 +83,43 @@ import { ensureIndexed, isRetrievable, rankChunks, type RetrievedChunk } from ".
 import { webAnswer } from "../lib/research";
 import {
   activeKey,
+  builtInVoices,
+  checkImageModel,
+  checkOpenRouterModel,
+  findVoice,
+  hostVoice,
+  loadImageModelList,
   loadModelList,
+  loadResearchModelList,
+  loadSettings,
+  loadVoiceList,
+  normalizeModelId,
+  patchSettings,
+  PROVIDER_LABELS,
+  saveImageModelList,
   saveModelList,
+  saveResearchModelList,
+  saveVoiceList,
+  TTS_PROVIDER_LABELS,
+  voiceLabel,
+  type Host,
+  type SavedVoice,
+  type VoiceProvider,
+  voicesNeedIds,
 } from "../lib/settings";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
-import { recordUsage } from "../lib/usage";
+import { fmtReplyCost, recordUsage, replyCostUsd } from "../lib/usage";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import { FONTS, chooseFont } from "../lib/fonts";
 import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
 import { BrewingStatus, IconButton } from "./ui";
 
-const MAX_CONSTITUTION_CHARS = 6000;
-const MAX_SOURCE_CHARS = 6000;
-const MAX_TOTAL_CONTEXT = 30_000;
 const MAX_MENTION_CHARS = 8000;
-const MAX_MENTION_TOTAL = 16_000;
 const HISTORY_LIMIT = 16;
-/** History budget in chars (~6k tokens); long past messages stop multiplying cost. */
-const MAX_HISTORY_CHARS = 24_000;
 
 /** Empty-chat inspiration: one quote is picked each time a new chat opens. */
 const CHAT_QUOTES: { text: string; author: string }[] = [
@@ -127,6 +146,27 @@ interface ChatCommand {
   autocomplete?: "theme" | "model" | "font";
 }
 
+/** What the /model-style picker lists: a model list, or saved voices. */
+type PickerKind = "chat" | "image" | "research" | "voicehost" | "voicecohost" | "voice";
+
+const PICKER_KIND: Record<string, PickerKind> = {
+  model: "chat",
+  imagemodel: "image",
+  researchmodel: "research",
+  voicehost: "voicehost",
+  voicecohost: "voicecohost",
+  voice: "voice",
+};
+
+const PICKER_CMD: Record<PickerKind, string> = {
+  chat: "/model",
+  image: "/imagemodel",
+  research: "/researchmodel",
+  voicehost: "/voicehost",
+  voicecohost: "/voicecohost",
+  voice: "/voice",
+};
+
 /** Registry behind the `/` autocomplete palette. */
 const COMMANDS: ChatCommand[] = [
   {
@@ -141,6 +181,112 @@ const COMMANDS: ChatCommand[] = [
     usage: "/model <id>",
     desc: "Switch the active model (autocompletes yours)",
     icon: Settings2,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/model add",
+    usage: "/model add <id>",
+    desc: "Add a model to your list — paste an OpenRouter id or link",
+    icon: Plus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/model remove",
+    usage: "/model remove <id>",
+    desc: "Remove a model from your list (autocompletes yours)",
+    icon: Trash2,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/imagemodel",
+    usage: "/imagemodel <id>",
+    desc: "Switch the model /image draws with (autocompletes yours)",
+    icon: Image,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/imagemodel add",
+    usage: "/imagemodel add <id>",
+    desc: "Add an image model to your list — paste an OpenRouter id or link",
+    icon: Plus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/imagemodel remove",
+    usage: "/imagemodel remove <id>",
+    desc: "Remove an image model from your list (autocompletes yours)",
+    icon: Trash2,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/researchmodel",
+    usage: "/researchmodel <id>",
+    desc: "Switch the model /research and /search run on (main = your main model)",
+    icon: Telescope,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/researchmodel add",
+    usage: "/researchmodel add <id>",
+    desc: "Add a research model to your list — paste an OpenRouter id or link",
+    icon: Plus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/researchmodel remove",
+    usage: "/researchmodel remove <id>",
+    desc: "Remove a research model from your list (autocompletes yours)",
+    icon: Trash2,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/voice",
+    usage: "/voice",
+    desc: "Show the Audio overview hosts' voices and your saved voices",
+    icon: AudioLines,
+    takesArgs: false,
+  },
+  {
+    cmd: "/voicehost",
+    usage: "/voicehost <name>",
+    desc: "Switch the Host's voice (autocompletes your voices)",
+    icon: AudioLines,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/voicecohost",
+    usage: "/voicecohost <name>",
+    desc: "Switch the Co-Host's voice (autocompletes your voices)",
+    icon: AudioLines,
+    takesArgs: true,
+    autocomplete: "model",
+  },
+  {
+    cmd: "/voice swap",
+    usage: "/voice swap",
+    desc: "Trade the Host and Co-Host voices",
+    icon: ArrowLeftRight,
+    takesArgs: false,
+  },
+  {
+    cmd: "/voice add",
+    usage: "/voice add <name> [voice ID]",
+    desc: "Save a voice (ElevenLabs: a name + its voice ID)",
+    icon: Plus,
+    takesArgs: true,
+  },
+  {
+    cmd: "/voice remove",
+    usage: "/voice remove <name>",
+    desc: "Remove a saved voice (autocompletes yours)",
+    icon: Trash2,
     takesArgs: true,
     autocomplete: "model",
   },
@@ -187,6 +333,13 @@ const COMMANDS: ChatCommand[] = [
     desc: "Bulk delete sources, chats, or studio outputs",
     icon: Trash2,
     takesArgs: true,
+  },
+  {
+    cmd: "/details",
+    usage: "/details [on|off]",
+    desc: "Show or hide token counts and cost under AI replies",
+    icon: Info,
+    takesArgs: false,
   },
   {
     cmd: "/ground",
@@ -296,7 +449,7 @@ const COMMANDS: ChatCommand[] = [
   {
     cmd: "/audio",
     usage: "/audio [format] [length] [focus]",
-    desc: "Two-host podcast — deep-dive|brief|debate|critique · short|standard|long",
+    desc: "Two-host podcast — deep-dive|brief|debate|critique · short (~5 min)|standard (~10)|long (~20)",
     icon: AudioLines,
     takesArgs: true,
   },
@@ -367,7 +520,7 @@ One click turns your sources into study materials. Every result is saved as an *
 | Quiz | Multiple-choice questions with explanations — 4/8/15 |
 | Mind map | Hierarchical outline of the key ideas |
 | Report | Summary, Study guide, FAQ, Timeline, Briefing doc, or your own prompt |
-| Audio overview | Two hosts (Alex & Sam) discuss your sources — Deep dive / Brief / Debate / Critique, then voiced via OpenAI, OpenRouter or ElevenLabs |
+| Audio overview | Two hosts (Host & Co-Host) discuss your sources — Deep dive / Brief / Debate / Critique, then voiced via OpenAI, OpenRouter or ElevenLabs |
 | Deep research | Plans search queries, browses the web, writes a cited report |
 
 ## 6. Chat commands
@@ -379,7 +532,13 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/theme <name>\` — switches the app theme instantly (names autocomplete). Available: ${THEMES.map((t) => t.name).join(", ")}. Also changeable in Settings.
 - \`/font <name>\` — switches the interface font instantly (names autocomplete). Available: ${FONTS.map((f) => f.name).join(", ")}. Also changeable in Settings.
 - \`/model <id>\` — swaps the active AI model (your model list autocompletes). A new id is added to your list automatically.
+- \`/model add <id>\` — adds a model to your list without switching to it. Paste the id or the model's page link from openrouter.ai, e.g. \`/model add anthropic/claude-haiku-5.5\`. On OpenRouter the id is checked first, and you get close matches if it doesn't exist.
+- \`/model remove <id>\` — removes a model from your list (your models autocomplete), e.g. \`/model remove anthropic/claude-haiku-5.5\`. Removing the active model keeps it active until you switch.
+- \`/imagemodel <id>\` — swaps the model \`/image\` draws with (your image models autocomplete). \`/imagemodel add <id>\` and \`/imagemodel remove <id>\` edit that list, just like \`/model\`; added ids are checked against OpenRouter's image models. Also in Settings → AI Model → Image model.
+- \`/researchmodel <id>\` — picks the model Deep Research and \`/search\` run on, separate from your chat model (your research models autocomplete); \`/researchmodel main\` goes back to your main model. \`/researchmodel add <id>\` and \`/researchmodel remove <id>\` edit that list. Also in Settings → AI Model → Research model.
+- \`/voice\` — shows which voices the Audio overview hosts use. \`/voicehost <name>\` and \`/voicecohost <name>\` switch the Host's and Co-Host's voice, and \`/voice swap\` trades them. \`/voice add <name>\` saves a voice — on OpenRouter use the model's own voice name (e.g. \`voice_3150\` for Voxtral TTS 3), for ElevenLabs add its voice ID too, e.g. \`/voice add Rachel 21m00Tcm4TlvDq8ikWAM\` — and \`/voice remove <name>\` deletes one. Also in Settings → Audio Voices.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
+- \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
 - \`/clone "<title>" [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). **The title must be in quotes.** \`/clone "My copy"\` or \`/clone "My copy" no\` keeps you here; \`/clone "My copy" yes\` takes you there. Because the title is quoted, a *yes* or *no* inside it can't be confused for the flag — \`/clone "Project yes" no\` clones "Project yes" and stays put. For a sources-only starter copy, use **Use as template** on the homepage cards.
@@ -396,7 +555,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/flashcards [8|12|24] [easy|medium|hard] [focus]\` — e.g. \`/flashcards 24 hard photosynthesis\`.
 - \`/quiz [4|8|15] [easy|medium|hard] [focus]\` — e.g. \`/quiz 15 easy\`.
 - \`/mindmap [focus]\` — hierarchical outline of the key ideas.
-- \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`.
+- \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`. Short ≈ 5 minutes, Standard ≈ 10, Long ≈ 20; longer episodes are planned first and written part by part, so they take a little longer to make.
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
 - \`/search <query>\` — one-shot web answer, right here in chat, with numbered source links. Your provider bills web searches per query, so this only runs when you ask; for a deep multi-source dossier use \`/research\` instead.
@@ -418,15 +577,17 @@ API keys, sources, chats and artifacts all live in a local database on your mach
  * When `retrieved` chunks are supplied (rag.ts), the sources block contains
  * the most relevant slices of ALL sources for this message instead of a blind
  * first-N-characters prefix of the first few sources — this is what lets a
- * 400-page PDF or a notebook full of files fit a 30k-char budget meaningfully.
+ * 400-page PDF or a notebook full of files fit the context budget meaningfully
+ * (30k chars on cloud models, sized to the context window on local ones).
  */
 export function buildSystemPrompt(
   sources: Source[],
   mentioned: MentionItem[] = [],
   retrieved?: RetrievedChunk[],
-  opts: { grounded?: boolean } = {}
+  opts: { grounded?: boolean; budget?: ContextBudget } = {}
 ): string {
   const grounded = opts.grounded !== false;
+  const budgetCaps = opts.budget ?? CLOUD_BUDGET;
   const constitutions = sources.filter(
     (s) => s.type === "context" && s.content.trim()
   );
@@ -448,8 +609,8 @@ export function buildSystemPrompt(
   if (constitutions.length > 0) {
     const body = constitutions
       .map((c) =>
-        c.content.length > MAX_CONSTITUTION_CHARS
-          ? c.content.slice(0, MAX_CONSTITUTION_CHARS) + "\n[…constitution truncated]"
+        c.content.length > budgetCaps.constitution
+          ? c.content.slice(0, budgetCaps.constitution) + "\n[…constitution truncated]"
           : c.content
       )
       .join("\n\n");
@@ -464,7 +625,7 @@ export function buildSystemPrompt(
   );
 
   // Sources block: retrieval-ranked chunks when available, legacy prefix
-  // truncation otherwise. Either way the section is capped by MAX_TOTAL_CONTEXT
+  // truncation otherwise. Either way the section is capped by the sources budget
   // and ends with an honest coverage line so the model knows what it can't see.
   if (knowledge.length > 0) {
     const omitted: string[] = [];
@@ -472,7 +633,7 @@ export function buildSystemPrompt(
 
     if (retrieved && retrieved.length > 0) {
       const covered = new Set<string>();
-      let budget = MAX_TOTAL_CONTEXT;
+      let budget = budgetCaps.sources;
       const blocks: string[] = [];
       let headerSource = "";
       for (const c of retrieved) {
@@ -494,12 +655,12 @@ export function buildSystemPrompt(
           : `Excerpts from ${covered.size} of ${knowledge.length} sources are included, chosen for relevance to the latest message. Not covered here: ${listTitles(omitted)} — if the answer needs them, say so rather than guessing.`;
       section = `# Source excerpts (retrieved by relevance)\nThese are the most relevant passages from the user's sources for the latest message; other passages exist but aren't shown.\n\n${blocks.join("\n\n")}\n\n[Coverage: ${coverage}]`;
     } else {
-      let budget = MAX_TOTAL_CONTEXT;
+      let budget = budgetCaps.sources;
       const sections: string[] = [];
       const included = new Set<string>();
       for (const s of knowledge) {
         if (budget <= 0) break;
-        const cap = Math.min(MAX_SOURCE_CHARS, budget);
+        const cap = Math.min(budgetCaps.perSource, budget);
         const body = sourceText(s);
         const trimmed =
           body.length > cap
@@ -524,7 +685,7 @@ export function buildSystemPrompt(
   // @-mentions tail the prompt: they vary per message, and anything before
   // them stays byte-stable for provider prompt caching.
   if (mentioned.length > 0) {
-    let budget = MAX_MENTION_TOTAL;
+    let budget = budgetCaps.mentions;
     const sections: string[] = [];
     for (const m of mentioned) {
       if (budget <= 0) break;
@@ -562,13 +723,13 @@ function listTitles(titles: string[], max = 10): string {
 
 /**
  * Pick the messages that fit the conversation-history budget: newest first,
- * at most HISTORY_LIMIT turns and ~MAX_HISTORY_CHARS total, always including
+ * at most HISTORY_LIMIT turns and ~maxChars total, always including
  * the latest message.
  */
-export function selectChatHistory(all: ChatMessage[]): ChatMessage[] {
+export function selectChatHistory(all: ChatMessage[], maxChars = CLOUD_BUDGET.history): ChatMessage[] {
   const capped = all.slice(-HISTORY_LIMIT);
   const kept: ChatMessage[] = [];
-  let budget = MAX_HISTORY_CHARS;
+  let budget = maxChars;
   for (let i = capped.length - 1; i >= 0; i--) {
     const m = capped[i];
     // Measure what the model will actually receive: image embeds are stripped
@@ -645,8 +806,8 @@ export default function ChatPanel({
   onNotebookMoved: () => void;
   /** /new command — NotebookView creates + selects a fresh chat. */
   onNewChat: () => void | Promise<void>;
-  /** /note command — NotebookView saves the text as a source; returns it. */
-  onAddNote: (text: string) => Promise<Source>;
+  /** /note command and a reply's "Save to Sources" — NotebookView saves the text as a source. */
+  onAddNote: (text: string, title?: string) => Promise<Source>;
   /** /url command — NotebookView fetches + saves the page as a link source. */
   onAddLink: (url: string) => Promise<Source>;
   /** /clear command — NotebookView deletes the active chat thread. */
@@ -681,15 +842,25 @@ export default function ChatPanel({
     if (imageTarget && !/^\/(edit|remix)(\s|$)/i.test(draft)) setImageTarget(null);
   }, [draft, imageTarget]);
   const [streaming, setStreaming] = useState<string | null>(null);
+  const streamingHtml = useMemo(() => (streaming ? renderMarkdown(streaming) : ""), [streaming]);
   const [error, setError] = useState<string | null>(null);
   /** Provider-reported token usage per assistant message (this session only). */
-  const [usageByMsg, setUsageByMsg] = useState<Record<string, StreamUsage>>({});
+  const [usageByMsg, setUsageByMsg] = useState<Record<string, ReplyUsage>>({});
+  // Mirror of settings.showDetails so /details flips the usage lines instantly.
+  const [showDetails, setShowDetails] = useState(settings.showDetails);
+  useEffect(() => setShowDetails(settings.showDetails), [settings.showDetails]);
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
   const [themeQuery, setThemeQuery] = useState<{ query: string; active: number } | null>(null);
   const [fontQuery, setFontQuery] = useState<{ query: string; active: number } | null>(null);
-  const [modelQuery, setModelQuery] = useState<{ query: string; active: number } | null>(null);
+  /** `remove` = the picker feeds `… remove` instead of switching; `kind` = which list. */
+  const [modelQuery, setModelQuery] = useState<{
+    query: string;
+    active: number;
+    remove?: boolean;
+    kind: PickerKind;
+  } | null>(null);
   const [models, setModels] = useState<string[]>([]);
   // Mirror of settings.theme so "/theme" updates the "current" marker instantly.
   const [theme, setTheme] = useState(settings.theme);
@@ -769,6 +940,11 @@ export default function ChatPanel({
     Array.from(e.dataTransfer.types).includes("Files");
 
   const catalog = useMemo(() => buildMentionCatalog(sources, artifacts), [sources, artifacts]);
+  /** Text sources' bodies — a reply already saved to Sources shows as saved. */
+  const savedTexts = useMemo(
+    () => new Set(sources.filter((s) => s.type === "text").map((s) => s.content)),
+    [sources]
+  );
   const mentionHits = useMemo(() => {
     if (!mention) return [];
     const q = mention.query.trim().toLowerCase();
@@ -815,7 +991,13 @@ export default function ChatPanel({
       if (c.cmd === "/move") setMoveQuery({ query: "", active: 0 });
       if (c.autocomplete === "theme") setThemeQuery({ query: "", active: 0 });
       if (c.autocomplete === "font") setFontQuery({ query: "", active: 0 });
-      if (c.autocomplete === "model") setModelQuery({ query: "", active: 0 });
+      if (c.autocomplete === "model")
+        setModelQuery({
+          query: "",
+          active: 0,
+          remove: c.cmd.endsWith(" remove"),
+          kind: PICKER_KIND[c.cmd.slice(1).split(" ")[0]],
+        });
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (!ta) return;
@@ -828,17 +1010,47 @@ export default function ChatPanel({
     }
   };
 
-  /* ----------------------------- /model command ----------------------------- */
+  /* --------------- /model, /imagemodel, /researchmodel, /voice… --------------- */
 
-  // Mirror of settings.model so /model updates the composer footer instantly.
+  // Mirrors of the persisted choices so the pickers mark "current" instantly.
   const [model, setModel] = useState(settings.model);
   useEffect(() => setModel(settings.model), [settings.model]);
+  const [imageModel, setImageModel] = useState(settings.imageModel);
+  useEffect(() => setImageModel(settings.imageModel), [settings.imageModel]);
+  const [researchModel, setResearchModel] = useState(settings.researchModels[settings.provider] ?? "");
+  useEffect(
+    () => setResearchModel(settings.researchModels[settings.provider] ?? ""),
+    [settings.researchModels, settings.provider]
+  );
+  const [hostVoices, setHostVoices] = useState<Record<Host, string>>({
+    Alex: hostVoice(settings, "Alex"),
+    Sam: hostVoice(settings, "Sam"),
+  });
+  useEffect(
+    () => setHostVoices({ Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") }),
+    [settings]
+  );
+  const voiceProvider: VoiceProvider | null = settings.ttsProvider === "system" ? null : settings.ttsProvider;
 
-  /** `/model`, `/model gpt-4o` at the start of the draft. */
-  const detectModel = (value: string): string | null => {
-    const m = /^\/model(?:\s+("?)([^\n"]*)\1?)?$/i.exec(value.trim());
+  /**
+   * `/model gpt`, `/imagemodel remove flux`, `/voicehost rach`, `/voice remove adam`…
+   * at the start of the draft. `… add` gets no picker: it's for ids that
+   * aren't in the list yet. Plain `/voice` takes subcommands, so only
+   * `/voice remove` gets one.
+   */
+  const detectModel = (value: string): { query: string; remove: boolean; kind: PickerKind } | null => {
+    const v = value.trim();
+    const cmd = /^\/(model|imagemodel|researchmodel|voicehost|voicecohost|voice)(?=\s|$)/i.exec(v);
+    if (!cmd) return null;
+    const kind = PICKER_KIND[cmd[1].toLowerCase()];
+    const rest = v.slice(cmd[0].length);
+    if (/^\s+add(\s|$)/i.test(rest)) return null;
+    const rm = /^\s+remove(?:\s+("?)([^\n"]*)\1?)?$/i.exec(rest);
+    if (rm && kind !== "voicehost" && kind !== "voicecohost") return { query: rm[2] ?? "", remove: true, kind };
+    if (kind === "voice") return null;
+    const m = /^(?:\s+("?)([^\n"]*)\1?)?$/i.exec(rest);
     if (!m) return null;
-    return m[2] ?? "";
+    return { query: m[2] ?? "", remove: false, kind };
   };
 
   const modelHits = useMemo(() => {
@@ -849,12 +1061,34 @@ export default function ChatPanel({
   }, [modelQuery, models]);
   const modelActiveIdx = Math.min(modelQuery?.active ?? 0, Math.max(modelHits.length - 1, 0));
 
+  /** Picker entries: model ids, or saved voice names. */
+  const loadPickerItems = async (kind: PickerKind): Promise<string[]> => {
+    if (kind === "image") return loadImageModelList();
+    if (kind === "research") return loadResearchModelList(settings.provider);
+    if (kind === "chat") return loadModelList(settings.provider);
+    return voiceProvider ? (await loadVoiceList(voiceProvider)).map((v) => v.name) : [];
+  };
+  const [voiceNames, setVoiceNames] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (modelQuery !== null) void loadModelList(settings.provider).then(setModels);
-  }, [modelQuery, settings.provider]);
+    if (modelQuery === null) return;
+    void loadPickerItems(modelQuery.kind).then(setModels);
+    if (voiceProvider && modelQuery.kind.startsWith("voice"))
+      void loadVoiceList(voiceProvider).then((l) => setVoiceNames(Object.fromEntries(l.map((v) => [v.name, v.id]))));
+  }, [modelQuery, settings.provider, voiceProvider]);
+
+  /** The picker's "current" entry for its kind. */
+  const pickerCurrent = (kind: PickerKind, item: string): boolean => {
+    if (kind === "chat") return item === model;
+    if (kind === "image") return item === imageModel;
+    if (kind === "research") return item === researchModel;
+    if (kind === "voicehost") return voiceNames[item] === hostVoices.Alex;
+    if (kind === "voicecohost") return voiceNames[item] === hostVoices.Sam;
+    return false;
+  };
 
   const acceptModel = (id: string) => {
-    setDraft(`/model "${id}" `);
+    const cmd = PICKER_CMD[modelQuery?.kind ?? "chat"];
+    setDraft(modelQuery?.remove ? `${cmd} remove "${id}" ` : `${cmd} "${id}" `);
     setModelQuery(null);
     requestAnimationFrame(() => {
       const ta = textareaRef.current;
@@ -865,29 +1099,280 @@ export default function ChatPanel({
     });
   };
 
-  /** Execute /model locally (no LLM) — swap the model and persist it. */
-  const runModelCommand = async (text: string): Promise<void> => {
-    const m = /^\/model(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
-    const raw = (m?.[2] ?? "").trim();
-    let reply: string;
-    if (!raw) {
-      const list = await loadModelList(settings.provider);
-      reply = `Current model: \`${model}\`. Your ${settings.provider} models: ${list.map((x) => `\`${x}\``).join(", ")}.`;
-    } else {
-      await setSetting("model", raw);
-      setModel(raw);
-      // A genuinely new id also joins the editable Settings list.
-      const list = await loadModelList(settings.provider);
-      if (!list.includes(raw)) {
-        const next = [...list, raw];
-        await saveModelList(settings.provider, next);
-        setModels(next);
-      }
-      onSettingsChanged();
-      reply = `Model set to \`${raw}\`.`;
-    }
+  const say = async (reply: string) => {
     const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
     setMsgs((prev) => [...prev, replyMsg]);
+  };
+  const codeList = (list: string[]) => list.map((x) => `\`${x}\``).join(", ") || "none";
+
+  /** What differs between the /model, /imagemodel and /researchmodel lists. */
+  const modelListSpec = (kind: "chat" | "image" | "research") => {
+    const provider = settings.provider;
+    const label = PROVIDER_LABELS[provider];
+    if (kind === "image")
+      return {
+        cmd: "/imagemodel",
+        noun: "image models",
+        example: "openai/gpt-image-2",
+        load: loadImageModelList,
+        save: saveImageModelList,
+        check: checkImageModel,
+        missing: "image model",
+        current: imageModel,
+        keptActive: (id: string) =>
+          `Removed \`${id}\` from your image models. \`/image\` keeps using it until you switch with \`/imagemodel <id>\`.`,
+      };
+    if (kind === "research")
+      return {
+        cmd: "/researchmodel",
+        noun: `${label} research models`,
+        example: "anthropic/claude-sonnet-4.5",
+        load: () => loadResearchModelList(provider),
+        save: (l: string[]) => saveResearchModelList(provider, l),
+        check: provider === "openrouter" ? checkOpenRouterModel : undefined,
+        missing: "model",
+        current: researchModel,
+        keptActive: (id: string) =>
+          `Removed \`${id}\` from your research models. Research keeps using it until you switch with \`/researchmodel <id>\` (or \`/researchmodel main\`).`,
+      };
+    return {
+      cmd: "/model",
+      noun: `${label} models`,
+      example: "anthropic/claude-haiku-5.5",
+      load: () => loadModelList(provider),
+      save: (l: string[]) => saveModelList(provider, l),
+      check: provider === "openrouter" ? checkOpenRouterModel : undefined,
+      missing: "model",
+      current: model,
+      keptActive: (id: string) =>
+        `Removed \`${id}\` from your list. It's still the active model until you switch with \`/model <id>\`.`,
+    };
+  };
+
+  /** /model|/imagemodel|/researchmodel add|remove — edit a list without switching. */
+  const runModelListCommand = async (
+    kind: "chat" | "image" | "research",
+    action: "add" | "remove",
+    raw: string
+  ): Promise<string> => {
+    const spec = modelListSpec(kind);
+    const id = normalizeModelId(raw);
+    const list = await spec.load();
+    if (!id) {
+      return action === "add"
+        ? `Which ${spec.missing}? Paste its id or link from openrouter.ai, e.g. \`${spec.cmd} add ${spec.example}\`.`
+        : `Which ${spec.missing}? e.g. \`${spec.cmd} remove ${list[0] ?? spec.example}\`. Your ${spec.noun}: ${codeList(list)}.`;
+    }
+    if (action === "remove") {
+      const hit = list.find((x) => x.toLowerCase() === id.toLowerCase());
+      if (!hit) return `\`${id}\` isn't in your ${spec.noun}. Your ${spec.noun}: ${codeList(list)}.`;
+      const next = list.filter((x) => x !== hit);
+      await spec.save(next);
+      setModels(next);
+      onSettingsChanged();
+      return hit === spec.current ? spec.keptActive(hit) : `Removed \`${hit}\` from your ${spec.noun}.`;
+    }
+    if (/\s/.test(id)) return `\`${id}\` doesn't look like a model id — ids have no spaces, e.g. \`${spec.example}\`.`;
+    if (list.includes(id)) return `\`${id}\` is already in your ${spec.noun}. Switch to it with \`${spec.cmd} ${id}\`.`;
+    let note = "";
+    if (spec.check) {
+      const check = await spec.check(id);
+      if (check.status === "unknown") {
+        const alts = check.suggestions.map((x) => `\`${x}\``).join(", ");
+        return `OpenRouter has no ${spec.missing} \`${id}\`, so I didn't add it.${alts ? ` Did you mean ${alts}?` : ""} Copy the exact id from the model's page on openrouter.ai.`;
+      }
+      if (check.status === "unverified") note = " (couldn't reach OpenRouter to double-check the id)";
+    }
+    const next = [...list, id];
+    await spec.save(next);
+    setModels(next);
+    onSettingsChanged();
+    return `Added \`${id}\` to your ${spec.noun}${note}. Switch to it with \`${spec.cmd} ${id}\`.`;
+  };
+
+  /** A genuinely new id also joins the editable Settings list. */
+  const rememberModel = async (kind: "chat" | "image" | "research", id: string) => {
+    const spec = modelListSpec(kind);
+    const list = await spec.load();
+    if (list.includes(id)) return;
+    const next = [...list, id];
+    await spec.save(next);
+    setModels(next);
+  };
+
+  /** Execute /model locally (no LLM) — swap the model and persist it. */
+  const runModelCommand = async (text: string): Promise<void> => {
+    const sub = /^\/model\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
+    if (sub) return say(await runModelListCommand("chat", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
+    const m = /^\/model(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
+    const raw = (m?.[2] ?? "").trim();
+    if (!raw) {
+      const list = await loadModelList(settings.provider);
+      return say(`Current model: \`${model}\`. Your ${settings.provider} models: ${codeList(list)}.`);
+    }
+    await setSetting("model", raw);
+    setModel(raw);
+    await rememberModel("chat", raw);
+    onSettingsChanged();
+    await say(`Model set to \`${raw}\`.`);
+  };
+
+  /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
+  const runImageModelCommand = async (text: string): Promise<void> => {
+    const sub = /^\/imagemodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
+    if (sub) return say(await runModelListCommand("image", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
+    const raw = normalizeModelId(text.replace(/^\/imagemodel\s*/i, ""));
+    if (!raw) {
+      const list = await loadImageModelList();
+      return say(`Current image model: \`${imageModel}\`. Your image models: ${codeList(list)}.`);
+    }
+    await setSetting("imageModel", raw);
+    setImageModel(raw);
+    await rememberModel("image", raw);
+    onSettingsChanged();
+    await say(
+      settings.provider === "openrouter" && (await isImageApiModel(model))
+        ? `Image model set to \`${raw}\`. Your active model \`${model}\` is itself an image model, so \`/image\` keeps using that one until you switch it with \`/model <id>\`.`
+        : `Image model set to \`${raw}\`.`
+    );
+  };
+
+  /** /researchmodel — show, switch or edit the model /research and /search run on. */
+  const runResearchModelCommand = async (text: string): Promise<void> => {
+    const provider = settings.provider;
+    if (provider === "local")
+      return say("Research and `/search` need web search, which local models can't do — switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to pick a research model.");
+    const sub = /^\/researchmodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
+    if (sub) return say(await runModelListCommand("research", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
+    const raw = normalizeModelId(text.replace(/^\/researchmodel\s*/i, ""));
+    if (!raw) {
+      const list = await loadResearchModelList(provider);
+      const now = researchModel ? `\`${researchModel}\`` : `same as your main model (\`${model}\`)`;
+      return say(`Research model: ${now}. Your ${PROVIDER_LABELS[provider]} research models: ${codeList(list)}. Use \`/researchmodel main\` to go back to your main model.`);
+    }
+    const toMain = /^(main|default|same)$/i.test(raw);
+    const fresh = await loadSettings();
+    await patchSettings({ researchModels: { ...fresh.researchModels, [provider]: toMain ? "" : raw } });
+    setResearchModel(toMain ? "" : raw);
+    if (!toMain) await rememberModel("research", raw);
+    onSettingsChanged();
+    await say(
+      toMain
+        ? `Research now uses your main model (\`${model}\`).`
+        : `Research model set to \`${raw}\` — \`/research\` and \`/search\` use it from now on.${provider === "openai" ? " (On OpenAI the web search itself still runs on gpt-4o-mini-search-preview.)" : ""}`
+    );
+  };
+
+  /** /voice, /voice add|remove|swap, /voicehost, /voicecohost — no LLM. */
+  const runVoiceCommand = async (text: string): Promise<void> => {
+    if (!voiceProvider)
+      return say("Your audio uses **System voices**, which your computer picks automatically. Choose OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
+    const p = voiceProvider;
+    const providerLabel = TTS_PROVIDER_LABELS[p];
+    const builtIn = builtInVoices(p);
+    const list = await loadVoiceList(p);
+    const fresh = await loadSettings();
+    const now: Record<Host, string> = { Alex: hostVoice(fresh, "Alex"), Sam: hostVoice(fresh, "Sam") };
+    const label = (id: string) => (id ? `**${voiceLabel(list, id)}**` : "not set");
+    const yours = list.map((v) => v.name).join(", ") || "none";
+    const setHost = async (host: Host, id: string) => {
+      await patchSettings(host === "Alex" ? { ttsVoiceAlex: id } : { ttsVoiceSam: id });
+      setHostVoices((h) => ({ ...h, [host]: id }));
+      onSettingsChanged();
+    };
+    const saveList = async (next: SavedVoice[]) => {
+      await saveVoiceList(p, next);
+      setModels(next.map((v) => v.name));
+    };
+
+    const hostCmd = /^\/voice(host|cohost)(?:\s+([\s\S]*))?$/i.exec(text);
+    if (hostCmd) {
+      const host: Host = hostCmd[1].toLowerCase() === "host" ? "Alex" : "Sam";
+      const role = host === "Alex" ? "Host" : "Co-Host";
+      const cmd = host === "Alex" ? "/voicehost" : "/voicecohost";
+      const raw = stripOuterQuotes((hostCmd[2] ?? "").trim());
+      if (!raw) return say(`${role} voice: ${label(now[host])} (${providerLabel}). Your voices: ${yours}. Switch with \`${cmd} <name>\`.`);
+      const saved = findVoice(list, raw);
+      if (saved) {
+        await setHost(host, saved.id);
+        return say(`${role} now speaks with **${saved.name}**.`);
+      }
+      if (builtIn) {
+        const match = builtIn.find((v) => v.toLowerCase() === raw.toLowerCase());
+        if (!match) return say(`${providerLabel} has no voice “${raw}”. Its voices: ${builtIn.join(", ")}.`);
+        await saveList([...list, { name: match, id: match }]);
+        await setHost(host, match);
+        return say(`${role} now speaks with **${match}** (added back to your voices).`);
+      }
+      if (!voicesNeedIds(p)) {
+        // OpenRouter: voices belong to the TTS model, so any name is taken as-is.
+        if (/\s/.test(raw)) return say(`Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`);
+        await saveList([...list, { name: raw, id: raw }]);
+        await setHost(host, raw);
+        return say(`${role} now speaks with **${raw}** (added to your voices). If the TTS model doesn't know that voice, the audio overview will say so.`);
+      }
+      if (/^[A-Za-z0-9]{10,40}$/.test(raw)) {
+        await setHost(host, raw);
+        return say(`${role} now uses voice ID \`${raw}\`. Give it a name with \`/voice add <name> ${raw}\` so it autocompletes next time.`);
+      }
+      return say(`“${raw}” isn't one of your saved voices. Your voices: ${yours}. Add a new one with \`/voice add <name> <voice ID>\`.`);
+    }
+
+    const sub = /^\/voice(?:\s+(add|remove|swap)\b)?(?:\s+([\s\S]*))?$/i.exec(text);
+    const action = sub?.[1]?.toLowerCase();
+    const arg = (sub?.[2] ?? "").trim();
+    if (!action) {
+      return say(
+        `Host: ${label(now.Alex)} · Co-Host: ${label(now.Sam)} — ${providerLabel}.\n\nYour voices: ${yours}.\n\nSwitch with \`/voicehost <name>\` or \`/voicecohost <name>\`, trade them with \`/voice swap\`, and edit the list with \`/voice add\` / \`/voice remove\`.`
+      );
+    }
+    if (action === "swap") {
+      await patchSettings({ ttsVoiceAlex: now.Sam, ttsVoiceSam: now.Alex });
+      setHostVoices({ Alex: now.Sam, Sam: now.Alex });
+      onSettingsChanged();
+      return say(`Swapped — Host: ${label(now.Sam)} · Co-Host: ${label(now.Alex)}.`);
+    }
+    if (action === "remove") {
+      const name = stripOuterQuotes(arg);
+      if (!name) return say(`Which voice? e.g. \`/voice remove ${list[0]?.name ?? "Rachel"}\`. Your voices: ${yours}.`);
+      const hit = findVoice(list, name);
+      if (!hit) return say(`“${name}” isn't in your ${providerLabel} voices. Your voices: ${yours}.`);
+      await saveList(list.filter((v) => v !== hit));
+      const using = (Object.keys(now) as Host[]).filter((h) => now[h] === hit.id);
+      return say(
+        using.length
+          ? `Removed **${hit.name}** from your voices. The ${using.map((h) => (h === "Alex" ? "Host" : "Co-Host")).join(" and ")} keeps using it until you switch.`
+          : `Removed **${hit.name}** from your voices.`
+      );
+    }
+    // add
+    if (builtIn) {
+      const name = stripOuterQuotes(arg);
+      const match = builtIn.find((v) => v.toLowerCase() === name.toLowerCase());
+      if (!match) return say(`${name ? `${providerLabel} has no voice “${name}”. ` : ""}${providerLabel} voices: ${builtIn.join(", ")} — e.g. \`/voice add coral\`.`);
+      if (findVoice(list, match)) return say(`**${match}** is already in your voices. Use it with \`/voicehost ${match}\`.`);
+      await saveList([...list, { name: match, id: match }]);
+      return say(`Added **${match}** to your voices. Use it with \`/voicehost ${match}\` or \`/voicecohost ${match}\`.`);
+    }
+    if (!voicesNeedIds(p)) {
+      // OpenRouter: the voice's own name is what the model expects.
+      const name = stripOuterQuotes(arg);
+      if (!name || /\s/.test(name))
+        return say("Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page.");
+      if (findVoice(list, name)) return say(`**${name}** is already in your voices. Use it with \`/voicehost ${name}\`.`);
+      await saveList([...list, { name, id: name }]);
+      return say(`Added **${name}** to your OpenRouter voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
+    }
+    // ElevenLabs: a name (quote it if it has spaces) then the voice ID.
+    const parsed = /^(?:"([^"]+)"|(.+?))\s+(\S+)$/.exec(arg);
+    const name = (parsed?.[1] ?? parsed?.[2] ?? "").trim();
+    const id = parsed?.[3] ?? "";
+    if (!name || !id)
+      return say("Give the voice a name and its ElevenLabs voice ID, e.g. `/voice add Rachel 21m00Tcm4TlvDq8ikWAM` (quote names with spaces). The ID is on the voice's page at elevenlabs.io.");
+    if (list.some((v) => v.name.toLowerCase() === name.toLowerCase()))
+      return say(`You already have a voice named **${name}**. Remove it first with \`/voice remove ${name}\`.`);
+    await saveList([...list, { name, id }]);
+    await say(`Added **${name}** (\`${id}\`) to your ElevenLabs voices. Use it with \`/voicehost ${name.includes(" ") ? `"${name}"` : name}\`.`);
   };
 
   /* ----------------------------- /theme command ----------------------------- */
@@ -1339,9 +1824,13 @@ export default function ChatPanel({
       return;
     }
 
-    // /model is a local app command — swap the model, no LLM call.
-    if (/^\/model(\s|$)/i.test(text)) {
-      await runModelCommand(text);
+    // Model and voice pickers are local app commands — no LLM call.
+    const pickerCmd = /^\/(model|imagemodel|researchmodel|voice|voicehost|voicecohost)(?=\s|$)/i.exec(text)?.[1].toLowerCase();
+    if (pickerCmd) {
+      if (pickerCmd === "imagemodel") await runImageModelCommand(text);
+      else if (pickerCmd === "researchmodel") await runResearchModelCommand(text);
+      else if (pickerCmd.startsWith("voice")) await runVoiceCommand(text);
+      else await runModelCommand(text);
       onChatActivity?.(chatId, isFirst ? text : undefined);
       textareaRef.current?.focus();
       return;
@@ -1358,6 +1847,27 @@ export default function ChatPanel({
         notebookStarred
           ? `Un-starred “${notebookTitle}”.`
           : `Starred “${notebookTitle}” — it's pinned near the top of the homepage.`
+      );
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /details [on|off] — show/hide the usage line under AI replies (app-wide).
+    if (/^\/details(\s|$)/i.test(text)) {
+      const arg = text.replace(/^\/details\s*/i, "").trim().toLowerCase();
+      const next = arg === "on" ? true : arg === "off" ? false : !showDetails;
+      await setSetting("showDetails", next ? "1" : "0");
+      setShowDetails(next);
+      onSettingsChanged();
+      const replyMsg = await addMessage(
+        chatId,
+        notebookId,
+        "assistant",
+        next
+          ? "Response details **on**: token counts and cost show under each AI reply. (`/details` toggles this.)"
+          : "Response details **off**: replies show just the answer. (`/details` toggles this.)"
       );
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, isFirst ? text : undefined);
@@ -1581,7 +2091,7 @@ export default function ChatPanel({
         if (groundedNow) {
           try {
             await ensureIndexed(sources, settings);
-            const ranked = await rankChunks(sources, query, settings, MAX_TOTAL_CONTEXT);
+            const ranked = await rankChunks(sources, query, settings, contextBudget(settings).sources);
             if (ranked.length > 0) retrieved = ranked;
           } catch {
             /* search proceeds without notebook context */
@@ -1590,7 +2100,7 @@ export default function ChatPanel({
         const { text: answer, hits } = await webAnswer({
           query,
           settings,
-          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow }),
+          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow, budget: contextBudget(settings) }),
           signal: ctrl.signal,
         });
         if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -1712,7 +2222,7 @@ export default function ChatPanel({
     if (groundedNow) {
       try {
         await ensureIndexed(sources, settings);
-        const ranked = await rankChunks(sources, text, settings, MAX_TOTAL_CONTEXT);
+        const ranked = await rankChunks(sources, text, settings, contextBudget(settings).sources);
         const mentionedIds = new Set(
           mentioned.filter((m) => m.group === "source").map((m) => m.id)
         );
@@ -1724,8 +2234,8 @@ export default function ChatPanel({
     }
 
     const llmMessages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow }) },
-      ...selectChatHistory(history).map((m, i, arr) => ({
+      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow, budget: contextBudget(settings) }) },
+      ...selectChatHistory(history, contextBudget(settings).history).map((m, i, arr) => ({
         role: m.role,
         // Image embeds in past turns stay on screen but leave the context
         // (multi-hundred-KB base64 re-sent per turn = silent token burn).
@@ -1763,7 +2273,14 @@ export default function ChatPanel({
         ? await storeGeneratedImages(acc, { notebookId, chatId, prompt: text, model: settings.model })
         : acc;
       const assistantMsg = await addMessage(chatId, notebookId, "assistant", savedText || "(no response)");
-      if (usage) setUsageByMsg((prev) => ({ ...prev, [assistantMsg.id]: usage as StreamUsage }));
+      if (usage) {
+        const u: StreamUsage = usage;
+        const cost = replyCostUsd(settings.provider, settings.model, u);
+        setUsageByMsg((prev) => ({
+          ...prev,
+          [assistantMsg.id]: { ...u, costUsd: cost?.usd, estimated: cost?.estimated },
+        }));
+      }
       setMsgs((prev) => [...prev, assistantMsg]);
     } catch (e) {
       if (!(isAbortError(e) || ctrl.signal.aborted)) {
@@ -1905,7 +2422,8 @@ export default function ChatPanel({
     >
       {/* chat background: object-cover re-crops on any zoom/resize; scrim keeps text legible */}
       {chatBg && (
-        <div className="absolute inset-0" aria-hidden>
+        // Own compositing layer: messages scroll over it without repainting the photo.
+        <div className="absolute inset-0 transform-gpu" aria-hidden>
           <img src={chatBg} alt="" className="h-full w-full object-cover" />
           <div className="absolute inset-0 bg-canvas" style={{ opacity: dimDraft / 100 }} />
         </div>
@@ -1930,19 +2448,9 @@ export default function ChatPanel({
               onClick={onOpenSettings}
               className="mr-1 flex items-center gap-1.5 rounded-full border border-warn-edge bg-warn-bg px-2.5 py-1 text-[11.5px] font-medium text-warn transition-colors hover:opacity-80"
             >
-              <Settings2 size={11} /> Add API key
+              <Settings2 size={11} /> {settings.provider === "local" ? "Set up local server" : "Add API key"}
             </button>
           )}
-          <IconButton
-            onClick={async () => {
-              if (!chatId) return;
-              await clearMessages(chatId);
-              setMsgs([]);
-            }}
-            label="Clear chat"
-          >
-            <Trash2 size={14} strokeWidth={1.8} />
-          </IconButton>
           {/* chat background */}
           <div className="relative">
             <IconButton
@@ -2014,11 +2522,11 @@ export default function ChatPanel({
       </div>
 
       {/* messages */}
-      <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="@container relative z-10 flex-1 overflow-y-auto">
         {messages.length === 0 && streaming === null ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-accent">
-              <BrewIcon size={18} strokeWidth={1.8} onAccent className="text-accent-ink" />
+              <BrewIcon size={18} strokeWidth={1.8} className="text-accent-ink" />
             </div>
             <p className="max-w-md text-[15px] font-medium italic leading-relaxed text-ink-2">
               {`“${emptyQuote.text}”`}
@@ -2035,17 +2543,27 @@ export default function ChatPanel({
                 role={m.role}
                 content={m.content}
                 items={catalog}
-                usage={usageByMsg[m.id]}
+                usage={showDetails ? usageByMsg[m.id] : undefined}
                 onImageAction={streaming === null ? onImageAction : undefined}
+                savedToSources={savedTexts.has(m.content)}
+                onSaveToSources={
+                  m.role === "assistant" && m.content.trim()
+                    ? () => onAddNote(m.content, replySourceTitle(m.content)).then(() => {})
+                    : undefined
+                }
               />
             ))}
             {streaming !== null && (
-              <div className="anim-fade-up mb-5 flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed">
+              <div
+                className={`anim-fade-up mb-5 flex justify-start ${streamingHtml.includes("<table") ? WIDE_REPLY : ""}`}
+              >
+                <div
+                  className={`${streamingHtml.includes("<table") ? "w-full" : "max-w-[85%]"} min-w-0 rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed`}
+                >
                   {streaming ? (
                     <div
                       className="md"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }}
+                      dangerouslySetInnerHTML={{ __html: streamingHtml }}
                     />
                   ) : (
                     <BrewingStatus />
@@ -2162,9 +2680,23 @@ export default function ChatPanel({
                       i === modelActiveIdx ? "bg-hover" : ""
                     }`}
                   >
-                    <Settings2 size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{m}</span>
-                    {model === m && (
+                    {(() => {
+                      const Icon =
+                        modelQuery.kind === "image"
+                          ? Image
+                          : modelQuery.kind === "research"
+                            ? Telescope
+                            : modelQuery.kind === "chat"
+                              ? Settings2
+                              : AudioLines;
+                      return <Icon size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />;
+                    })()}
+                    <span
+                      className={`min-w-0 flex-1 truncate text-[12.5px] ${modelQuery.kind.startsWith("voice") ? "" : "font-mono"}`}
+                    >
+                      {m}
+                    </span>
+                    {!modelQuery.remove && pickerCurrent(modelQuery.kind, m) && (
                       <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
                         current
                       </span>
@@ -2173,7 +2705,11 @@ export default function ChatPanel({
                 ))}
               </div>
               <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
-                ↑↓ navigate · Enter to pick · Esc to dismiss · a new id is added to your list
+                {modelQuery.remove
+                  ? `↑↓ navigate · Enter to pick the ${modelQuery.kind === "voice" ? "voice" : "model"} to remove · Esc to dismiss`
+                  : modelQuery.kind.startsWith("voice")
+                    ? "↑↓ navigate · Enter to pick · Esc to dismiss · /voice swap · /voice add <name> · /voice remove <name>"
+                    : `↑↓ navigate · Enter to pick · Esc to dismiss · ${PICKER_CMD[modelQuery.kind]} add <id> · ${PICKER_CMD[modelQuery.kind]} remove <id>`}
               </p>
             </div>
           )}
@@ -2389,7 +2925,7 @@ export default function ChatPanel({
                   setFontQuery({ query: ft, active: 0 });
                   setMention(null);
                 } else if (md !== null) {
-                  setModelQuery({ query: md, active: 0 });
+                  setModelQuery({ query: md.query, active: 0, remove: md.remove, kind: md.kind });
                   setMention(null);
                 } else {
                   const hit = detectMention(e.target.value, e.target.selectionStart);
@@ -2575,7 +3111,7 @@ export default function ChatPanel({
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
-            {model} · via {settings.provider === "openrouter" ? "OpenRouter" : settings.provider}
+            {model} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}
@@ -2586,10 +3122,34 @@ export default function ChatPanel({
   );
 }
 
+/** Usage line data: token counts plus the reply's cost (estimated = price table). */
+type ReplyUsage = StreamUsage & { estimated?: boolean };
+
 /** Token counts rendered compactly: 1234 → "1.2k". */
 function fmtTokens(n: number | undefined): string | null {
   if (!n) return null;
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+}
+
+/**
+ * A reply holding a table is centred on the chat column but may grow past it,
+ * up to 60rem or the panel's width (minus its side padding), whichever is less.
+ */
+const WIDE_REPLY = "relative left-1/2 w-[min(60rem,calc(100cqw-2.5rem))] -translate-x-1/2";
+
+/** Source title for a saved reply: its first heading or line, markdown stripped. */
+function replySourceTitle(content: string): string {
+  const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
+  const line = lines.find((l) => /^#{1,6}\s/.test(l)) ?? lines[0] ?? "";
+  const flat = line
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^(#{1,6}|[-*+>]|\d+\.)\s+/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!flat) return "Chat reply";
+  return flat.length > 60 ? flat.slice(0, 60).trimEnd() + "…" : flat;
 }
 
 function Bubble({
@@ -2598,14 +3158,21 @@ function Bubble({
   items,
   usage,
   onImageAction,
+  savedToSources,
+  onSaveToSources,
 }: {
   role: "user" | "assistant";
   content: string;
   items: MentionItem[];
-  usage?: StreamUsage;
+  usage?: ReplyUsage;
   /** Edit / Remix / More like this on a library picture (absent while busy). */
   onImageAction?: (action: string, id: string, alt: string) => void;
+  /** This reply's text is already a source in the notebook. */
+  savedToSources?: boolean;
+  /** Save this reply as a text source (assistant replies only). */
+  onSaveToSources?: () => Promise<void>;
 }) {
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "error">("idle");
   const segments = useMemo(
     () => (role === "user" ? segmentMentions(content, items) : []),
     [role, content, items]
@@ -2646,9 +3213,23 @@ function Bubble({
       </div>
     );
   }
+  const hasTable = html.includes("<table");
+  const save = async () => {
+    if (!onSaveToSources || savedToSources || saveState === "saving") return;
+    setSaveState("saving");
+    try {
+      await onSaveToSources();
+      setSaveState("idle");
+    } catch {
+      setSaveState("error");
+    }
+  };
   return (
-    <div className="anim-fade-up mb-5 flex justify-start">
-      <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed">
+    <div className={`anim-fade-up group mb-5 flex flex-col items-start ${hasTable ? WIDE_REPLY : ""}`}>
+      {/* Tables spread past the chat column; other replies keep the 85% bubble. */}
+      <div
+        className={`${hasTable ? "w-full" : "max-w-[85%]"} min-w-0 rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed`}
+      >
         <div
           className={`md${onImageAction ? "" : " img-actions-off"}`}
           dangerouslySetInnerHTML={{ __html: html }}
@@ -2666,12 +3247,43 @@ function Bubble({
               fmtTokens(usage.input) && `${fmtTokens(usage.input)} in`,
               fmtTokens(usage.output) && `${fmtTokens(usage.output)} out`,
               fmtTokens(usage.cachedRead) && `${fmtTokens(usage.cachedRead)} cache hit`,
+              usage.costUsd != null && `${usage.estimated ? "~" : ""}${fmtReplyCost(usage.costUsd)}`,
             ]
               .filter(Boolean)
               .join(" · ")}
           </div>
         )}
       </div>
+      {onSaveToSources && (
+        <button
+          onClick={save}
+          disabled={savedToSources || saveState === "saving"}
+          title={
+            savedToSources
+              ? "Saved in your Sources"
+              : saveState === "error"
+                ? "Couldn't save — click to try again"
+                : "Save this reply to Sources"
+          }
+          aria-label={savedToSources ? "Saved to Sources" : "Save to Sources"}
+          className={`mt-1 ml-1 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-all ${
+            savedToSources
+              ? "text-ok"
+              : saveState === "error"
+                ? "text-danger"
+                : "text-ink-3 opacity-0 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+          }`}
+        >
+          {savedToSources ? (
+            <Check size={12} strokeWidth={2.2} />
+          ) : saveState === "saving" ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <FilePlus2 size={12} strokeWidth={1.8} />
+          )}
+          {savedToSources ? "Saved to Sources" : saveState === "error" ? "Couldn't save" : "Save to Sources"}
+        </button>
+      )}
     </div>
   );
 }

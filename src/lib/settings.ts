@@ -1,5 +1,7 @@
 import { getSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
+import { isImageApiModel, listImageModels } from "./imageApi";
+import { isEmbeddingModel, listLocalModels } from "./local";
 import { DEFAULT_THEME, THEMES } from "./themes";
 import type {
   Amount,
@@ -17,6 +19,8 @@ const DEFAULT_MODELS: Record<Provider, string> = {
   openrouter: "openai/gpt-4o-mini",
   openai: "gpt-4o-mini",
   anthropic: "claude-haiku-4-5-20251001",
+  // Local servers name models whatever the user pulled; picked after connecting.
+  local: "",
 };
 
 export const MODEL_PRESETS: Record<Provider, string[]> = {
@@ -35,6 +39,15 @@ export const MODEL_PRESETS: Record<Provider, string[]> = {
     "claude-sonnet-4-5-20250929",
     "claude-opus-4-1-20250805",
   ],
+  local: [],
+};
+
+/** Suggestions for Settings → Research model, per provider (any chat model id works). */
+export const RESEARCH_MODEL_PRESETS: Record<Provider, string[]> = {
+  openrouter: ["anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "openai/gpt-4o"],
+  openai: ["gpt-4.1", "o4-mini"],
+  anthropic: ["claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"],
+  local: [],
 };
 
 /** Default /image model: cheap (~$0.03/image) and supports aspect ratios. */
@@ -55,7 +68,19 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
+  local: "Local",
 };
+
+/** One-click server addresses for the popular local runners (all OpenAI-compatible). */
+export const LOCAL_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "ollama", label: "Ollama", url: "http://localhost:11434/v1" },
+  { id: "lmstudio", label: "LM Studio", url: "http://localhost:1234/v1" },
+  { id: "llamacpp", label: "llama.cpp", url: "http://localhost:8080/v1" },
+];
+
+/** Context-window choices for local models, in tokens. */
+export const LOCAL_CONTEXT_OPTIONS = [4096, 8192, 16384, 32768, 131072];
+const DEFAULT_LOCAL_CONTEXT = 8192;
 
 export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   system: "System voices",
@@ -72,16 +97,20 @@ export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> 
 
 export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]> = {
   openai: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
-  // OpenRouter only routes OpenAI's audio models for audio output.
-  openrouter: ["openai/gpt-audio-mini", "openai/gpt-audio"],
+  // Any OpenRouter speech model works; gpt-audio models go through chat completions.
+  openrouter: ["openai/gpt-audio-mini", "openai/gpt-audio", "mistralai/voxtral-mini-tts-3-0"],
   elevenlabs: ["eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"],
 };
 
 export const OPENAI_TTS_VOICES = [
   "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse",
+  "marin", "cedar",
 ];
 
-/** gpt-audio voices (the only audio-output models OpenRouter routes). */
+/**
+ * Starter voices for OpenRouter: gpt-audio's. Other OpenRouter speech models
+ * name their own voices (e.g. voice_3150 for Voxtral TTS 3), so any name is accepted.
+ */
 export const OPENROUTER_TTS_VOICES = OPENAI_TTS_VOICES;
 
 /** A few ElevenLabs premade voices so users don't have to hunt IDs down. */
@@ -140,6 +169,10 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   openrouterKey: (s) => s.openrouterKey,
   openaiKey: (s) => s.openaiKey,
   anthropicKey: (s) => s.anthropicKey,
+  localBaseUrl: (s) => s.localBaseUrl,
+  localKey: (s) => s.localKey,
+  localEmbedModel: (s) => s.localEmbedModel,
+  localContext: (s) => String(s.localContext),
   model: (s) => s.model,
   theme: (s) => s.theme,
   font: (s) => s.font,
@@ -153,6 +186,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   ttsInstructions: (s) => s.ttsInstructions,
   temperature: (s) => (s.temperature == null ? "" : String(s.temperature)),
   imageModel: (s) => s.imageModel,
+  researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
   defFlashcardsAmount: (s) => s.defFlashcardsAmount,
   defFlashcardsDifficulty: (s) => s.defFlashcardsDifficulty,
   defQuizAmount: (s) => s.defQuizAmount,
@@ -163,16 +197,20 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   defReportType: (s) => s.defReportType,
   trashRetentionDays: (s) => String(s.trashRetentionDays),
   updateCheckOnLaunch: (s) => (s.updateCheckOnLaunch ? "1" : "0"),
+  smoothScroll: (s) => (s.smoothScroll ? "1" : "0"),
+  showDetails: (s) => (s.showDetails ? "1" : "0"),
 };
 
 export async function loadSettings(): Promise<Settings> {
-  const provider = ((await getSetting("provider")) || "openrouter") as Provider;
+  const rawProvider = await getSetting("provider");
+  const provider = (Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, rawProvider) ? rawProvider : "openrouter") as Provider;
   const [
     openrouterKey, openaiKey, anthropicKey, model, theme, font,
     ttsProvider, openaiTtsKey, openrouterTtsKey, elevenlabsKey, ttsModel, ttsVoiceAlex, ttsVoiceSam, ttsInstructions,
     temperature, defFlashcardsAmount, defFlashcardsDifficulty,
     defQuizAmount, defQuizDifficulty, defAudioMode, defAudioFormat, defAudioLength,
-    defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel,
+    defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
+    localBaseUrl, localKey, localEmbedModel, localContext, researchModels,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -200,6 +238,13 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("trashRetentionDays"),
     getSetting("updateCheckOnLaunch"),
     getSetting("imageModel"),
+    getSetting("smoothScroll"),
+    getSetting("showDetails"),
+    getSetting("localBaseUrl"),
+    getSetting("localKey"),
+    getSetting("localEmbedModel"),
+    getSetting("localContext"),
+    getSetting("researchModels"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -233,6 +278,8 @@ export async function loadSettings(): Promise<Settings> {
   const safeTemp = Number.isFinite(parsedTemp)
     ? Math.min(1, Math.max(0, parsedTemp))
     : DEFAULT_BEHAVIOR.temperature;
+  const parsedContext = Number.parseInt(localContext, 10);
+  const safeContext = Number.isFinite(parsedContext) && parsedContext >= 2048 ? parsedContext : DEFAULT_LOCAL_CONTEXT;
   const parsedRetention = Number.parseInt(trashRetentionDays, 10);
   const safeRetention = [0, 7, 30, 90].includes(parsedRetention)
     ? parsedRetention
@@ -242,6 +289,10 @@ export async function loadSettings(): Promise<Settings> {
     openrouterKey,
     openaiKey,
     anthropicKey,
+    localBaseUrl,
+    localKey,
+    localEmbedModel,
+    localContext: safeContext,
     model: safeModel,
     theme: safeTheme,
     font: safeFont,
@@ -255,6 +306,7 @@ export async function loadSettings(): Promise<Settings> {
     ttsInstructions: ttsInstructions || DEFAULT_TTS.ttsInstructions,
     temperature: safeTemp,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
+    researchModels: parseResearchModels(researchModels),
     defFlashcardsAmount: pick(defFlashcardsAmount, AMOUNTS, DEFAULT_BEHAVIOR.defFlashcardsAmount),
     defFlashcardsDifficulty: pick(defFlashcardsDifficulty, DIFFICULTIES, DEFAULT_BEHAVIOR.defFlashcardsDifficulty),
     defQuizAmount: pick(defQuizAmount, AMOUNTS, DEFAULT_BEHAVIOR.defQuizAmount),
@@ -266,7 +318,28 @@ export async function loadSettings(): Promise<Settings> {
     trashRetentionDays: safeRetention,
     // Missing key (fresh install / older build) → on.
     updateCheckOnLaunch: updateCheckOnLaunch !== "0",
+    smoothScroll: smoothScroll !== "0",
+    showDetails: showDetails !== "0",
   };
+}
+
+/** Stored JSON {provider: id} → only string entries for known providers. */
+function parseResearchModels(raw: string): Partial<Record<Provider, string>> {
+  const out: Partial<Record<Provider, string>> = {};
+  try {
+    const parsed = raw ? JSON.parse(raw) : {};
+    for (const p of Object.keys(PROVIDER_LABELS) as Provider[]) {
+      if (typeof parsed?.[p] === "string" && parsed[p].trim()) out[p] = parsed[p].trim();
+    }
+  } catch {
+    /* corrupt value → every provider falls back to its main model */
+  }
+  return out;
+}
+
+/** The model /research and /search run on: the provider's research pick, else the main model. */
+export function researchModelFor(s: Settings): string {
+  return s.researchModels?.[s.provider]?.trim() || s.model;
 }
 
 export async function saveSettings(s: Settings): Promise<void> {
@@ -295,6 +368,10 @@ export function activeKey(s: Settings): string {
       return s.openaiKey;
     case "anthropic":
       return s.anthropicKey;
+    case "local":
+      // Local servers usually need no key: any non-empty value tells callers
+      // "configured"; the local request path sends a real key only if set.
+      return s.localBaseUrl ? s.localKey || "local" : "";
   }
 }
 
@@ -306,23 +383,208 @@ export function defaultModelFor(p: Provider): string {
 
 const CUSTOM_MODELS_KEY = (p: Provider) => `customModels.${p}`;
 
-/** The provider's chip list: defaults unless the user has customized (added/removed). */
+/** The provider's chip list: defaults unless the user has customized (added/removed).
+ *  Local: whatever the server reports right now, plus any ids the user saved. */
 export async function loadModelList(p: Provider): Promise<string[]> {
-  const raw = await getSetting(CUSTOM_MODELS_KEY(p));
-  if (!raw) return [...MODEL_PRESETS[p]];
+  if (p === "local") {
+    const [saved, served] = await Promise.all([loadSavedModels(p), listLocalModels().catch(() => [])]);
+    return [...new Set([...served.filter((m) => !isEmbeddingModel(m)), ...saved])];
+  }
+  return loadSavedModels(p);
+}
+
+function loadSavedModels(p: Provider): Promise<string[]> {
+  return loadList(CUSTOM_MODELS_KEY(p), MODEL_PRESETS[p]);
+}
+
+export function saveModelList(p: Provider, list: string[]): Promise<void> {
+  return saveList(CUSTOM_MODELS_KEY(p), MODEL_PRESETS[p], list);
+}
+
+/** The provider's Research model list (Settings → Research model, /researchmodel add|remove). */
+export function loadResearchModelList(p: Provider): Promise<string[]> {
+  return loadList(`customModels.research.${p}`, RESEARCH_MODEL_PRESETS[p]);
+}
+
+export function saveResearchModelList(p: Provider, list: string[]): Promise<void> {
+  return saveList(`customModels.research.${p}`, RESEARCH_MODEL_PRESETS[p], list);
+}
+
+/** The TTS provider's model list (Settings → Audio Voices). */
+export function loadTtsModelList(p: VoiceProvider): Promise<string[]> {
+  return loadList(`ttsModels.${p}`, TTS_MODEL_PRESETS[p]);
+}
+
+export function saveTtsModelList(p: VoiceProvider, list: string[]): Promise<void> {
+  return saveList(`ttsModels.${p}`, TTS_MODEL_PRESETS[p], list);
+}
+
+/* --------------------------- Saved voices (/voice) --------------------------- */
+
+/** TTS providers whose voices the user picks (System voices are chosen by the OS). */
+export type VoiceProvider = Exclude<TtsProvider, "system">;
+
+/** A saved voice: a friendly name and what the provider expects (an ElevenLabs voice ID, or the OpenAI voice name). */
+export interface SavedVoice {
+  name: string;
+  id: string;
+}
+
+const VOICE_PRESETS: Record<VoiceProvider, SavedVoice[]> = {
+  openai: OPENAI_TTS_VOICES.map((v) => ({ name: v, id: v })),
+  openrouter: OPENROUTER_TTS_VOICES.map((v) => ({ name: v, id: v })),
+  elevenlabs: ELEVENLABS_VOICE_PRESETS,
+};
+
+/** The only voices a provider accepts, or null when any voice works (OpenRouter, ElevenLabs). */
+export function builtInVoices(p: VoiceProvider): string[] | null {
+  return p === "openai" ? OPENAI_TTS_VOICES : null;
+}
+
+/** ElevenLabs voices are opaque IDs, so they get a separate friendly name; others are named by their voice value. */
+export function voicesNeedIds(p: VoiceProvider): boolean {
+  return p === "elevenlabs";
+}
+
+export async function loadVoiceList(p: VoiceProvider): Promise<SavedVoice[]> {
+  const raw = await getSetting(`voices.${p}`);
+  if (!raw) return [...VOICE_PRESETS[p]];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed))
+      return parsed.filter(
+        (v): v is SavedVoice => typeof v?.name === "string" && typeof v?.id === "string"
+      );
+  } catch {
+    /* fall through to defaults */
+  }
+  return [...VOICE_PRESETS[p]];
+}
+
+export async function saveVoiceList(p: VoiceProvider, list: SavedVoice[]): Promise<void> {
+  const presets = VOICE_PRESETS[p];
+  const isDefault =
+    list.length === presets.length &&
+    list.every((v, i) => v.name === presets[i].name && v.id === presets[i].id);
+  await setSetting(`voices.${p}`, isDefault ? "" : JSON.stringify(list));
+}
+
+/** OpenAI / OpenRouter voices used when a host's voice is left empty. */
+export const DEFAULT_HOST_VOICES = { Alex: "nova", Sam: "onyx" } as const;
+
+export type Host = keyof typeof DEFAULT_HOST_VOICES;
+
+/**
+ * The voice a host actually speaks with on the selected TTS provider ("" = none set).
+ * Voices are stored once for all providers, so a value left over from the other
+ * kind (an OpenAI name on ElevenLabs, or an ElevenLabs ID on OpenAI) is ignored.
+ */
+export function hostVoice(s: Settings, host: Host): string {
+  const v = (host === "Alex" ? s.ttsVoiceAlex : s.ttsVoiceSam).trim();
+  if (s.ttsProvider === "system") return v;
+  if (s.ttsProvider === "elevenlabs") return OPENAI_TTS_VOICES.includes(v.toLowerCase()) ? "" : v;
+  // ElevenLabs IDs are 20 mixed-case letters/digits; OpenAI voices are lowercase words.
+  const looksLikeElevenLabsId = /^[A-Za-z0-9]{20}$/.test(v) && /[A-Z0-9]/.test(v);
+  return v && !looksLikeElevenLabsId ? v : DEFAULT_HOST_VOICES[host];
+}
+
+/** Find a saved voice by name or ID, ignoring case. */
+export function findVoice(list: SavedVoice[], query: string): SavedVoice | undefined {
+  const q = query.trim().toLowerCase();
+  return list.find((v) => v.name.toLowerCase() === q) ?? list.find((v) => v.id.toLowerCase() === q);
+}
+
+/** Display name for a stored voice value: its saved name, else the raw value. */
+export function voiceLabel(list: SavedVoice[], id: string): string {
+  return list.find((v) => v.id === id)?.name ?? id;
+}
+
+const IMAGE_MODELS_KEY = "customModels.image";
+
+/** The /image model list (Settings → Image model, /imagemodel add|remove). */
+export function loadImageModelList(): Promise<string[]> {
+  return loadList(IMAGE_MODELS_KEY, IMAGE_MODEL_PRESETS);
+}
+
+export function saveImageModelList(list: string[]): Promise<void> {
+  return saveList(IMAGE_MODELS_KEY, IMAGE_MODEL_PRESETS, list);
+}
+
+async function loadList(key: string, presets: string[]): Promise<string[]> {
+  const raw = await getSetting(key);
+  if (!raw) return [...presets];
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed.filter((m): m is string => typeof m === "string");
   } catch {
     /* fall through to defaults */
   }
-  return [...MODEL_PRESETS[p]];
+  return [...presets];
 }
 
-export async function saveModelList(p: Provider, list: string[]): Promise<void> {
+async function saveList(key: string, presets: string[], list: string[]): Promise<void> {
   // Storing exact parity with defaults would also be fine, but keying off "is it customized"
   // keeps fresh installs picking up new presets we ship later.
-  const isDefault =
-    list.length === MODEL_PRESETS[p].length && list.every((m, i) => m === MODEL_PRESETS[p][i]);
-  await setSetting(CUSTOM_MODELS_KEY(p), isDefault ? "" : JSON.stringify(list));
+  const isDefault = list.length === presets.length && list.every((m, i) => m === presets[i]);
+  await setSetting(key, isDefault ? "" : JSON.stringify(list));
+}
+
+/* ---------------------- /model add: OpenRouter id checks ---------------------- */
+
+/**
+ * Turn what a user pasted into a bare model id: strips quotes and an
+ * openrouter.ai model-page URL (https://openrouter.ai/anthropic/claude-haiku-5.5).
+ */
+export function normalizeModelId(raw: string): string {
+  let id = raw.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+  const url = /^(?:https?:\/\/)?(?:www\.)?openrouter\.ai\/(?:models\/)?([^?#\s]+)/i.exec(id);
+  if (url) id = url[1].split("/").slice(0, 2).join("/");
+  return id;
+}
+
+let openRouterIds: Promise<string[] | null> | null = null;
+
+/** Every chat model id OpenRouter lists (public endpoint, cached per session). */
+function loadOpenRouterIds(): Promise<string[] | null> {
+  return (openRouterIds ??= fetch("https://openrouter.ai/api/v1/models")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => (Array.isArray(j?.data) ? j.data.map((m: { id: string }) => m.id) : null))
+    .catch(() => null)
+    .then((ids) => {
+      if (!ids) openRouterIds = null; // retry next time
+      return ids;
+    }));
+}
+
+export type ModelCheck =
+  | { status: "ok" }
+  | { status: "unknown"; suggestions: string[] }
+  /** Couldn't reach OpenRouter — the id can't be verified either way. */
+  | { status: "unverified" };
+
+/** Is `id` a real OpenRouter model (chat or image)? Suggests close ids when not. */
+export async function checkOpenRouterModel(id: string): Promise<ModelCheck> {
+  const ids = await loadOpenRouterIds();
+  if (ids?.includes(id) || (await isImageApiModel(id))) return { status: "ok" };
+  if (!ids) return { status: "unverified" };
+  return { status: "unknown", suggestions: closeIds(id, ids) };
+}
+
+/** Is `id` an OpenRouter Image API model (what /image can run)? */
+export async function checkImageModel(id: string): Promise<ModelCheck> {
+  const ids = await listImageModels();
+  if (ids.includes(id)) return { status: "ok" };
+  if (ids.length === 0) return { status: "unverified" };
+  return { status: "unknown", suggestions: closeIds(id, ids) };
+}
+
+/** Up to three ids sharing the most name parts with `id`. */
+function closeIds(id: string, ids: string[]): string[] {
+  const tokens = id.toLowerCase().split(/[/:._-]+/).filter((t) => t.length >= 3);
+  return ids
+    .map((m) => ({ m, score: tokens.filter((t) => m.toLowerCase().includes(t)).length }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.m.length - b.m.length)
+    .slice(0, 3)
+    .map((x) => x.m);
 }

@@ -31,9 +31,9 @@ import {
   rankChunks,
 } from "./rag";
 import { deepResearch } from "./research";
+import { contextBudget } from "./local";
 import { activeKey, loadSettings } from "./settings";
 import {
-  buildAudioPrompt,
   buildFlashcardsPrompt,
   buildMindmapPrompt,
   buildQuizPrompt,
@@ -45,7 +45,8 @@ import {
   type AudioOptions,
   type Difficulty,
 } from "./studio";
-import { parseScript, synthesizeScript } from "./tts";
+import { writeAudioScript } from "./audioScript";
+import { synthesizeScript } from "./tts";
 import { recordUsage } from "./usage";
 
 const POLL_MS = 3000;
@@ -150,7 +151,7 @@ async function runChatJob(p: {
   let retrieved: Awaited<ReturnType<typeof rankChunks>> = [];
   if (grounded) {
     await ensureIndexed(sources, settings);
-    retrieved = await rankChunks(sources, p.content, settings, 30_000);
+    retrieved = await rankChunks(sources, p.content, settings, contextBudget(settings).sources);
   }
   const reply = (
     await complete({
@@ -162,9 +163,9 @@ async function runChatJob(p: {
       messages: [
         {
           role: "system",
-          content: buildSystemPrompt(sources, [], retrieved.length ? retrieved : undefined, { grounded }),
+          content: buildSystemPrompt(sources, [], retrieved.length ? retrieved : undefined, { grounded, budget: contextBudget(settings) }),
         },
-        ...selectChatHistory(history).map((m) => ({
+        ...selectChatHistory(history, contextBudget(settings).history).map((m) => ({
           role: m.role,
           content: stripHistoryImages(m.content),
         })),
@@ -252,7 +253,8 @@ async function runGenerateJob(p: {
   const totalSourceChars = grounding
     .filter(isRetrievable)
     .reduce((sum, s) => sum + sourceText(s).length, 0);
-  const ask = async (prompt: string, opts: { exhaustive?: boolean } = {}) => {
+  /** `query` = what to retrieve from the sources (defaults to the prompt itself). */
+  const ask = async (prompt: string, opts: { exhaustive?: boolean; query?: string } = {}) => {
     // Huge notebooks: cached whole-notebook condensation so every tool covers
     // ALL sources (the expensive pass is computed once, then shared).
     if (opts.exhaustive && totalSourceChars > MAP_REDUCE_THRESHOLD) {
@@ -272,7 +274,7 @@ async function runGenerateJob(p: {
         ],
       });
     }
-    const retrieved = await rankChunks(grounding, prompt, settings, 30_000);
+    const retrieved = await rankChunks(grounding, opts.query ?? prompt, settings, contextBudget(settings).sources);
     return complete({
       provider: settings.provider,
       apiKey: key,
@@ -283,7 +285,7 @@ async function runGenerateJob(p: {
       messages: [
         {
           role: "system",
-          content: buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined),
+          content: buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined, { budget: contextBudget(settings) }),
         },
         { role: "user", content: prompt },
       ],
@@ -338,7 +340,6 @@ async function runGenerateJob(p: {
       break;
     }
     case "audio": {
-      void setJobProgress("Drafting script…");
       const opts: AudioOptions = {
         format: o.format,
         length: o.length,
@@ -346,8 +347,11 @@ async function runGenerateJob(p: {
         sourceIds: [],
         description: o.focus,
       };
-      const raw = await ask(buildAudioPrompt(opts), { exhaustive: true });
-      const turns = parseScript(raw);
+      const turns = await writeAudioScript(
+        opts,
+        (prompt, focus) => ask(prompt, { exhaustive: true, query: focus }),
+        (phase) => void setJobProgress(phase)
+      );
       if (turns.length < 4) throw new Error("Couldn't produce a usable script — try again.");
       let audio: string | null = null;
       let note: string | undefined;
