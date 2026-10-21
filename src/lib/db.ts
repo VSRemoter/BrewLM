@@ -811,6 +811,13 @@ export async function deleteChat(id: string): Promise<void> {
 
 /* ------------------------------ Artifacts ------------------------------ */
 
+/** One artifact as currently saved (null if it was deleted). */
+export async function getArtifact(id: string): Promise<Artifact | null> {
+  const d = await getDb();
+  const rows = await d.select<Artifact[]>("SELECT * FROM artifacts WHERE id = $1", [id]);
+  return rows[0] ?? null;
+}
+
 export async function listArtifacts(notebookId: string): Promise<Artifact[]> {
   const d = await getDb();
   return d.select<Artifact[]>(

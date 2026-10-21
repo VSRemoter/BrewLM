@@ -6,6 +6,7 @@ import {
   Loader2,
   Network,
   Pencil,
+  PenLine,
   Pin,
   SlidersHorizontal,
   StickyNote,
@@ -46,6 +47,8 @@ import { writeAudioScript } from "../lib/audioScript";
 import { parseScript, scriptLine, synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
+import DrawingView from "./DrawingView";
+import { isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
@@ -99,6 +102,7 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
   report: FileText,
   audio: AudioLines,
   research: Telescope,
+  drawing: PenLine,
 };
 
 /* ---------------------------------- Audio --------------------------------- */
@@ -137,6 +141,8 @@ const StudioPanel = forwardRef<
   const jobs = useStudioJobs(notebookId);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
+  /** The drawing open in the sketchpad. */
+  const [drawing, setDrawing] = useState<Artifact | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
@@ -525,6 +531,7 @@ const StudioPanel = forwardRef<
       "Return ONLY the revised markdown report — no preface, no commentary.",
     research:
       "Return ONLY the revised markdown report — no preface, no commentary. Keep the existing citation style (sources by title/url).",
+    drawing: "", // drawings aren't revised by the AI
     audio: `Respond with the revised script only: one turn per line, exactly "Host: <line>" or "Co-Host: <line>", alternating and starting with the Host, about as long as the current script unless the instruction says otherwise. The hosts never call each other by name. Spoken language only: no markdown, no emojis, no stage directions.`,
   };
 
@@ -749,7 +756,15 @@ const StudioPanel = forwardRef<
 
   const viewArtifact = (a: Artifact) => {
     // kind-specific data already stored; reopen latest copy from props
-    setViewing(a);
+    if (a.kind === "drawing") setDrawing(a);
+    else setViewing(a);
+  };
+
+  /** Drawings: name it, save an empty canvas, open the sketchpad. */
+  const newDrawing = async (title: string) => {
+    const a = await addArtifact(notebookId, "drawing", title.trim() || "Drawing", JSON.stringify({ elements: [], files: {} }));
+    onArtifactsChanged();
+    setDrawing(a);
   };
 
   return (
@@ -832,6 +847,20 @@ const StudioPanel = forwardRef<
               Study guide, summary, FAQ…
             </span>
           </div>
+          {/* Drawings — the user's own sketchpad; never sent to the AI */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) });
+            }}
+            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
+          >
+            <PenLine size={16} strokeWidth={1.8} className="text-ink" />
+            <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
+            <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
+          </div>
           {/* Deep research */}
           <button
             onClick={() => setResearchOpen(true)}
@@ -904,7 +933,8 @@ const StudioPanel = forwardRef<
                   } else if (a.kind === "research") {
                     const d = JSON.parse(a.data);
                     subtitle = `${d.sources?.length ?? 0} sources read`;
-                  } else subtitle = formatTime(a.created_at);
+                  } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
+                  else subtitle = formatTime(a.created_at);
                 } catch {
                   subtitle = formatTime(a.created_at);
                 }
@@ -940,14 +970,16 @@ const StudioPanel = forwardRef<
                     >
                       <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
                     </button>
-                    <button
-                      onClick={() => openRevise(a)}
-                      className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
-                      title="Revise"
-                      aria-label={`Revise ${a.title}`}
-                    >
-                      <Pencil size={12.5} />
-                    </button>
+                    {a.kind !== "drawing" && (
+                      <button
+                        onClick={() => openRevise(a)}
+                        className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
+                        title="Revise"
+                        aria-label={`Revise ${a.title}`}
+                      >
+                        <Pencil size={12.5} />
+                      </button>
+                    )}
                     <button
                       onClick={async () => {
                         await deleteArtifact(a.id);
@@ -1089,6 +1121,18 @@ const StudioPanel = forwardRef<
           onGenerate={(opts) => {
             setCustomizing(null);
             genCustomReport(opts);
+          }}
+        />
+      )}
+
+      {drawing && (
+        <DrawingView
+          key={drawing.id}
+          artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
+          dark={isDarkTheme(settings.theme)}
+          onClose={() => {
+            setDrawing(null);
+            onArtifactsChanged();
           }}
         />
       )}

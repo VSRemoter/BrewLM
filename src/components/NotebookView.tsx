@@ -214,6 +214,7 @@ export default function NotebookView({
       report: "report", reports: "report",
       research: "research",
       note: "notes", notes: "notes",
+      drawing: "drawing", drawings: "drawing",
     };
 
     if (what === "sources") {
@@ -245,7 +246,7 @@ export default function NotebookView({
     if (what === "studios") {
       const k = filter ? ARTIFACT_KINDS[filter] : undefined;
       if (filter && !k) {
-        return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, or notes.` };
+        return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, drawings, or notes.` };
       }
       const n = await deleteArtifacts(notebook.id, k);
       refreshArtifacts();

@@ -709,3 +709,11 @@ body {
 .typing-dot:nth-child(3) {
   animation-delay: 0.3s;
 }
+
+/* While a drawing is open, the audio mini player moves to the bottom centre,
+   clear of Excalidraw's corner controls (zoom/undo left, help right). */
+html[data-drawing] .mini-player {
+  right: auto;
+  left: 50%;
+  translate: -50% 0;
+}

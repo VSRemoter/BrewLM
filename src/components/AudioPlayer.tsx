@@ -307,7 +307,7 @@ function MiniPlayer() {
   if (!p.track || p.openId === p.track.id) return null;
   return (
     <div
-      className="anim-fade-up fixed bottom-4 right-4 z-[60] w-[min(380px,calc(100vw-2rem))] rounded-2xl border border-edge bg-panel px-3 py-2.5 shadow-2xl"
+      className="mini-player anim-fade-up fixed bottom-4 right-4 z-[60] w-[min(380px,calc(100vw-2rem))] rounded-2xl border border-edge bg-panel px-3 py-2.5 shadow-2xl"
       role="region"
       aria-label="Audio overview player"
     >

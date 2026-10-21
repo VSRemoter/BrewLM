@@ -86,6 +86,13 @@ export const THEMES: ThemeDef[] = [
 
 export const DEFAULT_THEME = "brew";
 
+/** True for themes with a dark canvas (decides light/dark for embedded tools like Excalidraw). */
+export function isDarkTheme(id: string): boolean {
+  const hex = (THEMES.find((t) => t.id === id) ?? THEMES[0]).swatch.canvas.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+}
+
 /** Swaps palettes instantly by flipping the root data-theme attribute. */
 export function applyTheme(id: string): void {
   document.documentElement.dataset.theme = id;

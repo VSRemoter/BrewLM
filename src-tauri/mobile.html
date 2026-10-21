@@ -624,6 +624,7 @@ async function pollJob(id, maxSeconds) {
 function renderStudioTab(pane, nb) {
   const groups = { audio: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
   for (const a of nb.artifacts) {
+    if (a.kind === 'drawing') continue; // desktop-only sketchpad
     if (a.kind === 'audio') groups.audio.push(a);
     else if (a.kind === 'flashcards') groups.flashcards.push(a);
     else if (a.kind === 'quiz') groups.quiz.push(a);

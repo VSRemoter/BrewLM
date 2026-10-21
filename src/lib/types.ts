@@ -79,7 +79,8 @@ export interface Chat {
   pinned: number;
 }
 
-export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research";
+/** "drawing" is the user's own Excalidraw sketch — never sent to the AI. */
+export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research" | "drawing";
 
 export interface Artifact {
   id: string;
