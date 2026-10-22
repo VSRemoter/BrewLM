@@ -10,7 +10,47 @@ permissions:
   contents: write
 
 jobs:
+  # Create the draft once, up front. When each build lane created it itself,
+  # lanes finishing at the same moment made duplicate drafts with the
+  # installers split between them.
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: |
+            ## Install BrewLM v__VERSION__
+
+            **macOS** — download the `universal.dmg` (works on Intel + Apple Silicon), drag BrewLM to Applications. The app is not signed with an Apple Developer ID yet, so on first launch **right-click the app → Open → Open**. If macOS says the app is "damaged", run `xattr -cr /Applications/BrewLM.app` once in Terminal.
+
+            **Windows** — the `x64-setup.exe` (recommended) or the `.msi`. SmartScreen will warn on an unsigned installer: **More info → Run anyway**.
+
+            **Linux** — the `.AppImage` (`chmod +x`, then run) or the `.deb` (Debian/Ubuntu: `sudo apt install ./BrewLM_*.deb`).
+
+            Bring your own API key — OpenRouter, OpenAI, or Anthropic — or connect a local model (Ollama, LM Studio, llama.cpp) in **Settings** on first launch. Nothing is uploaded anywhere.
+        with:
+          result-encoding: string
+          script: |
+            const { version } = require(`${process.env.GITHUB_WORKSPACE}/package.json`);
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `BrewLM v${version}`,
+              body: process.env.RELEASE_BODY.replaceAll("__VERSION__", version),
+              draft: true,
+              prerelease: false,
+            });
+            return String(data.id);
+
   build-release:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -70,18 +110,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: "BrewLM v__VERSION__"
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
-          releaseBody: |
-            ## Install BrewLM v__VERSION__
-
-            **macOS** — download the `universal.dmg` (works on Intel + Apple Silicon), drag BrewLM to Applications. The app is not signed with an Apple Developer ID yet, so on first launch **right-click the app → Open → Open**. If macOS says the app is "damaged", run `xattr -cr /Applications/BrewLM.app` once in Terminal.
-
-            **Windows** — the `x64-setup.exe` (recommended) or the `.msi`. SmartScreen will warn on an unsigned installer: **More info → Run anyway**.
-
-            **Linux** — the `.AppImage` (`chmod +x`, then run) or the `.deb` (Debian/Ubuntu: `sudo apt install ./BrewLM_*.deb`).
-
-            Bring your own API key — OpenRouter, OpenAI, or Anthropic — and paste it in **Settings** on first launch. Nothing is uploaded anywhere.
