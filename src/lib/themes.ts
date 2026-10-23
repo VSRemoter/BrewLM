@@ -93,9 +93,22 @@ export function isDarkTheme(id: string): boolean {
   return 0.299 * r + 0.587 * g + 0.114 * b < 128;
 }
 
-/** Swaps palettes instantly by flipping the root data-theme attribute. */
+let themeApplied = false;
+let themeFadeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Swaps palettes by flipping the root data-theme attribute. Later switches
+ * blend the colours for a moment; the first one (at launch) is instant.
+ */
 export function applyTheme(id: string): void {
-  document.documentElement.dataset.theme = id;
+  const root = document.documentElement;
+  if (themeApplied && root.dataset.theme !== id) {
+    root.classList.add("theme-fade");
+    clearTimeout(themeFadeTimer);
+    themeFadeTimer = setTimeout(() => root.classList.remove("theme-fade"), 400);
+  }
+  themeApplied = true;
+  root.dataset.theme = id;
 }
 
 /** Applies the theme *and* persists it to the settings table. */

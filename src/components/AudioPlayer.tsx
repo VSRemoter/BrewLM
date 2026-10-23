@@ -8,7 +8,7 @@
  * script with no audio file is read with the system voices line by line
  * (seeking jumps between lines).
  */
-import { Minimize2, Pause, Play, RotateCcw, RotateCw, X } from "lucide-react";
+import { Pause, Play, RotateCcw, RotateCw, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { BrewIcon } from "./BrewIcon";
@@ -325,19 +325,5 @@ function MiniPlayer() {
       </div>
       <PlayerControls compact />
     </div>
-  );
-}
-
-/** Header button for the overview modal: keeps playing in the mini player. */
-export function MinimizeButton({ onMinimize }: { onMinimize: () => void }) {
-  return (
-    <button
-      onClick={onMinimize}
-      className="rounded-md p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-      title="Minimize — keep listening while you use BrewLM"
-      aria-label="Minimize player"
-    >
-      <Minimize2 size={15} strokeWidth={1.8} />
-    </button>
   );
 }

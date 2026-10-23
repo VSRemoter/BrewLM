@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
-import { complete, extractJson, isAbortError } from "../lib/llm";
+import { complete, extractJson, isAbortError, LONG_OUTPUT_TOKENS } from "../lib/llm";
 import {
   condenseNotebook,
   condensedSystemPrompt,
@@ -126,6 +126,8 @@ const StudioPanel = forwardRef<
     onArtifactsChanged: () => void;
     onSourcesChanged?: () => void;
     onOpenSettings: () => void;
+    /** An output is open (true) or minimized (false) — the layout widens the panel for reading. */
+    onReadingChange?: (reading: boolean) => void;
   }
 >(function StudioPanel({
   notebookId,
@@ -136,11 +138,15 @@ const StudioPanel = forwardRef<
   onArtifactsChanged,
   onSourcesChanged,
   onOpenSettings,
+  onReadingChange,
 }, ref) {
   /** This notebook's generations in flight — several can run at once. */
   const jobs = useStudioJobs(notebookId);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
+  // Tell the layout when an output is open so it can widen the panel for reading.
+  const reading = viewing !== null;
+  useEffect(() => onReadingChange?.(reading), [reading, onReadingChange]);
   /** The drawing open in the sketchpad. */
   const [drawing, setDrawing] = useState<Artifact | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
@@ -267,7 +273,7 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: 4096,
+        maxTokens: LONG_OUTPUT_TOKENS,
         temperature: settings.temperature ?? undefined,
         signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -285,6 +291,8 @@ const StudioPanel = forwardRef<
           .replace(/```(?:markdown|md)?\s*\n?/g, "")
           .replace(/```$/gm, "")
           .trim();
+        if (!/^\s*[-*]\s+\S/m.test(data))
+          throw new Error("The mind map came back empty or without an outline — try again.");
       } else {
         const parsed = JSON.parse(extractJson(raw));
         if (!Array.isArray(parsed) || parsed.length === 0)
@@ -352,7 +360,7 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: 4096,
+        maxTokens: LONG_OUTPUT_TOKENS,
         temperature: settings.temperature ?? undefined,
         signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -400,7 +408,7 @@ const StudioPanel = forwardRef<
             provider: settings.provider,
             apiKey: activeKey(settings),
             model: settings.model,
-            maxTokens: 4096,
+            maxTokens: LONG_OUTPUT_TOKENS,
             temperature: settings.temperature ?? undefined,
             signal: job.signal,
             onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -570,7 +578,7 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: 4096,
+        maxTokens: LONG_OUTPUT_TOKENS,
         temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -769,234 +777,247 @@ const StudioPanel = forwardRef<
 
   return (
     <aside
-      className="flex h-full shrink-0 flex-col border-l border-edge-soft bg-panel"
+      className="anim-panel-right flex h-full shrink-0 flex-col border-l border-edge-soft bg-panel"
       style={{ width }}
     >
-      <div className="flex h-11 shrink-0 items-center border-b border-edge-soft px-3.5">
-        <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
-          Studio
-        </span>
-      </div>
+      {/* An opened output takes over the panel; Minimize brings the tools back. */}
+      {viewing ? (
+        <ArtifactView
+          key={viewing.id}
+          artifact={artifacts.find((x) => x.id === viewing.id) ?? viewing}
+          onClose={() => setViewing(null)}
+          onSourcesChanged={onSourcesChanged}
+          running={jobs.length}
+        />
+      ) : (
+        <>
+        <div className="flex h-11 shrink-0 items-center border-b border-edge-soft px-3.5">
+          <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
+            Studio
+          </span>
+        </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
-        {/* generation grid */}
-        <div className="grid grid-cols-2 gap-2">
-          {TOOLS.map((t) => (
+        <div className="flex-1 overflow-y-auto p-3">
+          {/* generation grid */}
+          <div className="stagger grid grid-cols-2 gap-2">
+            {TOOLS.map((t) => (
+              <div
+                key={t.kind}
+                role="button"
+                tabIndex={0}
+                onClick={() =>
+                  setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")
+                    setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) });
+                }}
+                className="lift group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+              >
+                {customizeIcon(t.kind as CustomizeKind, t.name)}
+                <t.icon size={16} strokeWidth={1.8} className="text-ink" />
+                <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                  {t.name}
+                  {runningSpinner(t.kind)}
+                </span>
+                <span className="text-[11px] leading-tight text-ink-3">{t.desc}</span>
+              </div>
+            ))}
+            {/* Audio overview */}
             <div
-              key={t.kind}
               role="button"
               tabIndex={0}
               onClick={() =>
-                setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) })
+                setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) })
               }
               onKeyDown={(e) => {
                 if (e.key === "Enter")
-                  setNaming({ defaultTitle: t.name, run: (title) => void generate(t, { title, prompt: oneClickPrompt(t.kind) }) });
+                  setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) });
               }}
-              className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
+              className="lift group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
             >
-              {customizeIcon(t.kind as CustomizeKind, t.name)}
-              <t.icon size={16} strokeWidth={1.8} className="text-ink" />
+              {customizeIcon("audio", "Audio overview")}
+              <AudioLines size={16} strokeWidth={1.8} className="text-ink" />
               <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
-                {t.name}
-                {runningSpinner(t.kind)}
+                Audio overview
+                {runningSpinner("audio")}
               </span>
-              <span className="text-[11px] leading-tight text-ink-3">{t.desc}</span>
+              <span className="text-[11px] leading-tight text-ink-3">
+                Podcast-style conversation
+              </span>
             </div>
-          ))}
-          {/* Audio overview */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() =>
-              setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) })
-            }
-            onKeyDown={(e) => {
-              if (e.key === "Enter")
-                setNaming({ defaultTitle: "Audio overview", run: (title) => void genAudio(oneClickAudio(), title) });
-            }}
-            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
-          >
-            {customizeIcon("audio", "Audio overview")}
-            <AudioLines size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
-              Audio overview
-              {runningSpinner("audio")}
-            </span>
-            <span className="text-[11px] leading-tight text-ink-3">
-              Podcast-style conversation
-            </span>
+            {/* Report */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setReportOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setReportOpen(true);
+              }}
+              className="lift group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+            >
+              {customizeIcon("report", "Report")}
+              <FileText size={16} strokeWidth={1.8} className="text-ink" />
+              <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                Report
+                {runningSpinner("report")}
+              </span>
+              <span className="text-[11px] leading-tight text-ink-3">
+                Study guide, summary, FAQ…
+              </span>
+            </div>
+            {/* Drawings — the user's own sketchpad; never sent to the AI */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) });
+              }}
+              className="lift group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+            >
+              <PenLine size={16} strokeWidth={1.8} className="text-ink" />
+              <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
+              <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
+            </div>
+            {/* Deep research */}
+            <button
+              onClick={() => setResearchOpen(true)}
+              className="lift col-span-2 flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+            >
+              <Telescope size={16} strokeWidth={1.8} className="text-ink" />
+              <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                Deep research
+                {runningSpinner("research")}
+              </span>
+              <span className="text-[11px] leading-tight text-ink-3">
+                Web-powered analysis with cited sources
+              </span>
+            </button>
           </div>
-          {/* Report */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setReportOpen(true)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") setReportOpen(true);
-            }}
-            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
-          >
-            {customizeIcon("report", "Report")}
-            <FileText size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
-              Report
-              {runningSpinner("report")}
-            </span>
-            <span className="text-[11px] leading-tight text-ink-3">
-              Study guide, summary, FAQ…
-            </span>
-          </div>
-          {/* Drawings — the user's own sketchpad; never sent to the AI */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") setNaming({ defaultTitle: "Drawing", run: (title) => void newDrawing(title) });
-            }}
-            className="group relative flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
-          >
-            <PenLine size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
-            <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
-          </div>
-          {/* Deep research */}
-          <button
-            onClick={() => setResearchOpen(true)}
-            className="col-span-2 flex flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left transition-all hover:border-ink-3 hover:shadow-sm"
-          >
-            <Telescope size={16} strokeWidth={1.8} className="text-ink" />
-            <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
-              Deep research
-              {runningSpinner("research")}
-            </span>
-            <span className="text-[11px] leading-tight text-ink-3">
-              Web-powered analysis with cited sources
-            </span>
-          </button>
-        </div>
 
-        {error && (
-          <p className="mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
-            {error}
-          </p>
-        )}
-
-        {/* saved artifacts */}
-        <div className="mt-5">
-          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-            Saved
-          </p>
-          {artifacts.length === 0 && jobs.length === 0 ? (
-            <p className="px-1 text-[12px] leading-relaxed text-ink-3">
-              Generated study materials will appear here.
+          {error && (
+            <p className="mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+              {error}
             </p>
-          ) : (
-            <div className="flex flex-col gap-1">
-              {/* In progress: live phase + cancel (saves nothing). */}
-              {jobs.map((j) => (
-                <div
-                  key={j.id}
-                  className="anim-fade-up flex w-full items-center gap-2.5 rounded-lg bg-hover-soft px-2 py-2"
-                  aria-busy="true"
-                >
-                  <Loader2 size={15} strokeWidth={1.8} className="shrink-0 animate-spin text-accent" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-medium">{j.title}</span>
-                    <span className="block truncate text-[11px] text-ink-3" title={j.phase}>
-                      {j.phase}
-                    </span>
-                  </span>
-                  <button
-                    onClick={() => cancelStudioJob(j.id)}
-                    className="shrink-0 rounded p-1 text-ink-3 transition-colors hover:text-danger"
-                    title="Cancel and remove"
-                    aria-label={`Cancel ${j.title}`}
-                  >
-                    <X size={13} strokeWidth={2.2} />
-                  </button>
-                </div>
-              ))}
-              {/* Pinned first; stable sort keeps the rest newest-first. */}
-              {[...artifacts].sort((x, y) => y.pinned - x.pinned).map((a) => {
-                const Icon = KIND_ICON[a.kind] ?? StickyNote;
-                let subtitle = "";
-                try {
-                  if (a.kind === "flashcards")
-                    subtitle = `${JSON.parse(a.data).length} cards`;
-                  else if (a.kind === "quiz")
-                    subtitle = `${JSON.parse(a.data).length} questions`;
-                  else if (a.kind === "audio") {
-                    const d = JSON.parse(a.data);
-                    subtitle = `${d.script?.length ?? 0} turns${d.audio ? " · mp3" : ""}`;
-                  } else if (a.kind === "research") {
-                    const d = JSON.parse(a.data);
-                    subtitle = `${d.sources?.length ?? 0} sources read`;
-                  } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
-                  else subtitle = formatTime(a.created_at);
-                } catch {
-                  subtitle = formatTime(a.created_at);
-                }
-                return (
+          )}
+
+          {/* saved artifacts */}
+          <div className="mt-5">
+            <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+              Saved
+            </p>
+            {artifacts.length === 0 && jobs.length === 0 ? (
+              <p className="px-1 text-[12px] leading-relaxed text-ink-3">
+                Generated study materials will appear here.
+              </p>
+            ) : (
+              <div className="stagger flex flex-col gap-1">
+                {/* In progress: live phase + cancel (saves nothing). */}
+                {jobs.map((j) => (
                   <div
-                    key={a.id}
-                    className="group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 transition-colors hover:bg-hover-soft"
+                    key={j.id}
+                    className="anim-fade-up flex w-full items-center gap-2.5 rounded-lg bg-hover-soft px-2 py-2"
+                    aria-busy="true"
                   >
-                    <button
-                      onClick={() => viewArtifact(a)}
-                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                    >
-                      <Icon size={15} strokeWidth={1.8} className="shrink-0 text-ink-2" />
-                      <span className="min-w-0">
-                        <span className="block truncate text-[12.5px] font-medium">
-                          {a.title}
-                        </span>
-                        <span className="block text-[11px] text-ink-3">{subtitle}</span>
+                    <Loader2 size={15} strokeWidth={1.8} className="shrink-0 animate-spin text-accent" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12.5px] font-medium">{j.title}</span>
+                      <span className="block truncate text-[11px] text-ink-3" title={j.phase}>
+                        {j.phase}
                       </span>
-                    </button>
+                    </span>
                     <button
-                      onClick={async () => {
-                        await setArtifactPinned(a.id, !a.pinned);
-                        onArtifactsChanged();
-                      }}
-                      className={`shrink-0 rounded p-1 transition-all hover:text-ink ${
-                        a.pinned
-                          ? "text-accent"
-                          : "text-ink-3 opacity-0 group-hover:opacity-100"
-                      }`}
-                      title={a.pinned ? "Unpin" : "Pin to top"}
-                      aria-label={a.pinned ? `Unpin ${a.title}` : `Pin ${a.title} to top`}
+                      onClick={() => cancelStudioJob(j.id)}
+                      className="shrink-0 rounded p-1 text-ink-3 transition-colors hover:text-danger"
+                      title="Cancel and remove"
+                      aria-label={`Cancel ${j.title}`}
                     >
-                      <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
-                    </button>
-                    {a.kind !== "drawing" && (
-                      <button
-                        onClick={() => openRevise(a)}
-                        className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
-                        title="Revise"
-                        aria-label={`Revise ${a.title}`}
-                      >
-                        <Pencil size={12.5} />
-                      </button>
-                    )}
-                    <button
-                      onClick={async () => {
-                        await deleteArtifact(a.id);
-                        onArtifactsChanged();
-                      }}
-                      className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-danger group-hover:opacity-100"
-                      title="Delete"
-                    >
-                      <Trash2 size={12.5} />
+                      <X size={13} strokeWidth={2.2} />
                     </button>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                ))}
+                {/* Pinned first; stable sort keeps the rest newest-first. */}
+                {[...artifacts].sort((x, y) => y.pinned - x.pinned).map((a) => {
+                  const Icon = KIND_ICON[a.kind] ?? StickyNote;
+                  let subtitle = "";
+                  try {
+                    if (a.kind === "flashcards")
+                      subtitle = `${JSON.parse(a.data).length} cards`;
+                    else if (a.kind === "quiz")
+                      subtitle = `${JSON.parse(a.data).length} questions`;
+                    else if (a.kind === "audio") {
+                      const d = JSON.parse(a.data);
+                      subtitle = `${d.script?.length ?? 0} turns${d.audio ? " · mp3" : ""}`;
+                    } else if (a.kind === "research") {
+                      const d = JSON.parse(a.data);
+                      subtitle = `${d.sources?.length ?? 0} sources read`;
+                    } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
+                    else subtitle = formatTime(a.created_at);
+                  } catch {
+                    subtitle = formatTime(a.created_at);
+                  }
+                  return (
+                    <div
+                      key={a.id}
+                      className="group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 transition-colors hover:bg-hover-soft"
+                    >
+                      <button
+                        onClick={() => viewArtifact(a)}
+                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      >
+                        <Icon size={15} strokeWidth={1.8} className="shrink-0 text-ink-2" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-[12.5px] font-medium">
+                            {a.title}
+                          </span>
+                          <span className="block text-[11px] text-ink-3">{subtitle}</span>
+                        </span>
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await setArtifactPinned(a.id, !a.pinned);
+                          onArtifactsChanged();
+                        }}
+                        className={`shrink-0 rounded p-1 transition-all hover:text-ink ${
+                          a.pinned
+                            ? "text-accent"
+                            : "text-ink-3 opacity-0 group-hover:opacity-100"
+                        }`}
+                        title={a.pinned ? "Unpin" : "Pin to top"}
+                        aria-label={a.pinned ? `Unpin ${a.title}` : `Pin ${a.title} to top`}
+                      >
+                        <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
+                      </button>
+                      {a.kind !== "drawing" && (
+                        <button
+                          onClick={() => openRevise(a)}
+                          className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
+                          title="Revise"
+                          aria-label={`Revise ${a.title}`}
+                        >
+                          <Pencil size={12.5} />
+                        </button>
+                      )}
+                      <button
+                        onClick={async () => {
+                          await deleteArtifact(a.id);
+                          onArtifactsChanged();
+                        }}
+                        className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-danger group-hover:opacity-100"
+                        title="Delete"
+                      >
+                        <Trash2 size={12.5} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+        </>
+      )}
 
       {reportOpen && (
         <Modal title="Create report" onClose={() => setReportOpen(false)}>
@@ -1137,14 +1158,6 @@ const StudioPanel = forwardRef<
         />
       )}
 
-      {viewing && (
-        <ArtifactView
-          key={viewing.id}
-          artifact={viewing}
-          onClose={() => setViewing(null)}
-          onSourcesChanged={onSourcesChanged}
-        />
-      )}
     </aside>
   );
 });

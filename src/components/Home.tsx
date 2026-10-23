@@ -1,7 +1,6 @@
 import {
   ArrowLeft,
   ArrowUpDown,
-  BookOpen,
   Check,
   ChevronDown,
   Download,
@@ -454,7 +453,7 @@ export default function Home({
       draggable={!selecting}
       onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}
-      className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+      className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel lift ${
         draggingId === nb.id ? "opacity-50" : ""
       } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
     >
@@ -501,6 +500,29 @@ export default function Home({
     );
   };
 
+  /** List view: the notebook's cover, or a tile with its first letter. */
+  const thumb = (cover: string, title: string, muted = false) =>
+    cover ? (
+      <img
+        src={cover}
+        alt=""
+        draggable={false}
+        className={`h-9 w-9 shrink-0 rounded-lg object-cover ${muted ? "opacity-60 grayscale" : ""}`}
+      />
+    ) : (
+      <span
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-[14px] font-semibold text-accent ${
+          muted ? "opacity-60 grayscale" : ""
+        }`}
+      >
+        {(title.trim()[0] ?? "?").toUpperCase()}
+      </span>
+    );
+
+  /** List view grid: name | details | actions (header and rows share it). */
+  const listCols =
+    "grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[minmax(0,1fr)_150px_116px] items-center gap-4";
+
   const renderRow = (nb: Notebook) => {
     const selected = selecting && selectedIds.includes(nb.id);
     return (
@@ -510,30 +532,33 @@ export default function Home({
       draggable={!selecting}
       onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}
-      className={`group flex cursor-pointer items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+      className={`group ${listCols} cursor-pointer px-4 py-2.5 transition-colors ${
         draggingId === nb.id ? "opacity-50" : ""
-      } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
+      } ${selected ? "bg-accent/10" : "hover:bg-hover-soft"}`}
     >
-      {selecting && (
-        <span
-          className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
-            selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
-          }`}
-        >
-          {selected && <Check size={10} strokeWidth={3} />}
-        </span>
-      )}
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-canvas text-ink-2">
-        <BookOpen size={14} strokeWidth={1.8} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[13.5px] font-medium tracking-tight">{nb.title}</p>
-        {nb.description && (
-          <p className="mt-0.5 truncate text-[11.5px] text-ink-3">{nb.description}</p>
+      <div className="flex min-w-0 items-center gap-3">
+        {selecting && (
+          <span
+            className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
+              selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
+            }`}
+          >
+            {selected && <Check size={10} strokeWidth={3} />}
+          </span>
         )}
+        {thumb(nb.cover, nb.title)}
+        <div className="min-w-0">
+          <p className="truncate text-[13.5px] font-medium tracking-tight">{nb.title}</p>
+          {nb.description && (
+            <p className="mt-0.5 hidden truncate text-[12px] text-ink-3 md:block">{nb.description}</p>
+          )}
+          <p className="mt-0.5 truncate text-[12px] text-ink-3 md:hidden">Edited {formatTime(nb.updated_at)}</p>
+        </div>
       </div>
-      <span className="shrink-0 text-[11.5px] text-ink-3">{formatTime(nb.updated_at)}</span>
-      {!selecting && actionCluster(nb, { star: 13.5, template: 13, pencil: 13, trash: 13.5 })}
+      <span className="hidden truncate text-[12px] text-ink-3 md:block">Edited {formatTime(nb.updated_at)}</span>
+      <span className="flex justify-end">
+        {!selecting && actionCluster(nb, { star: 13.5, template: 13, pencil: 13, trash: 13.5 })}
+      </span>
     </div>
     );
   };
@@ -549,7 +574,7 @@ export default function Home({
           exitSelect();
         }}
         {...dropZoneProps(f.id)}
-        className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
+        className={`group relative flex h-[136px] cursor-pointer flex-col overflow-hidden rounded-xl border bg-panel lift ${
           highlight ? "border-accent ring-2 ring-accent/30" : "border-edge"
         }`}
       >
@@ -594,20 +619,32 @@ export default function Home({
           exitSelect();
         }}
         {...dropZoneProps(f.id)}
-        className={`group flex cursor-pointer items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
-          highlight ? "border-accent ring-2 ring-accent/30" : "border-edge"
+        className={`group ${listCols} cursor-pointer px-4 py-2.5 transition-colors ${
+          highlight ? "bg-accent/10 ring-2 ring-inset ring-accent/40" : "hover:bg-hover-soft"
         }`}
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-canvas text-ink-2">
-          <FolderClosed size={14} strokeWidth={1.8} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[13.5px] font-medium tracking-tight">{f.name}</p>
-          <p className="mt-0.5 truncate text-[11.5px] text-ink-3">
-            {f.description || (count === 1 ? "1 notebook" : `${count} notebooks`)}
-          </p>
+        <div className="flex min-w-0 items-center gap-3">
+          {f.cover ? (
+            thumb(f.cover, f.name)
+          ) : (
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-hover text-ink-2">
+              <FolderClosed size={16} strokeWidth={1.8} />
+            </span>
+          )}
+          <div className="min-w-0">
+            <p className="truncate text-[13.5px] font-medium tracking-tight">{f.name}</p>
+            {f.description && (
+              <p className="mt-0.5 hidden truncate text-[12px] text-ink-3 md:block">{f.description}</p>
+            )}
+            <p className="mt-0.5 truncate text-[12px] text-ink-3 md:hidden">
+              {count === 1 ? "1 notebook" : `${count} notebooks`}
+            </p>
+          </div>
         </div>
-        {folderActionCluster(f)}
+        <span className="hidden truncate text-[12px] text-ink-3 md:block">
+          {count === 1 ? "1 notebook" : `${count} notebooks`}
+        </span>
+        <span className="flex justify-end">{folderActionCluster(f)}</span>
       </div>
     );
   };
@@ -616,7 +653,7 @@ export default function Home({
     <button
       key="new"
       onClick={() => setCreating(true)}
-      className="group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
+      className="lift group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 hover:border-ink-3 hover:bg-panel hover:text-ink"
     >
       <span className="flex h-8 w-8 items-center justify-center rounded-full border border-edge bg-panel transition-colors group-hover:border-ink-3">
         <Plus size={16} strokeWidth={2} />
@@ -629,7 +666,7 @@ export default function Home({
     <button
       key="new-folder"
       onClick={() => openFolderModal(null)}
-      className="group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
+      className="lift group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 hover:border-ink-3 hover:bg-panel hover:text-ink"
     >
       <span className="flex h-8 w-8 items-center justify-center rounded-full border border-edge bg-panel transition-colors group-hover:border-ink-3">
         <FolderPlus size={16} strokeWidth={1.8} />
@@ -638,34 +675,70 @@ export default function Home({
     </button>
   );
 
-  const newNotebookRow = (
+  const openTrash = () => {
+    setTrashOpen(true);
+    exitSelect();
+  };
+  /** Trash table columns; "Removed" only exists when auto-empty is on. */
+  const trashCols =
+    trashRetentionDays > 0
+      ? "grid grid-cols-[minmax(0,1fr)_148px] md:grid-cols-[minmax(0,1fr)_120px_100px_148px] items-center gap-4"
+      : "grid grid-cols-[minmax(0,1fr)_148px] md:grid-cols-[minmax(0,1fr)_120px_148px] items-center gap-4";
+  const trashCount =
+    trashedNotebooks.length === 0
+      ? "Empty"
+      : trashedNotebooks.length === 1
+        ? "1 notebook"
+        : `${trashedNotebooks.length} notebooks`;
+
+  /** The Trash lives in the Brewery as a third tile, beside New notebook / New folder. */
+  const trashCard = (
     <button
-      key="new"
-      onClick={() => setCreating(true)}
-      className="group flex w-full items-center gap-3 rounded-lg border border-dashed border-edge bg-transparent px-4 py-3 text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
+      key="trash"
+      onClick={openTrash}
+      className="lift group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 hover:border-ink-3 hover:bg-panel hover:text-ink"
     >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-panel transition-colors group-hover:border-ink-3">
-        <Plus size={15} strokeWidth={2} />
+      <span className="flex h-8 w-8 items-center justify-center rounded-full border border-edge bg-panel transition-colors group-hover:border-ink-3">
+        <Trash2 size={15} strokeWidth={1.8} />
       </span>
-      <span className="text-[13px] font-medium">New notebook</span>
+      <span className="text-[13px] font-medium">Trash</span>
+      <span className="-mt-1.5 text-[11.5px] text-ink-3">{trashCount}</span>
     </button>
   );
 
-  const newFolderRow = (
-    <button
-      key="new-folder"
-      onClick={() => openFolderModal(null)}
-      className="group flex w-full items-center gap-3 rounded-lg border border-dashed border-edge bg-transparent px-4 py-3 text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
-    >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-panel transition-colors group-hover:border-ink-3">
-        <FolderPlus size={15} strokeWidth={1.8} />
-      </span>
-      <span className="text-[13px] font-medium">New folder</span>
-    </button>
+  /** List view: the same three actions as a slim strip above the table. */
+  const listActions = (
+    <div className="mb-3 flex flex-wrap items-center gap-1">
+      <button
+        onClick={() => setCreating(true)}
+        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
+      >
+        <Plus size={14} strokeWidth={2} />
+        New notebook
+      </button>
+      {!viewing && (
+        <button
+          onClick={() => openFolderModal(null)}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
+        >
+          <FolderPlus size={14} strokeWidth={1.8} />
+          New folder
+        </button>
+      )}
+      {!viewing && (
+        <button
+          onClick={openTrash}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
+        >
+          <Trash2 size={13.5} strokeWidth={1.8} />
+          Trash
+          <span className="font-normal text-ink-3">· {trashCount}</span>
+        </button>
+      )}
+    </div>
   );
 
-  const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3.5";
-  const listClass = "flex flex-col gap-2";
+  const gridClass = "stagger grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3.5";
 
   return (
     <div className="flex h-full flex-col">
@@ -699,22 +772,6 @@ export default function Home({
             </button>
           )}
         </div>
-        <IconButton
-          onClick={() => {
-            setTrashOpen((v) => !v);
-            exitSelect();
-          }}
-          label={trashOpen ? "Back to notebooks" : `Trash (${trashedNotebooks.length})`}
-        >
-          <span className="relative">
-            <Trash2 size={16} strokeWidth={1.8} />
-            {trashedNotebooks.length > 0 && (
-              <span className="absolute -right-2 -top-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold text-accent-ink">
-                {trashedNotebooks.length}
-              </span>
-            )}
-          </span>
-        </IconButton>
         <IconButton onClick={onSettings} label="Settings">
           <SettingsIcon size={16} strokeWidth={1.8} />
         </IconButton>
@@ -751,19 +808,31 @@ export default function Home({
       <div className="flex-1 overflow-y-auto px-8 py-8">
         {trashOpen ? (
           <div className="mx-auto max-w-5xl">
-            <div className="mb-6 flex items-end justify-between">
-              <div>
-                <h1 className="text-[22px] font-semibold tracking-tight">Trash</h1>
-                <p className="mt-0.5 text-[13px] text-ink-3">
-                  Restore notebooks to bring them back, or delete them forever.
-                  {trashRetentionDays > 0 &&
-                    ` Notebooks are permanently deleted after ${trashRetentionDays} days in the Trash.`}
-                </p>
+            <div className="mb-6 flex items-end justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <button
+                  onClick={() => {
+                    setTrashOpen(false);
+                    exitSelect();
+                  }}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-edge bg-panel px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                >
+                  <ArrowLeft size={13} strokeWidth={2} />
+                  Brewery
+                </button>
+                <div className="min-w-0">
+                  <h1 className="text-[22px] font-semibold tracking-tight">Trash</h1>
+                  <p className="mt-0.5 text-[13px] text-ink-3">
+                    {trashRetentionDays > 0
+                      ? `Notebooks here are deleted for good after ${trashRetentionDays} days.`
+                      : "Notebooks stay here until you restore or delete them."}
+                  </p>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1">
                 {selecting ? (
                   <>
-                    <span className="text-[12.5px] font-medium text-ink-2">
+                    <span className="mr-1 text-[12.5px] font-medium text-ink-2">
                       {selectedIds.length} selected
                     </span>
                     <button
@@ -794,75 +863,118 @@ export default function Home({
                   </>
                 ) : (
                   trashedNotebooks.length > 0 && (
-                    <button
-                      onClick={() => setSelecting(true)}
-                      className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-                    >
-                      Select
-                    </button>
+                    <>
+                      <button
+                        onClick={() => setSelecting(true)}
+                        className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                      >
+                        Select
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedIds(trashedNotebooks.map((n) => n.id));
+                          setBulkPurging(true);
+                        }}
+                        className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:bg-danger-bg"
+                      >
+                        Empty Trash
+                      </button>
+                    </>
                   )
                 )}
               </div>
             </div>
             {trashedNotebooks.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-center">
-                <Trash2 size={20} strokeWidth={1.8} className="text-ink-3" />
-                <p className="mt-3 text-[13.5px] font-medium">The Trash is empty</p>
-                <p className="mt-0.5 text-[12.5px] text-ink-3">
-                  Notebooks you delete will show up here first.
+              <div className="anim-fade flex flex-col items-center justify-center rounded-xl border border-dashed border-edge py-20 text-center">
+                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-hover text-ink-3">
+                  <Trash2 size={20} strokeWidth={1.8} />
+                </span>
+                <p className="mt-4 text-[14px] font-medium">The Trash is empty</p>
+                <p className="mt-1 max-w-xs text-[12.5px] leading-relaxed text-ink-3">
+                  Notebooks you delete land here first, so you can bring them back if you change your mind.
                 </p>
               </div>
             ) : (
-              <div className={listClass}>
-                {trashedNotebooks.map((nb) => {
-                  const selected = selecting && selectedIds.includes(nb.id);
-                  return (
-                  <div
-                    key={nb.id}
-                    onClick={() => selecting && toggleSelect(nb.id)}
-                    className={`group flex items-center gap-3 rounded-lg border bg-panel px-4 py-3 transition-shadow hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
-                      selecting ? "cursor-pointer" : ""
-                    } ${selected ? "border-accent ring-2 ring-accent/40" : "border-edge"}`}
-                  >
-                    {selecting && (
-                      <span
-                        className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
-                          selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
-                        }`}
+              <div className="overflow-hidden rounded-xl border border-edge bg-panel">
+                <div
+                  className={`${trashCols} border-b border-edge-soft bg-canvas/60 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3`}
+                >
+                  <span>Name</span>
+                  <span className="hidden md:block">Deleted</span>
+                  {trashRetentionDays > 0 && <span className="hidden md:block">Removed</span>}
+                  <span />
+                </div>
+                <div className="stagger divide-y divide-edge-soft">
+                  {trashedNotebooks.map((nb) => {
+                    const selected = selecting && selectedIds.includes(nb.id);
+                    const daysLeft =
+                      trashRetentionDays > 0
+                        ? Math.ceil((nb.trashed_at + trashRetentionDays * 86_400_000 - Date.now()) / 86_400_000)
+                        : null;
+                    const removedIn =
+                      daysLeft === null ? null : daysLeft <= 0 ? "Today" : daysLeft === 1 ? "In 1 day" : `In ${daysLeft} days`;
+                    const soon = daysLeft !== null && daysLeft <= 3;
+                    return (
+                      <div
+                        key={nb.id}
+                        onClick={() => selecting && toggleSelect(nb.id)}
+                        className={`group ${trashCols} px-4 py-2.5 transition-colors ${
+                          selecting ? "cursor-pointer" : ""
+                        } ${selected ? "bg-accent/10" : "hover:bg-hover-soft"}`}
                       >
-                        {selected && <Check size={10} strokeWidth={3} />}
-                      </span>
-                    )}
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-canvas text-ink-2">
-                      <BookOpen size={14} strokeWidth={1.8} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13.5px] font-medium tracking-tight">{nb.title}</p>
-                      <p className="mt-0.5 truncate text-[11.5px] text-ink-3">
-                        Deleted {formatTime(nb.trashed_at)}
-                      </p>
-                    </div>
-                    {!selecting && (
-                      <>
-                        <button
-                          onClick={() => onRestore(nb.id)}
-                          className="flex shrink-0 items-center gap-1.5 rounded-full border border-edge bg-panel px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
-                        >
-                          <RotateCcw size={12} strokeWidth={1.8} />
-                          Restore
-                        </button>
-                        <button
-                          onClick={() => setPurging(nb)}
-                          className="flex shrink-0 items-center gap-1.5 rounded-full border border-danger-edge bg-danger-bg px-3 py-1.5 text-[12px] font-medium text-danger transition-colors hover:opacity-80"
-                        >
-                          <Trash2 size={12} strokeWidth={1.8} />
-                          Delete forever
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  );
-                })}
+                        <div className="flex min-w-0 items-center gap-3">
+                          {selecting && (
+                            <span
+                              className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 ${
+                                selected ? "border-accent bg-accent text-accent-ink" : "border-ink-3 text-transparent"
+                              }`}
+                            >
+                              {selected && <Check size={10} strokeWidth={3} />}
+                            </span>
+                          )}
+                          {thumb(nb.cover, nb.title, true)}
+                          <div className="min-w-0">
+                            <p className="truncate text-[13.5px] font-medium tracking-tight text-ink-2">{nb.title}</p>
+                            {nb.description && (
+                              <p className="mt-0.5 hidden truncate text-[12px] text-ink-3 md:block">{nb.description}</p>
+                            )}
+                            <p className="mt-0.5 truncate text-[12px] text-ink-3 md:hidden">
+                              Deleted {formatTime(nb.trashed_at)}
+                              {removedIn && <span className={soon ? "text-danger" : ""}> · removed {removedIn.toLowerCase()}</span>}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="hidden truncate text-[12px] text-ink-3 md:block">{formatTime(nb.trashed_at)}</span>
+                        {removedIn && (
+                          <span className={`hidden truncate text-[12px] md:block ${soon ? "text-danger" : "text-ink-3"}`}>
+                            {removedIn}
+                          </span>
+                        )}
+                        <span className="flex items-center justify-end gap-0.5">
+                          {!selecting && (
+                            <>
+                              <button
+                                onClick={() => onRestore(nb.id)}
+                                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+                              >
+                                <RotateCcw size={13} strokeWidth={1.8} />
+                                Restore
+                              </button>
+                              <button
+                                onClick={() => setPurging(nb)}
+                                title="Delete forever"
+                                aria-label={`Delete ${nb.title} forever`}
+                                className="rounded-lg p-1.5 text-ink-3 transition-colors hover:bg-danger-bg hover:text-danger"
+                              >
+                                <Trash2 size={14} strokeWidth={1.8} />
+                              </button>
+                            </>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -933,7 +1045,7 @@ export default function Home({
                         />
                         <div
                           role="menu"
-                          className="anim-fade-up absolute right-0 z-20 mt-1.5 w-48 rounded-xl border border-edge bg-panel p-1 shadow-lg"
+                          className="anim-menu absolute right-0 z-20 mt-1.5 w-48 rounded-xl border border-edge bg-panel p-1 shadow-lg"
                         >
                           <button
                             role="menuitem"
@@ -1010,7 +1122,7 @@ export default function Home({
                     />
                     <div
                       role="menu"
-                      className="anim-fade-up absolute right-0 z-20 mt-1.5 w-44 rounded-xl border border-edge bg-panel p-1 shadow-lg"
+                      className="anim-menu absolute right-0 z-20 mt-1.5 w-44 rounded-xl border border-edge bg-panel p-1 shadow-lg"
                     >
                       {SORTS.map((s) => (
                         <button
@@ -1061,6 +1173,7 @@ export default function Home({
               <div className={gridClass}>
                 {newNotebookCard}
                 {!viewing && newFolderCard}
+                {!viewing && trashCard}
                 {visibleFolders.map(renderFolderCard)}
                 {ordered.map(renderCard)}
               </div>
@@ -1072,12 +1185,22 @@ export default function Home({
             </>
           ) : (
             <>
-              <div className={listClass}>
-                {newNotebookRow}
-                {!viewing && newFolderRow}
-                {visibleFolders.map(renderFolderRow)}
-                {ordered.map(renderRow)}
-              </div>
+              {listActions}
+              {visibleFolders.length + ordered.length > 0 && (
+                <div className="overflow-hidden rounded-xl border border-edge bg-panel">
+                  <div
+                    className={`${listCols} border-b border-edge-soft bg-canvas/60 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3`}
+                  >
+                    <span>Name</span>
+                    <span className="hidden md:block">Details</span>
+                    <span />
+                  </div>
+                  <div className="stagger divide-y divide-edge-soft">
+                    {visibleFolders.map(renderFolderRow)}
+                    {ordered.map(renderRow)}
+                  </div>
+                </div>
+              )}
               {viewing && ordered.length === 0 && !searching && (
                 <p className="mt-4 text-center text-[12.5px] text-ink-3">
                   This folder is empty — drag notebooks in, or use a notebook's Edit → Folder menu.
@@ -1140,7 +1263,15 @@ export default function Home({
 
       {/* Bulk: permanently delete all selected from the Trash. */}
       {bulkPurging && (
-        <Modal title="Delete selected forever?" onClose={() => setBulkPurging(false)}>
+        <Modal
+          title={
+            !selecting && selectedIds.length === trashedNotebooks.length ? "Empty the Trash?" : "Delete selected forever?"
+          }
+          onClose={() => {
+            setBulkPurging(false);
+            if (!selecting) setSelectedIds([]);
+          }}
+        >
           <p className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">
             {selectedIds.length === 1
               ? "1 notebook"
@@ -1148,7 +1279,14 @@ export default function Home({
             and everything in them will be permanently deleted. This can't be undone.
           </p>
           <div className="flex justify-end gap-2">
-            <GhostButton onClick={() => setBulkPurging(false)}>Cancel</GhostButton>
+            <GhostButton
+              onClick={() => {
+                setBulkPurging(false);
+                if (!selecting) setSelectedIds([]);
+              }}
+            >
+              Cancel
+            </GhostButton>
             <button
               onClick={() => {
                 setBulkPurging(false);

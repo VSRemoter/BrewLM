@@ -37,6 +37,9 @@ const num = (key: string, fallback: number) => {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 };
 
+/** Minimum Studio width while reading an output (reports, quizzes, mind maps…). */
+const STUDIO_READING_W = 460;
+
 export default function NotebookView({
   notebook,
   settings,
@@ -74,6 +77,9 @@ export default function NotebookView({
   // persist layout preferences
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
   useEffect(() => { localStorage.setItem(LS.right, String(rightW)); }, [rightW]);
+  /** While a Studio output is open, the panel is at least this wide for reading. */
+  const [studioReading, setStudioReading] = useState(false);
+  const studioW = studioReading ? Math.max(rightW, STUDIO_READING_W) : rightW;
   useEffect(() => { localStorage.setItem(LS.split, String(split)); }, [split]);
 
   /** Pointer-drag helper: tracks deltas, disables selection while dragging. */
@@ -330,7 +336,7 @@ export default function NotebookView({
       <div className="flex min-h-0 flex-1">
         <div
           ref={leftColRef}
-          className="flex h-full shrink-0 flex-col border-r border-edge-soft bg-panel"
+          className="anim-panel-left flex h-full shrink-0 flex-col border-r border-edge-soft bg-panel"
           style={{ width: leftW }}
         >
           <div className="flex min-h-0 flex-col" style={{ flex: `${split} 1 0%`, minHeight: 110 }}>
@@ -413,7 +419,7 @@ export default function NotebookView({
           role="separator"
           aria-label="Resize studio panel"
           onPointerDown={(e) => {
-            const start = rightW;
+            const start = studioW;
             startDrag(e, (dx) => setRightW(clamp(240, 620, start - dx)));
           }}
           className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
@@ -421,7 +427,8 @@ export default function NotebookView({
         <StudioPanel
           ref={studioRef}
           notebookId={notebook.id}
-          width={rightW}
+          width={studioW}
+          onReadingChange={setStudioReading}
           sources={sources}
           artifacts={artifacts}
           settings={settings}

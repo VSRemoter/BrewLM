@@ -18,11 +18,11 @@ export function Modal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px]"
+      className="anim-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px]"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className={`anim-fade-up mx-4 max-h-[calc(85vh/var(--om-zoom,1))] w-full overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl ${
+        className={`anim-pop mx-4 max-h-[calc(85vh/var(--om-zoom,1))] w-full overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl ${
           wide ? "max-w-2xl" : "max-w-md"
         }`}
         role="dialog"

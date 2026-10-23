@@ -60,7 +60,7 @@ export default function SettingsPage({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-canvas text-ink">
+    <div className="anim-fade fixed inset-0 z-50 flex flex-col bg-canvas text-ink">
       {/* Header */}
       <header className="flex shrink-0 items-center gap-3 border-b border-edge-soft px-4 py-3">
         <button
@@ -96,7 +96,7 @@ export default function SettingsPage({
         {/* Content */}
         <main className="min-w-0 flex-1 overflow-y-auto">
           {settings ? (
-            <div className="mx-auto max-w-4xl px-6 py-6">
+            <div key={section} className="anim-screen mx-auto max-w-4xl px-6 py-6">
               {section === "appearance" && <AppearanceSection settings={settings} patch={patch} />}
               {section === "ai" && <AiModelSection settings={settings} patch={patch} />}
               {section === "studio" && <StudioSection settings={settings} patch={patch} />}

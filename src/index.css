@@ -650,8 +650,159 @@ body {
     transform: translateY(0);
   }
 }
+/* ------------------------------- Motion ------------------------------- */
+/* Entrance animations use fill-mode "backwards": they hold the start frame
+   during their delay but leave no transform behind once finished (a lasting
+   transform would trap position:fixed overlays such as menu click-catchers). */
+:root {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
 .anim-fade-up {
-  animation: om-fade-up 0.22s ease-out both;
+  animation: om-fade-up 0.24s var(--ease-out) backwards;
+}
+
+@keyframes om-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@keyframes om-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes om-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+@keyframes om-menu {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+}
+@keyframes om-panel-left {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+}
+@keyframes om-panel-right {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+
+/* Modals: the backdrop fades while the dialog springs up. */
+.anim-backdrop {
+  animation: om-fade 0.18s ease-out backwards;
+}
+.anim-pop {
+  animation: om-pop 0.26s var(--ease-spring) backwards;
+}
+/* Dropdown menus grow out of the button that opened them (top-right). */
+.anim-menu {
+  transform-origin: top right;
+  animation: om-menu 0.18s var(--ease-out) backwards;
+}
+/* Whole screens (Settings, a section switch) settle in. */
+.anim-screen {
+  animation: om-rise 0.32s var(--ease-out) backwards;
+}
+.anim-fade {
+  animation: om-fade 0.22s ease-out backwards;
+}
+
+/* Opening a notebook: sources, chat and Studio glide in one after another. */
+.anim-panel-left {
+  animation: om-panel-left 0.38s var(--ease-out) backwards;
+}
+.anim-panel-center {
+  animation: om-rise 0.38s var(--ease-out) 0.05s backwards;
+}
+.anim-panel-right {
+  animation: om-panel-right 0.38s var(--ease-out) 0.1s backwards;
+}
+
+/* Lists cascade in: each child rises a beat after the previous one (capped,
+   so long lists never feel slow). Only plays when an item first appears. */
+.stagger > * {
+  animation: om-rise 0.34s var(--ease-out) backwards;
+}
+.stagger > :nth-child(2) { animation-delay: 25ms; }
+.stagger > :nth-child(3) { animation-delay: 50ms; }
+.stagger > :nth-child(4) { animation-delay: 75ms; }
+.stagger > :nth-child(5) { animation-delay: 100ms; }
+.stagger > :nth-child(6) { animation-delay: 125ms; }
+.stagger > :nth-child(7) { animation-delay: 150ms; }
+.stagger > :nth-child(8) { animation-delay: 175ms; }
+.stagger > :nth-child(9) { animation-delay: 200ms; }
+.stagger > :nth-child(10) { animation-delay: 225ms; }
+.stagger > :nth-child(n + 11) { animation-delay: 250ms; }
+
+/* Cards lift toward the cursor; a press settles them back. */
+.lift {
+  transition:
+    translate 0.2s var(--ease-out),
+    box-shadow 0.2s var(--ease-out),
+    border-color 0.2s;
+}
+.lift:hover {
+  translate: 0 -2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.lift:active {
+  translate: 0 0;
+  scale: 0.985;
+  transition-duration: 0.08s;
+}
+
+/* Every button gives a small press. ("scale" is its own property, so it never
+   fights an element's transform; Excalidraw keeps its own feedback.) */
+@layer base {
+  /* In the base layer so a button's own transition-* classes still win. */
+  button {
+    transition-property: color, background-color, border-color, opacity, box-shadow, scale;
+    transition-duration: 0.15s;
+  }
+  button:not(:disabled):active:not(.excalidraw *) {
+    scale: 0.96;
+  }
+}
+
+/* Switching themes blends the palette instead of snapping (class is set for
+   a moment by applyTheme). */
+html.theme-fade,
+html.theme-fade *,
+html.theme-fade *::before,
+html.theme-fade *::after {
+  transition:
+    background-color 0.35s ease,
+    border-color 0.35s ease,
+    color 0.35s ease,
+    fill 0.35s ease,
+    stroke 0.35s ease !important;
+}
+
+/* People who ask their OS for less motion get none of it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .lift:hover {
+    translate: none;
+  }
 }
 
 /* BrewingStatus word: soft slide-up on each swap + a light shimmer sweeping the gradient text. */

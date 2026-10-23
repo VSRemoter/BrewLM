@@ -2397,7 +2397,7 @@ export default function ChatPanel({
   };
   return (
     <section
-      className="relative flex h-full min-w-0 flex-1 flex-col bg-canvas"
+      className="anim-panel-center relative flex h-full min-w-0 flex-1 flex-col bg-canvas"
       onDragEnter={(e) => {
         if (!hasDraggedFiles(e)) return;
         e.preventDefault();
@@ -2467,7 +2467,7 @@ export default function ChatPanel({
             {bgMenuOpen && (
               <>
                 <div className="fixed inset-0 z-10 cursor-default" onClick={() => setBgMenuOpen(false)} />
-                <div className="anim-fade-up absolute right-0 z-20 mt-1.5 w-64 rounded-xl border border-edge bg-panel p-3 shadow-lg">
+                <div className="anim-menu absolute right-0 z-20 mt-1.5 w-64 rounded-xl border border-edge bg-panel p-3 shadow-lg">
                   <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
                     Chat background
                   </p>

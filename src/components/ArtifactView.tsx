@@ -1,6 +1,6 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { Check, ChevronLeft, ChevronRight, Download, FilePlus2, Play, RotateCw } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, Download, FilePlus2, Loader2, Minimize2, Play, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
@@ -8,8 +8,8 @@ import { artifactText } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
-import { MinimizeButton, PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
-import { Modal, GhostButton, IconButton } from "./ui";
+import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
+import { GhostButton, IconButton } from "./ui";
 
 /** Filesystem-safe name for downloads. */
 function exportName(title: string, ext: string): string {
@@ -17,19 +17,44 @@ function exportName(title: string, ext: string): string {
   return `${base || "brewlm-output"}.${ext}`;
 }
 
+/**
+ * An opened Studio output. It takes over the Studio panel (not a popup), so
+ * the chat stays usable alongside it; Minimize returns to the Studio tools.
+ */
 export default function ArtifactView({
   artifact,
   onClose,
   onSourcesChanged,
+  running = 0,
 }: {
   artifact: Artifact;
+  /** Minimize: back to the Studio tools and saved outputs. */
   onClose: () => void;
   onSourcesChanged?: () => void;
+  /** Studio generations still in progress (shown so they aren't forgotten). */
+  running?: number;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [added, setAdded] = useState(false);
-  const player = usePlayer();
+  const [copied, setCopied] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  /** Copy the output as plain text / markdown. */
+  const copy = async () => {
+    setExportError(null);
+    const text = artifactText(artifact);
+    if (!text) {
+      setExportError("This output has no text to copy.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setExportError("Couldn't copy to the clipboard.");
+    }
+  };
 
   useEffect(() => {
     void hydrateMermaid(rootRef.current);
@@ -90,53 +115,59 @@ export default function ArtifactView({
   };
 
   return (
-    <Modal
-      title={artifact.title}
-      onClose={onClose}
-      wide
-      actions={
-        <>
-          {artifact.kind === "audio" && player.track?.id === artifact.id && (
-            <MinimizeButton onMinimize={onClose} />
-          )}
-          <IconButton
-            onClick={addToSources}
-            label={added ? "Added to sources" : "Add to sources"}
+    <div className="anim-fade flex h-full min-h-0 flex-col" role="region" aria-label={artifact.title}>
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-edge-soft px-2">
+        <IconButton onClick={onClose} label="Minimize — back to Studio">
+          <Minimize2 size={15} strokeWidth={1.8} />
+        </IconButton>
+        <span className="min-w-0 flex-1 truncate px-1 text-[13px] font-semibold tracking-tight" title={artifact.title}>
+          {artifact.title}
+        </span>
+        {running > 0 && (
+          <span
+            className="flex shrink-0 items-center gap-1 rounded-full bg-hover-soft px-2 py-0.5 text-[10.5px] text-ink-3"
+            title={`${running} Studio ${running === 1 ? "tool is" : "tools are"} still generating`}
           >
-            {added ? (
-              <Check size={15} strokeWidth={2.2} className="text-ok" />
-            ) : (
-              <FilePlus2 size={15} strokeWidth={1.8} />
-            )}
-          </IconButton>
-          <IconButton onClick={download} label="Download…">
-            <Download size={15} strokeWidth={1.8} />
-          </IconButton>
-        </>
-      }
-    >
+            <Loader2 size={10} className="animate-spin text-accent" />
+            {running}
+          </span>
+        )}
+        <IconButton onClick={copy} label={copied ? "Copied" : "Copy"}>
+          {copied ? <Check size={15} strokeWidth={2.2} className="text-ok" /> : <Copy size={15} strokeWidth={1.8} />}
+        </IconButton>
+        <IconButton onClick={addToSources} label={added ? "Added to sources" : "Add to sources"}>
+          {added ? (
+            <Check size={15} strokeWidth={2.2} className="text-ok" />
+          ) : (
+            <FilePlus2 size={15} strokeWidth={1.8} />
+          )}
+        </IconButton>
+        <IconButton onClick={download} label="Download…">
+          <Download size={15} strokeWidth={1.8} />
+        </IconButton>
+      </div>
       {exportError && (
-        <p className="mb-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+        <p className="mx-3 mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
           {exportError}
         </p>
       )}
-      <div ref={rootRef}>
-      {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
-      {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
-      {artifact.kind === "mindmap" && <MindmapView data={artifact.data} />}
-      {artifact.kind === "notes" && (
-        <pre className="whitespace-pre-wrap text-[13px] leading-relaxed">{artifact.data}</pre>
-      )}
-      {artifact.kind === "report" && (
-        <div
-          className="md max-h-[70vh] overflow-y-auto pr-1 text-[13.5px] leading-relaxed"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(artifact.data) }}
-        />
-      )}
-      {artifact.kind === "research" && <ResearchView data={artifact.data} />}
-      {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
+      <div ref={rootRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
+        {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
+        {artifact.kind === "mindmap" && <MindmapView data={artifact.data} />}
+        {artifact.kind === "notes" && (
+          <pre className="whitespace-pre-wrap text-[13px] leading-relaxed">{artifact.data}</pre>
+        )}
+        {artifact.kind === "report" && (
+          <div
+            className="md text-[13.5px] leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(artifact.data) }}
+          />
+        )}
+        {artifact.kind === "research" && <ResearchView data={artifact.data} />}
+        {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
       </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -436,7 +467,7 @@ function ResearchView({ data }: { data: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div
-        className="md max-h-[60vh] overflow-y-auto pr-1 text-[13.5px] leading-relaxed"
+        className="md text-[13.5px] leading-relaxed"
         dangerouslySetInnerHTML={{ __html: renderMarkdown(parsed.md) }}
       />
       {parsed.sources.length > 0 && (
@@ -535,7 +566,7 @@ function AudioView({ id, title, data }: { id: string; title: string; data: strin
         </p>
       )}
 
-      <div className="max-h-[55vh] overflow-y-auto rounded-xl border border-edge-soft bg-canvas p-3.5">
+      <div className="rounded-xl border border-edge-soft bg-canvas p-3.5">
         {script.map((t, i) => (
           <p
             key={i}

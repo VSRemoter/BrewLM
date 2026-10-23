@@ -132,7 +132,7 @@ export default function SourcesPanel({
           {menuOpen && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-              <div className="anim-fade-up absolute right-0 top-8 z-20 w-44 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              <div className="anim-menu absolute right-0 top-8 z-20 w-44 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
                 {[
                   { icon: Upload, label: "Upload files", act: () => fileInput.current?.click() },
                   { icon: Type, label: "Paste text", act: () => { setMenuOpen(false); setPasteOpen(true); } },
@@ -177,7 +177,7 @@ export default function SourcesPanel({
         }}
       />
 
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="stagger flex-1 overflow-y-auto p-2">
         {sources.length === 0 && !busy && (
           <div className="mt-10 px-3 text-center">
             <div className="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-hover">
