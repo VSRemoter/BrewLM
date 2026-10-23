@@ -70,10 +70,24 @@ export function mediaExt(v: string): string {
   return EXT_FOR_MIME[mime] ?? "bin";
 }
 
+/** Files Sync downloaded this session (see `markArrived`). */
+const arrived = new Set<string>();
+
+/**
+ * Sync calls this when a file another device made lands here. Its URL gains a
+ * query string, so an <img>/<audio> that already failed on the missing file
+ * loads again on the next render (the scheme ignores the query).
+ */
+export function markArrived(name: string): void {
+  arrived.add(name);
+}
+
 /** Loadable URL for a stored value. Data URLs and http(s) URLs pass through. */
 export function mediaSrc(v: string): string {
   if (!isBlobRef(v)) return v;
-  return convertFileSrc(v.slice(BLOB_PREFIX.length), "brewblob");
+  const name = v.slice(BLOB_PREFIX.length);
+  const url = convertFileSrc(name, "brewblob");
+  return arrived.has(name) ? `${url}?arrived` : url;
 }
 
 export async function mediaBlob(v: string): Promise<Blob> {

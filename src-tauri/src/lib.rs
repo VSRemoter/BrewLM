@@ -1,5 +1,6 @@
 mod blobs;
 mod server;
+mod sync;
 
 use server::SharingState;
 use tauri::{Manager, menu::{Menu, MenuItem}, tray::TrayIconBuilder};
@@ -24,8 +25,25 @@ fn cleanup_sharing(app: &tauri::AppHandle) {
     }
 }
 
+/// Dev builds only: BREWLM_PROFILE=<name> runs a separate copy of the app with
+/// its own data folder (identifier `com.brewlm.app.<name>`), for testing Sync
+/// between two copies on one machine.
+fn dev_profile() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("BREWLM_PROFILE")
+        .ok()
+        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    let profile = dev_profile();
+    if let Some(p) = &profile {
+        context.config_mut().identifier = format!("com.brewlm.app.{p}");
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -46,12 +64,20 @@ pub fn run() {
             server::share_status,
             blobs::blob_put,
             blobs::blob_gc,
+            blobs::blob_missing,
             blobs::backup_export,
             blobs::backup_restore_zip,
             blobs::snapshot_before_media_move,
             blobs::prune_media_snapshot,
+            sync::sync_apply,
+            sync::sync_mark_pushed,
+            sync::sync_dev_config,
+            sync::sync_log,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            if let (Some(p), Some(w)) = (&profile, app.get_webview_window("main")) {
+                let _ = w.set_title(&format!("BrewLM ({p})"));
+            }
             // BREWLM_SHARE_AUTO=1 starts sharing on launch (scripted testing).
             server::autostart_if_requested(app.handle());
 
@@ -86,7 +112,7 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {

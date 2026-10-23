@@ -1,0 +1,2 @@
+# Copy to .dev.vars for `npm run dev`. Any long random string works locally.
+SYNC_DEV_TOKEN=change-me-to-a-long-random-string

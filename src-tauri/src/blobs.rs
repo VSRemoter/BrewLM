@@ -149,6 +149,21 @@ pub async fn blob_put(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -
         .map_err(|e| e.to_string())?
 }
 
+/// Which of these file names (`<hash>.<ext>`, `brewblob:` prefix optional)
+/// this device doesn't have — Sync downloads them. Invalid names are dropped.
+#[tauri::command]
+pub fn blob_missing(app: tauri::AppHandle, names: Vec<String>) -> Result<Vec<String>, String> {
+    Ok(missing(&blob_dir(&app)?, names))
+}
+
+fn missing(dir: &Path, names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .map(|n| n.trim_start_matches(REF_PREFIX).to_string())
+        .filter(|n| valid_name(n) && !dir.join(n).exists())
+        .collect()
+}
+
 #[derive(serde::Serialize)]
 pub struct GcResult {
     removed: u32,
@@ -399,6 +414,15 @@ mod tests {
         let (m, b) = load(dir.path(), "aGk=", Some("image/jpeg")).unwrap();
         assert_eq!((m.as_str(), b.as_slice()), ("image/jpeg", b"hi".as_slice()));
         assert!(load(dir.path(), "brewblob:../secret", None).is_none());
+    }
+
+    #[test]
+    fn missing_lists_only_absent_valid_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let have = put(dir.path(), b"have", "png").unwrap();
+        let absent = format!("{}.m4a", "a".repeat(64));
+        let got = missing(dir.path(), vec![have, format!("brewblob:{absent}"), "../etc/passwd".into()]);
+        assert_eq!(got, vec![absent]);
     }
 
     #[test]

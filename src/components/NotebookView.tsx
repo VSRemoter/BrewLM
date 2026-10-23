@@ -29,6 +29,7 @@ import PairPhonePanel from "./PairPhonePanel";
 import SourcesPanel from "./SourcesPanel";
 import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
 import { IconButton, Modal } from "./ui";
+import { onRemoteChanges } from "../lib/sync";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
 const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
@@ -114,6 +115,20 @@ export default function NotebookView({
     setChats(list);
     return list;
   }, [notebook.id]);
+
+  // Changes pulled from other devices (BrewLM Sync).
+  useEffect(
+    () =>
+      onRemoteChanges((c) => {
+        if (c.tables.has("sources")) void refreshSources();
+        if (c.tables.has("artifacts")) void refreshArtifacts();
+        if (c.tables.has("chats"))
+          void refreshChats().then((list) =>
+            setActiveChatId((cur) => (list.some((ch) => ch.id === cur) ? cur : list[0]?.id ?? null))
+          );
+      }),
+    [refreshSources, refreshArtifacts, refreshChats]
+  );
 
   /** Files dropped/picked in chat become notebook sources (+ auto-@mention). */
   const handleChatFiles = useCallback(

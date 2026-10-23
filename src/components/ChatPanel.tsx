@@ -49,6 +49,7 @@ import {
   sourceText,
 } from "../lib/db";
 import { mediaSrc } from "../lib/blobs";
+import { onRemoteChanges } from "../lib/sync";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
 import { hydrateMermaid } from "../lib/mermaid";
@@ -1561,6 +1562,16 @@ export default function ChatPanel({
     setMsgs((prev) => [...prev, replyMsg]);
     return true;
   };
+
+  // Messages pulled from another device (BrewLM Sync) — never mid-reply.
+  useEffect(() => {
+    if (!chatId || streaming !== null) return;
+    return onRemoteChanges((c) => {
+      if (!c.tables.has("messages") || !c.chatIds.has(chatId)) return;
+      void import("../lib/db").then(({ listMessages }) => listMessages(chatId).then(setMsgs));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, streaming]);
 
   useEffect(() => {
     if (!chatId) {

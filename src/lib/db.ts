@@ -230,8 +230,8 @@ async function initDb(): Promise<Database> {
 
 /* ------------------------- Sync change tracking ------------------------- */
 
-/** Tables BrewLM Sync will replicate, with their primary key column. */
-const SYNCED_TABLES: Record<string, string> = {
+/** Tables BrewLM Sync replicates, with their primary key column (mirrored in src-tauri/src/sync.rs). */
+export const SYNCED_TABLES: Record<string, string> = {
   notebooks: "id",
   folders: "id",
   sources: "id",
@@ -252,8 +252,9 @@ const NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
  * live in the database itself, so writes from the Rust phone server are
  * tracked too. Embeddings, devices, jobs and activity are local and untracked.
  *
- * - sync_meta: one row per synced row — last change time and a deleted flag
- *   (the tombstone other devices need to learn about deletes).
+ * - sync_meta: one row per synced row — last change time, a deleted flag
+ *   (the tombstone other devices need to learn about deletes) and the HLC
+ *   version it was last synced at ("" = never synced).
  * - sync_outbox: rows changed since the last push, one entry per row.
  * - sync_state: this device's id; `applying` = '1' silences the triggers
  *   while changes pulled from other devices are written.
@@ -267,6 +268,9 @@ async function ensureSyncTracking(db: Database): Promise<void> {
       deleted INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (tbl, row_id)
     ) WITHOUT ROWID`);
+  const metaCols = await db.select<{ name: string }[]>("PRAGMA table_info(sync_meta)");
+  if (!metaCols.some((c) => c.name === "hlc"))
+    await db.execute("ALTER TABLE sync_meta ADD COLUMN hlc TEXT NOT NULL DEFAULT ''");
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_outbox (
       tbl TEXT NOT NULL,
@@ -853,6 +857,13 @@ export async function pruneOrphanImages(): Promise<void> {
  * a file is saved a moment before the row that points at it.
  */
 export async function pruneOrphanBlobs(): Promise<void> {
+  const res = await gcBlobs(await referencedBlobRefs());
+  if (res.removed > 0)
+    console.info(`media: removed ${res.removed} unused file(s), ${(res.freed_bytes / 1e6).toFixed(1)} MB`);
+}
+
+/** Every `brewblob:` reference any row holds (cleanup keeps these; Sync moves them). */
+export async function referencedBlobRefs(): Promise<string[]> {
   const d = await getDb();
   const has = (col: string) => `instr(${col}, 'brewblob:') > 0`;
   const rows = await d.select<{ v: string }[]>(
@@ -864,10 +875,7 @@ export async function pruneOrphanBlobs(): Promise<void> {
      UNION ALL SELECT data FROM artifacts WHERE ${has("data")}
      UNION ALL SELECT content FROM messages WHERE ${has("content")}`
   );
-  const keep = [...new Set(rows.flatMap((r) => blobRefsIn(r.v)))];
-  const res = await gcBlobs(keep);
-  if (res.removed > 0)
-    console.info(`media: removed ${res.removed} unused file(s), ${(res.freed_bytes / 1e6).toFixed(1)} MB`);
+  return [...new Set(rows.flatMap((r) => blobRefsIn(r.v)))];
 }
 
 /* --------------------------------- Chats ------------------------------- */

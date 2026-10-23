@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "brewlm-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "VAULT", "class_name": "Vault" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "brewlm-sync-blobs" }],
+  "observability": { "enabled": true }
+}

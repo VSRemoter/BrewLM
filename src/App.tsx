@@ -4,6 +4,7 @@ import NotebookView from "./components/NotebookView";
 import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
 import { migrateMedia } from "./lib/mediaMigration";
+import { onRemoteChanges, startSync } from "./lib/sync";
 import {
   cloneNotebook,
   createFolder,
@@ -55,6 +56,21 @@ export default function App() {
     setFolders(fds);
   }, []);
 
+  // Changes pulled from other devices (BrewLM Sync): homepage lists, settings.
+  useEffect(
+    () =>
+      onRemoteChanges((c) => {
+        if (c.tables.has("notebooks") || c.tables.has("folders")) void refresh();
+        if (c.tables.has("settings"))
+          void loadSettings().then((s) => {
+            applyTheme(s.theme);
+            applyFont(s.font);
+            setSettings(s);
+          });
+      }),
+    [refresh]
+  );
+
   const reloadSettings = useCallback(async () => {
     setSettings(await loadSettings());
   }, []);
@@ -88,6 +104,7 @@ export default function App() {
           .catch((e) => console.warn("source repair:", e))
           .then(() => migrateMedia())
           .catch((e) => console.warn("media migration:", e));
+        void startSync().catch((e) => console.warn("sync:", e));
         // Non-blocking update check — never delays or breaks startup.
         if (s.updateCheckOnLaunch) {
           void checkForUpdate().then((info) => {
