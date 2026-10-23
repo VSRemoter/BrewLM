@@ -416,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_copies_once_and_prunes_when_old() {
-        use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions};
+        use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection};
         let dir = tempfile::tempdir().unwrap();
         let mut conn = SqliteConnectOptions::new()
             .filename(dir.path().join("brewlm.db"))
@@ -434,6 +434,8 @@ mod tests {
         let mut copy = SqliteConnectOptions::new().filename(&snap).connect().await.unwrap();
         let v: (String,) = sqlx::query_as("SELECT v FROM t").fetch_one(&mut copy).await.unwrap();
         assert_eq!(v.0, "original");
+        // Windows can't delete a file that is still open.
+        copy.close().await.unwrap();
 
         assert!(!prune_snapshot(dir.path(), Duration::from_secs(3600)), "fresh snapshot is kept");
         assert!(prune_snapshot(dir.path(), Duration::ZERO));
