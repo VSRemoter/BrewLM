@@ -131,3 +131,29 @@ describe("blobs", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("key envelope", () => {
+  const keys = (vault: string, init?: RequestInit) =>
+    exports.default.fetch(`https://sync.test/v1/vaults/${vault}/keys`, {
+      ...init,
+      headers: { ...AUTH, "content-type": "application/json" },
+    });
+  const put = (vault: string, envelope: string, expectVersion: number) =>
+    keys(vault, { method: "PUT", body: JSON.stringify({ envelope, expectVersion }) });
+
+  it("is created once and replaced only from the current version", async () => {
+    expect(await (await keys("k1")).json()).toEqual({ envelope: null, version: 0 });
+    expect((await put("k1", '{"v":1}', 0)).status).toBe(200);
+    // A second device setting up at the same time loses instead of overwriting.
+    const clash = await put("k1", '{"v":1,"other":true}', 0);
+    expect(clash.status).toBe(409);
+    expect(await clash.json()).toMatchObject({ version: 1 });
+    expect((await put("k1", '{"v":1,"pw":2}', 1)).status).toBe(200);
+    expect(await (await keys("k1")).json()).toEqual({ envelope: '{"v":1,"pw":2}', version: 2 });
+  });
+
+  it("rejects junk", async () => {
+    expect((await put("k2", "", 0)).status).toBe(400);
+    expect((await put("k2", "x".repeat(16 * 1024 + 1), 0)).status).toBe(400);
+  });
+});

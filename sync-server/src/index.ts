@@ -3,6 +3,8 @@
  *
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
  *   GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
+ *   GET  /v1/vaults/:vault/keys            → { envelope, version }
+ *   PUT  /v1/vaults/:vault/keys            { envelope, expectVersion } (409 if stale)
  *   POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
  *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
  *   GET  /v1/vaults/:vault/blobs/:id
@@ -14,7 +16,7 @@
  * every vault. Accounts, per-user vaults and quotas arrive in milestone 2e.
  * `Env` is generated from wrangler.jsonc by `npm run types`.
  */
-import { HLC_RE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
+import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
 export { Vault };
 
@@ -63,7 +65,7 @@ function validChanges(v: unknown): v is Change[] {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
+    const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
     if (!m) return fail(404, "not found");
     if (!env.SYNC_DEV_TOKEN) return fail(500, "server not configured");
     if (!(await authorized(req, env))) return fail(401, "unauthorized");
@@ -100,6 +102,18 @@ export default {
     }
 
     const stub = env.VAULT.get(env.VAULT.idFromName(vault));
+
+    if (op === "keys") {
+      if (req.method === "GET") return json(await stub.getKeys());
+      if (req.method !== "PUT") return fail(405, "method not allowed");
+      const body = await req.json<{ envelope?: unknown; expectVersion?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+      const { envelope, expectVersion } = body as { envelope?: unknown; expectVersion?: unknown };
+      if (typeof envelope !== "string" || envelope.length === 0 || envelope.length > MAX_ENVELOPE)
+        return fail(400, "bad envelope");
+      if (!Number.isSafeInteger(expectVersion) || (expectVersion as number) < 0) return fail(400, "bad expectVersion");
+      const res = await stub.putKeys(envelope, expectVersion as number);
+      return res.ok ? json({ version: res.version }) : json({ error: "envelope changed", version: res.version }, 409);
+    }
 
     if (op === "pull") {
       if (req.method !== "GET") return fail(405, "method not allowed");

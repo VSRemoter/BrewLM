@@ -3,19 +3,24 @@
 A Cloudflare Worker that relays a user's library between their devices. Each
 vault (one user's library) is a Durable Object holding the newest version of
 every record; devices push changes and pull everything after their cursor.
-Records are opaque to the server (end-to-end encrypted from milestone 2c).
+Everything is end-to-end encrypted on the device (`src/lib/vaultCrypto.ts`):
+the server sees hidden ids, ciphertext, sizes and timing — never content,
+table names, or which file is which.
 
 ```
 POST /v1/vaults/:vault/push            { device, changes: [{ key, hlc, payload }] }
 GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
+GET  /v1/vaults/:vault/keys            → { envelope, version }
+PUT  /v1/vaults/:vault/keys            { envelope, expectVersion }   (409 if stale)
 POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
 PUT  /v1/vaults/:vault/blobs/:id       (raw bytes, up to 100 MB)
 GET  /v1/vaults/:vault/blobs/:id
 ```
 
-Blobs live in R2: media files (named by their SHA-256, so devices verify
-every download) and records too big for the change log, whose change then
-carries only a pointer.
+Blobs live in R2: media files and records too big for the change log, whose
+change then carries only a pointer. The key envelope holds the vault key
+wrapped by the user's password (Argon2id) and by their recovery key; the
+server stores it but can't open it.
 
 Conflicts are last-writer-wins on each change's hybrid logical clock
 (`<ms>:<counter>:<device>`), checked here and again on the device
@@ -40,6 +45,6 @@ To watch two copies of BrewLM sync on one machine, run the app with
 
 ## Status
 
-Milestones 2a–2b: records and media files sync, one shared dev token, polling
-every 3 s. Still to come: encryption (2c), linking a device (2d), accounts,
-billing, quotas and cleanup of unused server blobs (2e), deployment (2f).
+Milestones 2a–2c: end-to-end encrypted records and media sync, one shared dev
+token, polling every 3 s. Still to come: linking a device by QR code (2d),
+accounts, billing, quotas and cleanup of unused server blobs (2e), deployment (2f).

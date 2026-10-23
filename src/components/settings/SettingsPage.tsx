@@ -5,6 +5,7 @@ import {
   Database,
   Info,
   Palette,
+  RefreshCw,
   Smartphone,
   Sparkles,
   Wand2,
@@ -20,6 +21,7 @@ import AppearanceSection from "./AppearanceSection";
 import AudioSection from "./AudioSection";
 import DataSection from "./DataSection";
 import StudioSection from "./StudioSection";
+import SyncSection, { useSyncStatus } from "./SyncSection";
 import UsageSection from "./UsageSection";
 
 const SECTIONS = [
@@ -30,6 +32,7 @@ const SECTIONS = [
   { id: "usage", label: "Usage & Cost", icon: BarChart3 },
   { id: "data", label: "Data & Storage", icon: Database },
   { id: "phone", label: "Phone Pairing", icon: Smartphone },
+  { id: "sync", label: "Sync", icon: RefreshCw },
   { id: "about", label: "About & Updates", icon: Info },
 ] as const;
 
@@ -48,6 +51,8 @@ export default function SettingsPage({
 }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [section, setSection] = useState<SectionId>("appearance");
+  // Sync appears only in builds with a sync server configured (dev, for now).
+  const syncAvailable = useSyncStatus().state !== "off";
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -75,7 +80,7 @@ export default function SettingsPage({
       <div className="flex min-h-0 flex-1">
         {/* Section nav */}
         <nav className="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-edge-soft p-3">
-          {SECTIONS.map((s) => {
+          {SECTIONS.filter((s) => s.id !== "sync" || syncAvailable).map((s) => {
             const Icon = s.icon;
             const active = section === s.id;
             return (
@@ -113,6 +118,7 @@ export default function SettingsPage({
                   </div>
                 </div>
               )}
+              {section === "sync" && <SyncSection />}
               {section === "about" && (
                 <AboutSection settings={settings} patch={patch} updateInfo={updateInfo} />
               )}

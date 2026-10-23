@@ -306,12 +306,13 @@ async function ensureSyncTracking(db: Database): Promise<void> {
     }
   }
 
-  // Rows that existed before tracking: recorded once, as if just written.
+  // Rows that existed before tracking: recorded once, at time 0 — "older than
+  // any edit" — so when this device joins a vault, the vault's copy of a row wins.
   const done = await db.select<{ value: string }[]>("SELECT value FROM sync_state WHERE key = 'backfilled'");
   if (done.length === 0) {
     for (const [table, pk] of Object.entries(SYNCED_TABLES)) {
-      await db.execute(`INSERT OR IGNORE INTO sync_meta (tbl, row_id, changed_at, deleted) SELECT '${table}', ${pk}, ${NOW_MS}, 0 FROM ${table}`);
-      await db.execute(`INSERT OR IGNORE INTO sync_outbox (tbl, row_id, changed_at) SELECT '${table}', ${pk}, ${NOW_MS} FROM ${table}`);
+      await db.execute(`INSERT OR IGNORE INTO sync_meta (tbl, row_id, changed_at, deleted) SELECT '${table}', ${pk}, 0, 0 FROM ${table}`);
+      await db.execute(`INSERT OR IGNORE INTO sync_outbox (tbl, row_id, changed_at) SELECT '${table}', ${pk}, 0 FROM ${table}`);
     }
     await db.execute("INSERT INTO sync_state (key, value) VALUES ('backfilled', '1')");
   }

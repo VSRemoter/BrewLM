@@ -9,6 +9,8 @@
 #
 # Each profile keeps its data in "<app data>/com.brewlm.app.<profile>", so the
 # normal library is never touched. Profile names: letters and digits only.
+# Set BREWLM_SYNC_PASSWORD to create/unlock the encrypted vault without the UI
+# (the first copy prints its recovery key in the terminal).
 set -euo pipefail
 
 PROFILE="${1:?usage: scripts/sync-dev-copy.sh <profile>}"

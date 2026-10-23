@@ -114,7 +114,9 @@ pub fn sync_dev_config() -> Option<serde_json::Value> {
     let url = std::env::var("BREWLM_SYNC_URL").ok()?;
     let token = std::env::var("BREWLM_SYNC_TOKEN").ok()?;
     let vault = std::env::var("BREWLM_SYNC_VAULT").unwrap_or_else(|_| "dev".into());
-    Some(serde_json::json!({ "url": url, "token": token, "vault": vault }))
+    // Optional: set up or unlock the vault with this password, without the UI.
+    let password = std::env::var("BREWLM_SYNC_PASSWORD").ok();
+    Some(serde_json::json!({ "url": url, "token": token, "vault": vault, "password": password }))
 }
 
 /// Sync activity in the terminal that launched the app (the webview console

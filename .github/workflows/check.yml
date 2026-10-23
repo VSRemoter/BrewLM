@@ -51,6 +51,9 @@ jobs:
       - name: Typecheck and build the frontend
         run: npm run build
 
+      - name: Frontend unit tests
+        run: npm test
+
       # The bundler wants the cloudflared sidecar for this platform to exist.
       - name: Fetch sidecar binaries
         shell: bash

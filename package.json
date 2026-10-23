@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "postinstall": "node scripts/copy-excalidraw-fonts.mjs"
+    "postinstall": "node scripts/copy-excalidraw-fonts.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -21,6 +22,7 @@
     "@tauri-apps/plugin-sql": "^2.4.0",
     "@tauri-apps/plugin-store": "^2.4.4",
     "fflate": "^0.8.3",
+    "hash-wasm": "4.12.0",
     "katex": "^0.18.1",
     "lucide-react": "^1.28.0",
     "mediabunny": "1.61.3",
@@ -38,6 +40,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "4.1.12"
   }
 }

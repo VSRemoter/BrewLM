@@ -1,5 +1,6 @@
 /**
- * BrewLM Sync engine — milestones 2a–2b: records and media, a dev server, polling.
+ * BrewLM Sync engine — milestones 2a–2c: end-to-end encrypted records and
+ * media, a dev server, polling.
  *
  * Every few seconds: PULL changes other devices made (server `seq` after our
  * cursor) and apply them through Rust in one transaction (src-tauri/src/sync.rs,
@@ -12,29 +13,52 @@
  * has seen so a slow clock can't make new edits look old. Last writer wins
  * per row.
  *
- * Each record travels as an opaque payload `{ v, tbl, id, deleted, row }`
- * under the key `tbl:id`; milestone 2c encrypts both. A record too big for the
- * change log is uploaded as a blob and its payload becomes `{ v, blob }`.
+ * Everything leaves the device encrypted with the vault key (vaultCrypto.ts):
+ * a record `{ v, tbl, id, deleted, row }` is stored under a hidden id of
+ * `tbl:id`; one too big for the change log is uploaded as an encrypted blob
+ * and its record becomes `{ v, blob }`. Media files are blobs under a hidden
+ * id of their content-hash name; every download is decrypted and checked
+ * against that name. Rows may arrive before their files: missing files are
+ * fetched as they appear, and images re-render once theirs lands.
  *
- * Media files (audio, images, covers) are blobs named by their content hash,
- * so they upload once and every download is checked against its name. Rows
- * may arrive before their files: missing files are fetched as they appear,
- * and images re-render once their file lands (`markArrived`).
- *
- * Milestone 2a reads its server settings from the environment of a dev build
- * (`BREWLM_SYNC_URL`, `BREWLM_SYNC_TOKEN`, `BREWLM_SYNC_VAULT`); accounts and
- * a Settings page come with milestone 2e.
+ * The vault key is kept in this install's `sync-device.json`, outside the
+ * database, so it never ends up in a backup. Settings → Sync sets up or
+ * unlocks the vault (password or recovery key). Server settings still come
+ * from a dev build's environment (`BREWLM_SYNC_URL`, `_TOKEN`, `_VAULT`, and
+ * `_PASSWORD` to set up/unlock without the UI); accounts arrive in 2e.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { load } from "@tauri-apps/plugin-store";
+import { load, type Store } from "@tauri-apps/plugin-store";
 import { BLOB_PREFIX, blobRefsIn, markArrived, mediaBytes, putBlob } from "./blobs";
 import { getDb, referencedBlobRefs, SYNCED_TABLES, uid } from "./db";
+import {
+  createEnvelope,
+  decryptBlob,
+  decryptRecord,
+  deriveKeys,
+  encryptBlob,
+  encryptRecord,
+  type Envelope,
+  formatRecoveryKey,
+  fromBase64,
+  hiddenId,
+  newRecoveryKey,
+  newVaultKey,
+  rewrapPassword,
+  rewrapRecovery,
+  toBase64,
+  unlockWithPassword,
+  unlockWithRecovery,
+  type VaultKeys,
+} from "./vaultCrypto";
 
 interface SyncConfig {
   url: string;
   token: string;
   vault: string;
+  /** Dev only: set up or unlock with this password, without the UI. */
+  password?: string | null;
 }
 
 interface Payload {
@@ -54,10 +78,27 @@ export interface RemoteChanges {
   chatIds: Set<string>;
 }
 
+export type SyncState =
+  /** No sync server configured in this build. */
+  | "off"
+  /** Server reachable, no vault yet: create one with a password. */
+  | "setup"
+  /** The vault exists but this device hasn't unlocked it. */
+  | "locked"
+  | "on";
+
+export interface SyncStatus {
+  state: SyncState;
+  /** Last problem, cleared by the next good cycle. */
+  error?: string;
+  lastSyncAt?: number;
+  syncApiKeys: boolean;
+}
+
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 60_000;
 const PUSH_BATCH = 200;
-/** Records above this travel as blobs (the server's change-log cap is 1.5M chars). */
+/** Records above this travel as blobs (the server's change-log cap is 1.5M chars, after base64). */
 const MAX_INLINE = 1_000_000;
 /** Larger than any real row; such a record is kept local and logged. */
 const MAX_RECORD = 50_000_000;
@@ -65,6 +106,7 @@ const MAX_RECORD = 50_000_000;
 const MEDIA_TABLES = ["notebooks", "folders", "sources", "images", "artifacts", "messages"];
 /** A file another device hasn't uploaded yet is retried this often. */
 const DOWNLOAD_RETRY_MS = 30_000;
+export const MIN_PASSWORD = 10;
 
 /** Settings that describe this machine, never another device. */
 const LOCAL_SETTINGS = new Set(["localBaseUrl", "localKey", "localContext", "localEmbedModel", "customModels.local"]);
@@ -94,6 +136,11 @@ async function setState(key: string, value: string): Promise<void> {
   );
 }
 
+/** This install's settings file: device id and vault key, never in the database or backups. */
+async function deviceStore(): Promise<Store> {
+  return load("sync-device.json", { autoSave: false, defaults: {} });
+}
+
 /**
  * This install's device id lives outside the database, so a database that
  * arrived from elsewhere (a restored backup, a copied folder) is noticed: it
@@ -101,7 +148,7 @@ async function setState(key: string, value: string): Promise<void> {
  * decides, row by row, which version is newer.
  */
 async function deviceId(): Promise<string> {
-  const store = await load("sync-device.json", { autoSave: false, defaults: {} });
+  const store = await deviceStore();
   let id = await store.get<string>("deviceId");
   if (!id) {
     id = uid();
@@ -166,9 +213,9 @@ function log(line: string, warn = false): void {
 
 /* --------------------------------- server -------------------------------- */
 
-async function api<T>(cfg: SyncConfig, path: string, body?: unknown): Promise<T> {
+async function api<T>(cfg: SyncConfig, path: string, body?: unknown, method?: string): Promise<T> {
   const res = await tauriFetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
     connectTimeout: 15000,
@@ -188,7 +235,7 @@ async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Pr
     body: bytes,
     connectTimeout: 15000,
   });
-  if (!res.ok) throw new Error(`sync server: upload ${id}: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`sync server: upload: HTTP ${res.status}`);
 }
 
 /** The blob's bytes, or null if the server doesn't have it (yet). */
@@ -198,8 +245,24 @@ async function getRemoteBlob(cfg: SyncConfig, id: string): Promise<Uint8Array | 
     connectTimeout: 15000,
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`sync server: download ${id}: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`sync server: download: HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
+}
+
+async function getEnvelope(cfg: SyncConfig): Promise<{ envelope: Envelope | null; version: number }> {
+  const res = await api<{ envelope: string | null; version: number }>(cfg, "keys");
+  return { envelope: res.envelope ? (JSON.parse(res.envelope) as Envelope) : null, version: res.version };
+}
+
+async function putEnvelope(cfg: SyncConfig, envelope: Envelope, expectVersion: number): Promise<void> {
+  const res = await tauriFetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/keys`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ envelope: JSON.stringify(envelope), expectVersion }),
+    connectTimeout: 15000,
+  });
+  if (res.status === 409) throw new Error("Another device changed the sync password at the same time. Try again.");
+  if (!res.ok) throw new Error(`sync server: HTTP ${res.status}`);
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -214,7 +277,10 @@ function syncsSetting(key: string, syncKeys: boolean): boolean {
 
 /* ---------------------------------- pull --------------------------------- */
 
-async function pull(cfg: SyncConfig, device: string, clock: Clock, out: RemoteChanges): Promise<void> {
+/** Records that wouldn't decrypt, logged once each (wrong vault key, tampering). */
+const unreadable = new Set<string>();
+
+async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clock, out: RemoteChanges): Promise<void> {
   const syncKeys = (await getState("sync_api_keys")) !== "0";
   let cursor = Number((await getState("cursor")) || "0");
   for (;;) {
@@ -228,15 +294,19 @@ async function pull(cfg: SyncConfig, device: string, clock: Clock, out: RemoteCh
       clock.observe(c.hlc);
       let p: Payload;
       try {
-        p = JSON.parse(c.payload);
+        p = JSON.parse(await decryptRecord(keys, c.key, c.payload));
         if (p.blob) {
-          const bytes = await getRemoteBlob(cfg, p.blob);
-          if (!bytes) throw new Error(`record blob ${p.blob} is missing`);
-          p = JSON.parse(new TextDecoder().decode(bytes));
+          const sealed = await getRemoteBlob(cfg, p.blob);
+          if (!sealed) throw new Error(`record blob is missing`);
+          p = JSON.parse(new TextDecoder().decode(await decryptBlob(keys, p.blob, sealed)));
         }
+        // The record must be the one its (hidden) key names.
+        if ((await hiddenId(keys, `${p.tbl}:${p.id}`)) !== c.key) throw new SyntaxError("key mismatch");
       } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e; // network trouble: retry the whole page next cycle
+        if (!(e instanceof Error) || e.message.startsWith("sync server")) throw e; // network: retry the page
+        if (!unreadable.has(c.key)) log(`skipped a record that doesn't decrypt (${e.message})`, true);
+        unreadable.add(c.key);
+        continue;
       }
       if (p.v !== 1 || !(p.tbl in SYNCED_TABLES)) continue; // from a newer app version
       if (p.tbl === "settings" && !syncsSetting(p.id, syncKeys)) continue;
@@ -266,7 +336,7 @@ async function pull(cfg: SyncConfig, device: string, clock: Clock, out: RemoteCh
 const oversized = new Set<string>();
 
 /** Push the outbox; returns how many records the server accepted. */
-async function push(cfg: SyncConfig, device: string, clock: Clock): Promise<number> {
+async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clock): Promise<number> {
   const d = await getDb();
   const syncKeys = (await getState("sync_api_keys")) !== "0";
   let accepted = 0;
@@ -295,39 +365,45 @@ async function push(cfg: SyncConfig, device: string, clock: Clock): Promise<numb
 
     const changes: { key: string; hlc: string; payload: string }[] = [];
     const sent: { tbl: string; row_id: string; changed_at: number; hlc: string | null }[] = [];
+    const sentByKey = new Map<string, (typeof sent)[number]>();
     for (const e of entries) {
-      const key = `${e.tbl}:${e.row_id}`;
+      const label = `${e.tbl}:${e.row_id}`;
       if (!SYNCED_TABLES[e.tbl] || (e.tbl === "settings" && !syncsSetting(e.row_id, syncKeys))) {
         sent.push({ ...e, hlc: null }); // never leaves this device: just clear it
         continue;
       }
-      const row = rows.get(key);
-      let payload = JSON.stringify({ v: 1, tbl: e.tbl, id: e.row_id, deleted: !row, ...(row ? { row } : {}) });
-      if (payload.length > MAX_RECORD) {
-        if (!oversized.has(key)) log(`${key} is too large to sync (${payload.length} chars)`, true);
-        oversized.add(key);
+      const row = rows.get(label);
+      let json = JSON.stringify({ v: 1, tbl: e.tbl, id: e.row_id, deleted: !row, ...(row ? { row } : {}) });
+      if (json.length > MAX_RECORD) {
+        if (!oversized.has(label)) log(`${label} is too large to sync (${json.length} chars)`, true);
+        oversized.add(label);
         continue;
       }
-      for (const ref of blobRefsIn(payload)) media.toUpload.add(ref.slice(BLOB_PREFIX.length));
-      if (payload.length > MAX_INLINE) {
-        const bytes = new TextEncoder().encode(payload);
-        const id = `rec-${await sha256Hex(bytes)}`;
-        await putRemoteBlob(cfg, id, bytes);
-        payload = JSON.stringify({ v: 1, blob: id });
+      for (const ref of blobRefsIn(json)) media.toUpload.add(ref.slice(BLOB_PREFIX.length));
+      if (json.length > MAX_INLINE) {
+        const bytes = new TextEncoder().encode(json);
+        const id = await hiddenId(keys, `rec:${await sha256Hex(bytes)}`);
+        await putRemoteBlob(cfg, id, await encryptBlob(keys, id, bytes));
+        json = JSON.stringify({ v: 1, blob: id });
       }
+      const key = await hiddenId(keys, label);
       const hlc = clock.next(e.changed_at);
-      changes.push({ key, hlc, payload });
-      sent.push({ ...e, hlc });
+      changes.push({ key, hlc, payload: await encryptRecord(keys, key, json) });
+      const s = { ...e, hlc };
+      sent.push(s);
+      sentByKey.set(key, s);
     }
 
     // Files first, so a device that pulls these rows can fetch what they point at.
-    await uploadMedia(cfg);
+    await uploadMedia(cfg, keys);
     if (changes.length > 0) {
       const res = await api<{ accepted: number; stale: string[] }>(cfg, "push", { device, changes });
       accepted += res.accepted;
       // Stale = the server already holds a newer version; drop ours (it lost).
-      const stale = new Set(res.stale);
-      for (const s of sent) if (stale.has(`${s.tbl}:${s.row_id}`)) s.hlc = null;
+      for (const k of res.stale) {
+        const s = sentByKey.get(k);
+        if (s) s.hlc = null;
+      }
     }
     await invoke("sync_mark_pushed", { pushed: sent });
     await setState("hlc_last", clock.toString());
@@ -351,6 +427,9 @@ const media = {
   uploaded: 0,
 };
 
+/** A file's server-side id: hidden, so the server can't recognise it by its hash. */
+const fileId = (keys: VaultKeys, name: string) => hiddenId(keys, `file:${name}`);
+
 async function scanMedia(): Promise<void> {
   const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
   const absent = new Set(await invoke<string[]>("blob_missing", { names }));
@@ -359,38 +438,39 @@ async function scanMedia(): Promise<void> {
 }
 
 /** Upload files the server lacks. */
-async function uploadMedia(cfg: SyncConfig): Promise<void> {
+async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   // Each file leaves the queue only once it's settled, so an error keeps the rest.
   for (const n of media.toUpload) if (media.onServer.has(n)) media.toUpload.delete(n);
   const pending = [...media.toUpload];
   for (let i = 0; i < pending.length; i += 1000) {
-    const ids = pending.slice(i, i + 1000);
+    const names = pending.slice(i, i + 1000);
+    const ids = await Promise.all(names.map((n) => fileId(keys, n)));
     const { missing } = await api<{ missing: string[] }>(cfg, "blobs/missing", { ids });
     const need = new Set(missing);
-    for (const id of ids) {
-      if (!need.has(id)) {
-        media.onServer.add(id);
-        media.toUpload.delete(id);
+    for (const [j, name] of names.entries()) {
+      if (!need.has(ids[j])) {
+        media.onServer.add(name);
+        media.toUpload.delete(name);
         continue;
       }
       let bytes: Uint8Array;
       try {
-        bytes = await mediaBytes(`${BLOB_PREFIX}${id}`);
+        bytes = await mediaBytes(`${BLOB_PREFIX}${name}`);
       } catch {
-        media.toUpload.delete(id);
-        media.wanted.add(id); // not on this device either: maybe another one has it
+        media.toUpload.delete(name);
+        media.wanted.add(name); // not on this device either: maybe another one has it
         continue;
       }
-      await putRemoteBlob(cfg, id, bytes);
-      media.onServer.add(id);
-      media.toUpload.delete(id);
+      await putRemoteBlob(cfg, ids[j], await encryptBlob(keys, ids[j], bytes));
+      media.onServer.add(name);
+      media.toUpload.delete(name);
       media.uploaded += 1;
     }
   }
 }
 
 /** Download files rows point at that this device lacks; returns how many landed. */
-async function downloadMedia(cfg: SyncConfig): Promise<number> {
+async function downloadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<number> {
   if (media.wanted.size === 0) return 0;
   const now = Date.now();
   const due = [...media.wanted].filter((n) => (media.retryAt.get(n) ?? 0) <= now);
@@ -401,17 +481,22 @@ async function downloadMedia(cfg: SyncConfig): Promise<number> {
       media.wanted.delete(name); // already here
       continue;
     }
-    const bytes = await getRemoteBlob(cfg, name);
-    if (!bytes) {
+    const id = await fileId(keys, name);
+    const sealed = await getRemoteBlob(cfg, id);
+    if (!sealed) {
       media.retryAt.set(name, now + DOWNLOAD_RETRY_MS);
       continue;
     }
-    const ext = name.slice(name.lastIndexOf(".") + 1);
-    const ref = await putBlob(bytes, ext);
     media.wanted.delete(name);
     media.retryAt.delete(name);
+    let ref = "";
+    try {
+      ref = await putBlob(await decryptBlob(keys, id, sealed), name.slice(name.lastIndexOf(".") + 1));
+    } catch {
+      /* doesn't decrypt: reported below */
+    }
     if (ref !== `${BLOB_PREFIX}${name}`) {
-      log(`file ${name} arrived damaged (its contents don't match its name) — skipped`, true);
+      log(`file ${name} arrived damaged (it doesn't decrypt to what its name says) — skipped`, true);
       continue;
     }
     media.onServer.add(name);
@@ -421,19 +506,44 @@ async function downloadMedia(cfg: SyncConfig): Promise<number> {
   return landed;
 }
 
-/* ---------------------------------- loop --------------------------------- */
+/* ------------------------------ status & loop ----------------------------- */
 
-const listeners = new Set<(c: RemoteChanges) => void>();
+const changeListeners = new Set<(c: RemoteChanges) => void>();
+const statusListeners = new Set<(s: SyncStatus) => void>();
+let status: SyncStatus = { state: "off", syncApiKeys: true };
 
 /** Subscribe to changes pulled from other devices; returns an unsubscribe. */
 export function onRemoteChanges(fn: (c: RemoteChanges) => void): () => void {
-  listeners.add(fn);
+  changeListeners.add(fn);
   return () => {
-    listeners.delete(fn);
+    changeListeners.delete(fn);
   };
 }
 
-let started = false;
+export function getSyncStatus(): SyncStatus {
+  return status;
+}
+
+/** Subscribe to sync status (Settings → Sync); returns an unsubscribe. */
+export function onSyncStatus(fn: (s: SyncStatus) => void): () => void {
+  statusListeners.add(fn);
+  return () => {
+    statusListeners.delete(fn);
+  };
+}
+
+function setStatus(next: Partial<SyncStatus>): void {
+  status = { ...status, ...next };
+  for (const fn of statusListeners) fn(status);
+}
+
+let cfg: SyncConfig | null = null;
+let device = "";
+let clock: Clock | null = null;
+/** The unlocked vault: raw key (for re-wrapping) and derived keys. */
+let vault: { raw: Uint8Array; keys: VaultKeys } | null = null;
+/** Each start of the loop gets a number; an older loop stops when it sees a newer one. */
+let generation = 0;
 let stopped = false;
 
 // Dev: hot-swapping this module would leave views subscribed to the old copy
@@ -445,28 +555,24 @@ if (import.meta.hot) {
   import.meta.hot.accept(() => window.location.reload());
 }
 
-/** Start syncing if this build has a sync server configured (dev builds, for now). */
-export async function startSync(): Promise<void> {
-  if (started) return;
-  const cfg = await invoke<SyncConfig | null>("sync_dev_config");
-  if (!cfg) return;
-  started = true;
-  const device = await deviceId();
-  const clock = Clock.parse(device, await getState("hlc_last"));
-  log(`on — ${cfg.url}, vault "${cfg.vault}", device ${device.slice(0, 8)}`);
-
+function loop(): void {
+  if (!cfg || !vault || !clock) return;
+  const gen = ++generation;
+  const c = cfg;
+  const keys = vault.keys;
+  const clk = clock;
   let delay = POLL_MS;
   const cycle = async () => {
-    if (stopped) return;
+    if (stopped || gen !== generation) return; // signed out, or restarted with another vault
     const changed: RemoteChanges = { tables: new Set(), notebookIds: new Set(), chatIds: new Set() };
     try {
-      await pull(cfg, device, clock, changed);
+      await pull(c, keys, device, clk, changed);
       if (!media.scanned) await scanMedia();
-      const landed = await downloadMedia(cfg);
+      const landed = await downloadMedia(c, keys);
       if (landed > 0) for (const t of MEDIA_TABLES) changed.tables.add(t);
       const before = media.uploaded;
-      const sent = await push(cfg, device, clock);
-      await uploadMedia(cfg); // files from the first scan, or left over from a failed cycle
+      const sent = await push(c, keys, device, clk);
+      await uploadMedia(c, keys); // files from the first scan, or left over from a failed cycle
       const uploaded = media.uploaded - before;
       if (changed.tables.size > 0 || sent > 0 || uploaded > 0)
         log(
@@ -474,12 +580,170 @@ export async function startSync(): Promise<void> {
             (landed || uploaded ? `; files: ${landed} down, ${uploaded} up` : "")
         );
       delay = POLL_MS;
+      setStatus({ error: undefined, lastSyncAt: Date.now() });
     } catch (e) {
       delay = Math.min(delay * 2, MAX_BACKOFF_MS);
-      log(`${e instanceof Error ? e.message : String(e)} — retrying in ${delay / 1000}s`, true);
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`${msg} — retrying in ${delay / 1000}s`, true);
+      setStatus({ error: msg });
     }
-    if (changed.tables.size > 0) for (const fn of listeners) fn(changed);
+    if (changed.tables.size > 0) for (const fn of changeListeners) fn(changed);
     setTimeout(cycle, delay);
   };
   void cycle();
+}
+
+/** Keep the unlocked vault key on this install and start syncing. */
+async function useVault(raw: Uint8Array, fresh: boolean): Promise<void> {
+  const store = await deviceStore();
+  await store.set("vault", { name: cfg!.vault, key: toBase64(raw) });
+  await store.save();
+  if (fresh) await resendEverything();
+  vault = { raw, keys: await deriveKeys(raw) };
+  setStatus({ state: "on", error: undefined });
+  loop();
+}
+
+/**
+ * Joining (or creating) a vault: pull its whole history and offer every local
+ * row again. Last-writer-wins keeps whichever version of each row is newer, so
+ * nothing newer on either side is lost. Rows recorded before tracking began
+ * have time 0, so on a device joining an existing vault the vault's copy wins.
+ */
+async function resendEverything(): Promise<void> {
+  const d = await getDb();
+  await setState("cursor", "0");
+  await d.execute("UPDATE sync_meta SET hlc = ''");
+  await d.execute(
+    "INSERT OR IGNORE INTO sync_outbox (tbl, row_id, changed_at) SELECT tbl, row_id, changed_at FROM sync_meta WHERE deleted = 0"
+  );
+  media.scanned = false;
+  media.onServer.clear();
+  oversized.clear();
+  unreadable.clear();
+}
+
+function requireCfg(): SyncConfig {
+  if (!cfg) throw new Error("Sync isn't available in this build.");
+  return cfg;
+}
+
+/** First device: create the vault. Returns the recovery key to show (once). */
+export async function setUpSync(password: string): Promise<string> {
+  const c = requireCfg();
+  if (password.length < MIN_PASSWORD) throw new Error(`Use at least ${MIN_PASSWORD} characters.`);
+  const { envelope, version } = await getEnvelope(c);
+  if (envelope || version > 0) throw new Error("This sync account already has a password — unlock it instead.");
+  const raw = newVaultKey();
+  const recovery = newRecoveryKey();
+  await putEnvelope(c, await createEnvelope(raw, password, recovery), 0);
+  await useVault(raw, true);
+  log("vault created");
+  return formatRecoveryKey(recovery);
+}
+
+/** Another device: unlock the existing vault with the sync password. */
+export async function unlockSync(password: string): Promise<void> {
+  const { envelope } = await getEnvelope(requireCfg());
+  if (!envelope) throw new Error("Sync hasn't been set up yet.");
+  await useVault(await unlockWithPassword(envelope, password), true);
+  log("vault unlocked");
+}
+
+/** Forgot the password: unlock with the recovery key and choose a new password. */
+export async function recoverSync(recoveryKey: string, newPassword: string): Promise<void> {
+  const c = requireCfg();
+  if (newPassword.length < MIN_PASSWORD) throw new Error(`Use at least ${MIN_PASSWORD} characters.`);
+  const { envelope, version } = await getEnvelope(c);
+  if (!envelope) throw new Error("Sync hasn't been set up yet.");
+  const raw = await unlockWithRecovery(envelope, recoveryKey);
+  await putEnvelope(c, await rewrapPassword(envelope, raw, newPassword), version);
+  await useVault(raw, true);
+  log("vault recovered with the recovery key; password changed");
+}
+
+export async function changeSyncPassword(newPassword: string): Promise<void> {
+  const c = requireCfg();
+  if (!vault) throw new Error("Unlock sync first.");
+  if (newPassword.length < MIN_PASSWORD) throw new Error(`Use at least ${MIN_PASSWORD} characters.`);
+  const { envelope, version } = await getEnvelope(c);
+  if (!envelope) throw new Error("Sync hasn't been set up yet.");
+  await putEnvelope(c, await rewrapPassword(envelope, vault.raw, newPassword), version);
+}
+
+/** Replace the recovery key (the old one stops working). Returns the new one to show. */
+export async function newSyncRecoveryKey(): Promise<string> {
+  const c = requireCfg();
+  if (!vault) throw new Error("Unlock sync first.");
+  const { envelope, version } = await getEnvelope(c);
+  if (!envelope) throw new Error("Sync hasn't been set up yet.");
+  const recovery = newRecoveryKey();
+  await putEnvelope(c, await rewrapRecovery(envelope, vault.raw, recovery), version);
+  return formatRecoveryKey(recovery);
+}
+
+/** Stop syncing on this device and forget its copy of the vault key. Local data stays. */
+export async function signOutOfSync(): Promise<void> {
+  generation += 1;
+  vault = null;
+  const store = await deviceStore();
+  await store.delete("vault");
+  await store.save();
+  setStatus({ state: "locked", error: undefined });
+}
+
+export async function setSyncApiKeys(on: boolean): Promise<void> {
+  await setState("sync_api_keys", on ? "1" : "0");
+  // Turned back on: offer the keys again (they were cleared from the outbox).
+  if (on)
+    await (await getDb()).execute(
+      `INSERT OR IGNORE INTO sync_outbox (tbl, row_id, changed_at)
+       SELECT 'settings', key, 0 FROM settings WHERE key IN (${[...API_KEY_SETTINGS].map((k) => `'${k}'`).join(", ")})`
+    );
+  setStatus({ syncApiKeys: on });
+}
+
+/** Start syncing if this build has a sync server configured (dev builds, for now). */
+export async function startSync(): Promise<void> {
+  if (cfg) return;
+  const c = await invoke<SyncConfig | null>("sync_dev_config");
+  if (!c) return;
+  cfg = c;
+  device = await deviceId();
+  clock = Clock.parse(device, await getState("hlc_last"));
+  setStatus({ syncApiKeys: (await getState("sync_api_keys")) !== "0" });
+  log(`server ${c.url}, vault "${c.vault}", device ${device.slice(0, 8)}`);
+
+  const saved = await (await deviceStore()).get<{ name: string; key: string }>("vault");
+  if (saved?.name === c.vault) {
+    vault = { raw: fromBase64(saved.key), keys: await deriveKeys(fromBase64(saved.key)) };
+    setStatus({ state: "on" });
+    loop();
+    return;
+  }
+  await checkVault(c, POLL_MS);
+}
+
+/** Does the vault exist yet? Retried with backoff while the server is unreachable (offline at launch). */
+async function checkVault(c: SyncConfig, delay: number): Promise<void> {
+  let envelope: Envelope | null;
+  try {
+    ({ envelope } = await getEnvelope(c));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    setStatus({ state: status.state === "off" ? "locked" : status.state, error: `Can't reach the sync server (${msg})` });
+    log(`can't reach the sync server — retrying in ${delay / 1000}s`, true);
+    setTimeout(() => void checkVault(c, Math.min(delay * 2, MAX_BACKOFF_MS)), delay);
+    return;
+  }
+  if (vault) return; // unlocked from Settings meanwhile
+  setStatus({ state: envelope ? "locked" : "setup", error: undefined });
+  if (!c.password) return;
+  try {
+    if (envelope) await unlockSync(c.password);
+    else log(`dev: vault created; recovery key ${await setUpSync(c.password)}`);
+  } catch (e) {
+    setStatus({ error: e instanceof Error ? e.message : String(e) });
+    log(`dev password didn't work: ${e instanceof Error ? e.message : e}`, true);
+  }
 }
