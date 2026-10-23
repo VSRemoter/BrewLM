@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Folder, Notebook } from "../lib/types";
+import { mediaSrc } from "../lib/blobs";
 import type { UpdateInfo } from "../lib/updates";
 import { fileToCoverDataUrl, formatTime } from "../lib/source";
 import { BrewIcon } from "./BrewIcon";
@@ -470,7 +471,7 @@ export default function Home({
       )}
       {nb.cover && (
         <img
-          src={nb.cover}
+          src={mediaSrc(nb.cover)}
           alt=""
           draggable={false}
           className="h-[64px] w-full shrink-0 object-cover"
@@ -504,7 +505,7 @@ export default function Home({
   const thumb = (cover: string, title: string, muted = false) =>
     cover ? (
       <img
-        src={cover}
+        src={mediaSrc(cover)}
         alt=""
         draggable={false}
         className={`h-9 w-9 shrink-0 rounded-lg object-cover ${muted ? "opacity-60 grayscale" : ""}`}
@@ -580,7 +581,7 @@ export default function Home({
       >
         {f.cover && (
           <img
-            src={f.cover}
+            src={mediaSrc(f.cover)}
             alt=""
             draggable={false}
             className="h-[64px] w-full shrink-0 object-cover"
@@ -1366,7 +1367,7 @@ export default function Home({
               {createCover ? (
                 <div className="flex items-start gap-3">
                   <img
-                    src={createCover}
+                    src={mediaSrc(createCover)}
                     alt="Cover preview"
                     className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
                   />
@@ -1470,7 +1471,7 @@ export default function Home({
               {editCover ? (
                 <div className="flex items-start gap-3">
                   <img
-                    src={editCover}
+                    src={mediaSrc(editCover)}
                     alt="Cover preview"
                     className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
                   />
@@ -1563,7 +1564,7 @@ export default function Home({
               {folderCover ? (
                 <div className="flex items-start gap-3">
                   <img
-                    src={folderCover}
+                    src={mediaSrc(folderCover)}
                     alt="Cover preview"
                     className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
                   />

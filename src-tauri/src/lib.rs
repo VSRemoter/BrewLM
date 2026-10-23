@@ -1,3 +1,4 @@
+mod blobs;
 mod server;
 
 use server::SharingState;
@@ -33,11 +34,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(SharingState(std::sync::Mutex::new(None)))
+        // Media files (see blobs.rs); file reads run off the webview's thread.
+        .register_asynchronous_uri_scheme_protocol("brewblob", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || responder.respond(blobs::serve(&app, &request)));
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             server::start_sharing,
             server::stop_sharing,
             server::share_status,
+            blobs::blob_put,
+            blobs::blob_gc,
+            blobs::backup_export,
+            blobs::backup_restore_zip,
+            blobs::snapshot_before_media_move,
+            blobs::prune_media_snapshot,
         ])
         .setup(|app| {
             // BREWLM_SHARE_AUTO=1 starts sharing on launch (scripted testing).

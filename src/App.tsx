@@ -3,6 +3,7 @@ import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
+import { migrateMedia } from "./lib/mediaMigration";
 import {
   cloneNotebook,
   createFolder,
@@ -15,6 +16,7 @@ import {
   listTrashedNotebooks,
   moveNotebookToFolder,
   purgeExpiredTrash,
+  repairBinarySources,
   restoreNotebook,
   setFolderCover,
   setNotebookCover,
@@ -76,6 +78,16 @@ export default function App() {
         setSettings(s);
         await refresh();
         setReady(true);
+        // Background maintenance: repair garbage file sources left by old
+        // versions, then move inline media into files (one-time; resumes if
+        // interrupted) — its compaction also reclaims the repaired rows' space.
+        void repairBinarySources()
+          .then((n) => {
+            if (n > 0) console.info(`sources: repaired ${n} unreadable file source(s)`);
+          })
+          .catch((e) => console.warn("source repair:", e))
+          .then(() => migrateMedia())
+          .catch((e) => console.warn("media migration:", e));
         // Non-blocking update check — never delays or breaks startup.
         if (s.updateCheckOnLaunch) {
           void checkForUpdate().then((info) => {

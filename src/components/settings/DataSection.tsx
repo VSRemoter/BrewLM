@@ -80,7 +80,7 @@ export default function DataSection({
       {/* Backup & restore */}
       <SectionTitle title="Backup & Restore" />
       <Card>
-        <Row label="Export backup" desc="A self-contained copy of the database you can archive or move to another machine.">
+        <Row label="Export backup" desc="A self-contained .zip of your notebooks and their media you can archive or move to another machine.">
           <button
             onClick={() => void doExport()}
             disabled={busy === "export"}

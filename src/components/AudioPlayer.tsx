@@ -4,7 +4,7 @@
  * switches notebooks or keeps chatting. The overview modal and the floating
  * mini player both drive it.
  *
- * Two engines: a synthesized mp3/wav plays through one <audio> element; a
+ * Two engines: a synthesized m4a/mp3/wav plays through one <audio> element; a
  * script with no audio file is read with the system voices line by line
  * (seeking jumps between lines).
  */
@@ -22,7 +22,7 @@ export interface Track {
   /** The audio artifact's id. */
   id: string;
   title: string;
-  /** data: URL of the synthesized file; null = read the script with system voices. */
+  /** URL of the synthesized file (stored file or data: URL); null = read the script with system voices. */
   src: string | null;
   script: ScriptTurn[];
 }

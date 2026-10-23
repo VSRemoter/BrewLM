@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useRef, useState } from "react";
+import { isMediaValue, mediaSrc } from "../lib/blobs";
 import { CONSTITUTION_TITLE } from "../lib/constitution";
 import { ConstitutionPickerModal } from "./ConstitutionPicker";
 import { addSource, deleteSource, setSourcePinned, updateSource } from "../lib/db";
@@ -191,7 +192,7 @@ export default function SourcesPanel({
 
         {ordered.map((s) => {
           const Icon = TYPE_ICON[s.type] ?? FileIcon;
-          const isImage = s.type === "image" && s.content.startsWith("data:");
+          const isImage = s.type === "image" && isMediaValue(s.content);
           const isConstitution = s.type === "context";
           const isRenaming = renamingId === s.id;
           return (
@@ -203,7 +204,7 @@ export default function SourcesPanel({
             >
               {isImage ? (
                 <img
-                  src={s.content}
+                  src={mediaSrc(s.content)}
                   alt={s.title}
                   className="mt-0.5 h-7 w-7 shrink-0 cursor-pointer rounded object-cover"
                   onClick={() => setViewing(s)}
@@ -255,7 +256,7 @@ export default function SourcesPanel({
                   <span className="mt-0.5 line-clamp-1 block text-[11px] text-ink-3">
                     {isConstitution
                       ? "Governs AI behavior in this notebook"
-                      : isImage || (s.type === "audio" && s.content.startsWith("data:"))
+                      : isImage || (s.type === "audio" && isMediaValue(s.content))
                         ? s.mime ?? s.type
                         : sourcePreview(s.content)}
                   </span>

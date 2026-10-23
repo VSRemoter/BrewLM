@@ -1,6 +1,7 @@
 /** Text-to-speech for studio audio: OpenAI, ElevenLabs, or in-app system voices. */
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { encodeM4a } from "./audioEncode";
 import { sseLines } from "./llm";
 import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
 import type { Settings } from "./types";
@@ -352,7 +353,7 @@ export async function synthesizeScript(
      *   /audio/speech endpoint; mp3 clips are joined like OpenAI's.
      * - gpt-audio models only speak through **streaming** chat completions,
      *   as base64 pcm16 in `delta.audio.data` SSE chunks. Turns are merged and
-     *   wrapped in one wav header at the end; a direct "read this" prompt
+     *   encoded once at the end (AAC .m4a, or WAV); a direct "read this" prompt
      *   makes the (conversational) model read verbatim.
      */
     case "openrouter": {
@@ -392,6 +393,9 @@ export async function synthesizeScript(
         merged.set(c, off);
         off += c.length;
       }
+      // AAC where the platform can encode it (~6× smaller than WAV); WAV otherwise.
+      const m4a = await encodeM4a(merged, PCM16_RATE).catch(() => null);
+      if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
       return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, PCM16_RATE)])}` };
     }
     case "elevenlabs": {

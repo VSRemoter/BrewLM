@@ -179,10 +179,21 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     return { title: fileName, text };
   }
 
-  const raw = await res.text();
+  const bytes = new Uint8Array(await res.arrayBuffer());
   if (!contentType.includes("html")) {
-    return { title: parsed.hostname, text: raw.slice(0, MAX_SOURCE_CHARS) };
+    // Plain text, CSV, JSON… or a file behind an unexpected content type. The
+    // file extractor decodes text and rejects binaries, so a link's raw bytes
+    // are never stored as a source.
+    let text: string;
+    try {
+      ({ text } = await extractFileText(new File([bytes], fileName, { type: contentType })));
+    } catch (e) {
+      throw new Error(`That link isn't a page BrewLM can read — ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!text.trim()) throw new Error("The link loaded but no readable text was found.");
+    return { title: parsed.hostname, text: text.slice(0, MAX_SOURCE_CHARS) };
   }
+  const raw = new TextDecoder().decode(bytes);
 
   const doc = new DOMParser().parseFromString(raw, "text/html");
   doc.querySelectorAll("script,style,noscript,svg,iframe,nav,footer,header,form,aside").forEach((el) => el.remove());

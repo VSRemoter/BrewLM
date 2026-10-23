@@ -2,6 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, FilePlus2, Loader2, Minimize2, Play, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isMediaValue, mediaBytes, mediaExt, mediaSrc } from "../lib/blobs";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactText } from "../lib/mentions";
@@ -77,24 +78,20 @@ export default function ArtifactView({
     }
   };
 
-  /** Save the output to disk — audio as mp3/wav, everything else as markdown. */
+  /** Save the output to disk — audio in its own format (m4a/mp3/wav), everything else as markdown. */
   const download = async () => {
     setExportError(null);
     try {
       if (artifact.kind === "audio") {
         const parsed = parseAudio(artifact.data);
         if (parsed?.audio) {
-          const isWav = parsed.audio.startsWith("data:audio/wav");
-          const ext = isWav ? "wav" : "mp3";
+          const ext = mediaExt(parsed.audio);
           const path = await save({
             defaultPath: exportName(artifact.title, ext),
             filters: [{ name: "Audio", extensions: [ext] }],
           });
           if (!path) return; // cancelled
-          const bytes = Uint8Array.from(atob(parsed.audio.split(",")[1] ?? ""), (c) =>
-            c.charCodeAt(0)
-          );
-          await writeFile(path, bytes);
+          await writeFile(path, await mediaBytes(parsed.audio));
           return;
         }
       }
@@ -513,7 +510,7 @@ function parseAudio(data: string): AudioData | null {
       }));
     if (script.length === 0) return null;
     return {
-      audio: typeof d.audio === "string" && d.audio.startsWith("data:") ? d.audio : null,
+      audio: isMediaValue(d.audio) ? d.audio : null,
       script,
       note: typeof d.note === "string" ? d.note : undefined,
     };
@@ -540,7 +537,7 @@ function AudioView({ id, title, data }: { id: string; title: string; data: strin
   const { audio, script, note } = parsed;
   const loaded = player.track?.id === id;
   const current = loaded ? player.line : null;
-  const start = () => player.play({ id, title, src: audio, script });
+  const start = () => player.play({ id, title, src: audio ? mediaSrc(audio) : null, script });
 
   return (
     <div className="flex flex-col gap-3">

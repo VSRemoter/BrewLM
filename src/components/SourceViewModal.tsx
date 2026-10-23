@@ -1,5 +1,6 @@
 import { Landmark, Link2, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { isMediaValue, mediaSrc } from "../lib/blobs";
 import { deleteSource, updateSource } from "../lib/db";
 import type { Source } from "../lib/types";
 import { GhostButton, Modal, PrimaryButton } from "./ui";
@@ -18,8 +19,8 @@ export default function SourceViewModal({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const isConstitution = source.type === "context";
-  const isImage = source.type === "image" && source.content.startsWith("data:");
-  const isAudio = source.type === "audio" && source.content.startsWith("data:");
+  const isImage = source.type === "image" && isMediaValue(source.content);
+  const isAudio = source.type === "audio" && isMediaValue(source.content);
   const isMedia = source.type === "image" || source.type === "audio";
   const isTextLike = !isImage && !isAudio;
   const dirty =
@@ -82,12 +83,12 @@ export default function SourceViewModal({
         {/* body */}
         {isImage ? (
           <img
-            src={source.content}
+            src={mediaSrc(source.content)}
             alt={source.title}
             className="max-h-64 w-auto self-center rounded-lg border border-edge object-contain"
           />
         ) : isAudio ? (
-          <audio controls src={source.content} className="w-full" />
+          <audio controls src={mediaSrc(source.content)} className="w-full" />
         ) : null}
 
         {/* media: the description/transcript is all the model ever reads */}
@@ -100,7 +101,7 @@ export default function SourceViewModal({
               <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-2">
                 {source.text}
               </div>
-            ) : !source.content.startsWith("data:") ? (
+            ) : !isMediaValue(source.content) ? (
               <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-3">
                 Nothing — this file was too large to {source.type === "image" ? "analyze" : "transcribe"}. Split or
                 compress it and add it again.

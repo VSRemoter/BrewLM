@@ -48,6 +48,7 @@ import {
   setSetting,
   sourceText,
 } from "../lib/db";
+import { mediaSrc } from "../lib/blobs";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
 import { hydrateMermaid } from "../lib/mermaid";
@@ -2424,7 +2425,7 @@ export default function ChatPanel({
       {chatBg && (
         // Own compositing layer: messages scroll over it without repainting the photo.
         <div className="absolute inset-0 transform-gpu" aria-hidden>
-          <img src={chatBg} alt="" className="h-full w-full object-cover" />
+          <img src={mediaSrc(chatBg)} alt="" className="h-full w-full object-cover" />
           <div className="absolute inset-0 bg-canvas" style={{ opacity: dimDraft / 100 }} />
         </div>
       )}
@@ -2473,7 +2474,7 @@ export default function ChatPanel({
                   </p>
                   {chatBg && (
                     <img
-                      src={chatBg}
+                      src={mediaSrc(chatBg)}
                       alt=""
                       className="mb-2.5 h-20 w-full rounded-lg border border-edge-soft object-cover"
                     />

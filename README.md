@@ -79,7 +79,7 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 - The phone talks to BrewLM on your computer, so the computer must be on, awake and running BrewLM with sharing started. The tunnel address changes each time sharing starts, so the phone re-pairs after a restart.
 
 ### Local-first, bring your own keys
-- Everything — notebooks, sources, chats, Studio outputs, settings and API keys — lives in one SQLite file, `brewlm.db`, in the app data folder (on macOS: `~/Library/Application Support/com.brewlm.app/`). Schema migrations run automatically at startup; **Data & Storage → Export backup** copies it.
+- Everything — notebooks, sources, chats, Studio outputs, settings and API keys — lives in one SQLite file, `brewlm.db`, in the app data folder (on macOS: `~/Library/Application Support/com.brewlm.app/`), with media (audio overviews, images, covers) as files in `blobs/` beside it. Schema migrations run automatically at startup; **Data & Storage → Export backup** saves both as one `.zip` (older `.db` backups still import).
 - AI calls go straight from your computer to the provider you chose; nothing is proxied through a BrewLM server.
 
 ---
@@ -182,7 +182,7 @@ Type `/` in chat to open the palette with autocomplete.
 ## Architecture at a glance
 
 - **Tauri 2 + React 19 + TypeScript + Vite** frontend; Tailwind CSS 4 design system.
-- **SQLite** (`@tauri-apps/plugin-sql`) as the sole data store — notebooks, folders, sources, chats, artifacts, settings, paired devices, and Trash (`trashed_at`) soft-delete.
+- **SQLite** (`@tauri-apps/plugin-sql`) as the data store — notebooks, folders, sources, chats, artifacts, settings, paired devices, and Trash (`trashed_at`) soft-delete. Media lives in a content-addressed file store (`src-tauri/src/blobs.rs`, `src/lib/blobs.ts`) served to the webview over a `brewblob://` scheme; rows hold `brewblob:<sha256>.<ext>` references. Audio overviews are stored as AAC `.m4a` (`src/lib/audioEncode.ts`). Triggers record row changes in `sync_meta`/`sync_outbox` for the upcoming BrewLM Sync.
 - **AI calls** happen in the webview via `fetch` with your keys (never proxied); Tauri plugins supply native file dialogs, filesystem access and CORS-free page fetching.
 - **Studio**: pipelines in `src/lib/studio.ts` (prompts), `audioScript.ts` (part-by-part podcast scripts), `tts.ts`, `research.ts` and `rag.ts`; running generations are tracked in `studioJobs.ts` so several run at once. Playback lives in `src/components/AudioPlayer.tsx`; Drawings use Excalidraw, lazily loaded from `DrawingCanvas.tsx`.
 - **Phone sharing**: a small embedded web server (`src-tauri/src/server.rs`, axum) serves a pairing/mobile client (`src-tauri/mobile.html`) and a device-key-authenticated API over the local DB; a `cloudflared` quick tunnel makes it reachable anywhere. Phone-issued chat/generate requests land in a `jobs` table that the desktop webview drains (`src/lib/jobRunner.ts`) using the same pipelines as the in-app Studio.

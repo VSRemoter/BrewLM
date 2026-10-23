@@ -1,4 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
+import { blobRefsIn, gcBlobs, isBlobRef, isMediaValue, storeArtifactMedia, storeMedia } from "./blobs";
 import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceChunk, SourceType } from "./types";
 
 export function uid(): string {
@@ -223,7 +224,93 @@ async function initDb(): Promise<Database> {
       parent_id TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     )`);
+  await ensureSyncTracking(db);
   return db;
+}
+
+/* ------------------------- Sync change tracking ------------------------- */
+
+/** Tables BrewLM Sync will replicate, with their primary key column. */
+const SYNCED_TABLES: Record<string, string> = {
+  notebooks: "id",
+  folders: "id",
+  sources: "id",
+  chats: "id",
+  messages: "id",
+  artifacts: "id",
+  images: "id",
+  // Machine-specific keys (local model server…) get filtered at push time.
+  settings: "key",
+  usage_events: "id",
+};
+
+const NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
+
+/**
+ * Change tracking for BrewLM Sync. Nothing uploads yet; this records which
+ * rows changed and when, so the sync engine can push them later. Triggers
+ * live in the database itself, so writes from the Rust phone server are
+ * tracked too. Embeddings, devices, jobs and activity are local and untracked.
+ *
+ * - sync_meta: one row per synced row — last change time and a deleted flag
+ *   (the tombstone other devices need to learn about deletes).
+ * - sync_outbox: rows changed since the last push, one entry per row.
+ * - sync_state: this device's id; `applying` = '1' silences the triggers
+ *   while changes pulled from other devices are written.
+ */
+async function ensureSyncTracking(db: Database): Promise<void> {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      changed_at INTEGER NOT NULL,
+      deleted INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      changed_at INTEGER NOT NULL,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
+  await db.execute("INSERT OR IGNORE INTO sync_state (key, value) VALUES ('device_id', $1)", [uid()]);
+
+  const quiet = "NOT EXISTS (SELECT 1 FROM sync_state WHERE key = 'applying' AND value = '1')";
+  for (const [table, pk] of Object.entries(SYNCED_TABLES)) {
+    for (const [op, ref, deleted] of [
+      ["INSERT", "NEW", 0],
+      ["UPDATE", "NEW", 0],
+      ["DELETE", "OLD", 1],
+    ] as const) {
+      await db.execute(`
+        CREATE TRIGGER IF NOT EXISTS sync_${table}_${op.toLowerCase()} AFTER ${op} ON ${table}
+        WHEN ${quiet}
+        BEGIN
+          INSERT INTO sync_meta (tbl, row_id, changed_at, deleted)
+            VALUES ('${table}', ${ref}.${pk}, ${NOW_MS}, ${deleted})
+            ON CONFLICT (tbl, row_id) DO UPDATE SET changed_at = excluded.changed_at, deleted = excluded.deleted;
+          INSERT INTO sync_outbox (tbl, row_id, changed_at)
+            VALUES ('${table}', ${ref}.${pk}, ${NOW_MS})
+            ON CONFLICT (tbl, row_id) DO UPDATE SET changed_at = excluded.changed_at;
+        END`);
+    }
+  }
+
+  // Rows that existed before tracking: recorded once, as if just written.
+  const done = await db.select<{ value: string }[]>("SELECT value FROM sync_state WHERE key = 'backfilled'");
+  if (done.length === 0) {
+    for (const [table, pk] of Object.entries(SYNCED_TABLES)) {
+      await db.execute(`INSERT OR IGNORE INTO sync_meta (tbl, row_id, changed_at, deleted) SELECT '${table}', ${pk}, ${NOW_MS}, 0 FROM ${table}`);
+      await db.execute(`INSERT OR IGNORE INTO sync_outbox (tbl, row_id, changed_at) SELECT '${table}', ${pk}, ${NOW_MS} FROM ${table}`);
+    }
+    await db.execute("INSERT INTO sync_state (key, value) VALUES ('backfilled', '1')");
+  }
 }
 
 /* ------------------------------ Notebooks ------------------------------ */
@@ -404,13 +491,13 @@ export async function getNotebookGrounded(id: string): Promise<number> {
 /** Cover images are cosmetic — like starring, they must not bump updated_at. */
 export async function setNotebookCover(id: string, cover: string): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE notebooks SET cover = $1 WHERE id = $2", [cover, id]);
+  await d.execute("UPDATE notebooks SET cover = $1 WHERE id = $2", [await storeMedia(cover), id]);
 }
 
-/** Set (or clear with "") the chat background image (JPEG data URL). */
+/** Set (or clear with "") the chat background image (JPEG data URL or stored file). */
 export async function setNotebookChatBg(id: string, bg: string): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE notebooks SET chat_bg = $1 WHERE id = $2", [bg, id]);
+  await d.execute("UPDATE notebooks SET chat_bg = $1 WHERE id = $2", [await storeMedia(bg), id]);
 }
 
 /** Readability overlay strength (0–80, percent of dark scrim over the chat background). */
@@ -496,7 +583,7 @@ export async function updateFolderDetails(
 
 export async function setFolderCover(id: string, cover: string): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE folders SET cover = $1 WHERE id = $2", [cover, id]);
+  await d.execute("UPDATE folders SET cover = $1 WHERE id = $2", [await storeMedia(cover), id]);
 }
 
 /** Deleting a folder never deletes notebooks — they return to the homepage root. */
@@ -549,7 +636,8 @@ export async function addSource(
     notebook_id: notebookId,
     type,
     title,
-    content,
+    // Image/audio uploads go to the media store; the row keeps a reference.
+    content: await storeMedia(content),
     mime,
     text,
     pinned: 0,
@@ -571,7 +659,7 @@ export async function updateSource(
   const d = await getDb();
   await d.execute("UPDATE sources SET title = $1, content = $2 WHERE id = $3", [
     title,
-    content,
+    await storeMedia(content),
     id,
   ]);
   // Edited content invalidates its retrieval chunks (re-indexed lazily).
@@ -587,12 +675,31 @@ export async function setSourceText(id: string, text: string): Promise<void> {
 
 /**
  * The text the model reads for a source. Text sources are their content;
- * image/audio sources hold a data URL (or a too-large placeholder) there, so
- * their description/transcript lives in `text` ("" = not extracted yet).
+ * image/audio sources hold their file there (a stored-file reference, a data
+ * URL, or a too-large placeholder), so their description/transcript lives in
+ * `text` ("" = not extracted yet).
  */
 export function sourceText(s: Source): string {
-  if (s.type === "image" || s.type === "audio" || s.content.startsWith("data:")) return s.text ?? "";
+  if (s.type === "image" || s.type === "audio" || isMediaValue(s.content)) return s.text ?? "";
   return s.content;
+}
+
+/**
+ * Repair sources saved by older versions that read Office/ePub files as plain
+ * text, storing their raw zip bytes — megabytes of garbage the AI would read.
+ * The original bytes can't be recovered (they were decoded as text), so the
+ * content becomes a note asking the user to add the file again. Current
+ * ingestion rejects binaries, so this only ever finds old rows.
+ */
+export async function repairBinarySources(): Promise<number> {
+  const d = await getDb();
+  // Zip and legacy Office files always contain NUL bytes; real text never does.
+  const bad = "type IN ('text', 'file') AND instr(CAST(content AS BLOB), x'00') > 0";
+  await d.execute(`DELETE FROM source_chunks WHERE source_id IN (SELECT id FROM sources WHERE ${bad})`);
+  const res = await d.execute(
+    `UPDATE sources SET content = 'Could not read ' || title || ' when it was added (an older BrewLM version saved the raw file instead of its text). Remove this source and add the file again.' WHERE ${bad}`
+  );
+  return res.rowsAffected;
 }
 
 export async function setSourcePinned(id: string, pinned: boolean): Promise<void> {
@@ -700,7 +807,7 @@ export interface LibraryImage {
   prompt: string;
   model: string;
   mime: string;
-  /** Raw base64, no data: prefix. */
+  /** A `brewblob:` file reference (older rows: raw base64, no data: prefix). */
   data: string;
   width: number;
   height: number;
@@ -711,9 +818,12 @@ export interface LibraryImage {
 export async function addImage(img: Omit<LibraryImage, "id" | "created_at">): Promise<string> {
   const d = await getDb();
   const id = uid();
+  // Pixels go to the media store; raw base64 stays only if that fails.
+  const stored = await storeMedia(`data:${img.mime};base64,${img.data}`);
+  const data = isBlobRef(stored) ? stored : img.data;
   await d.execute(
     "INSERT INTO images (id, notebook_id, chat_id, prompt, model, mime, data, width, height, parent_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-    [id, img.notebook_id, img.chat_id, img.prompt, img.model, img.mime, img.data, img.width, img.height, img.parent_id, Date.now()]
+    [id, img.notebook_id, img.chat_id, img.prompt, img.model, img.mime, data, img.width, img.height, img.parent_id, Date.now()]
   );
   return id;
 }
@@ -735,6 +845,29 @@ export async function pruneOrphanImages(): Promise<void> {
     "DELETE FROM images WHERE created_at < $1 AND NOT EXISTS (SELECT 1 FROM messages m WHERE instr(m.content, 'brewimg:' || images.id) > 0)",
     [Date.now() - 10 * 60_000]
   );
+}
+
+/**
+ * Delete media files no row references any more (deleted sources, replaced
+ * covers, purged notebooks). Files written in the last 10 minutes are kept —
+ * a file is saved a moment before the row that points at it.
+ */
+export async function pruneOrphanBlobs(): Promise<void> {
+  const d = await getDb();
+  const has = (col: string) => `instr(${col}, 'brewblob:') > 0`;
+  const rows = await d.select<{ v: string }[]>(
+    `SELECT cover AS v FROM notebooks WHERE ${has("cover")}
+     UNION ALL SELECT chat_bg FROM notebooks WHERE ${has("chat_bg")}
+     UNION ALL SELECT cover FROM folders WHERE ${has("cover")}
+     UNION ALL SELECT content FROM sources WHERE ${has("content")}
+     UNION ALL SELECT data FROM images WHERE ${has("data")}
+     UNION ALL SELECT data FROM artifacts WHERE ${has("data")}
+     UNION ALL SELECT content FROM messages WHERE ${has("content")}`
+  );
+  const keep = [...new Set(rows.flatMap((r) => blobRefsIn(r.v)))];
+  const res = await gcBlobs(keep);
+  if (res.removed > 0)
+    console.info(`media: removed ${res.removed} unused file(s), ${(res.freed_bytes / 1e6).toFixed(1)} MB`);
 }
 
 /* --------------------------------- Chats ------------------------------- */
@@ -838,7 +971,8 @@ export async function addArtifact(
     notebook_id: notebookId,
     kind,
     title,
-    data,
+    // Audio overviews: the sound file goes to the media store.
+    data: await storeArtifactMedia(data),
     pinned: 0,
     created_at: Date.now(),
   };
@@ -862,7 +996,7 @@ export async function setArtifactPinned(id: string, pinned: boolean): Promise<vo
 /** Rewrite an artifact's payload in place (Studio "Revise" → Replace original). */
 export async function updateArtifact(id: string, data: string): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [data, id]);
+  await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [await storeArtifactMedia(data), id]);
 }
 
 /** Rename an artifact in place (Studio "Revise" modal title field — saved on the fly). */
@@ -942,7 +1076,7 @@ export async function closeDb(): Promise<void> {
   await d.close();
 }
 
-/** Factory reset: wipe every row from every table (schema and file stay). */
+/** Factory reset: wipe every row from every table (schema and file stay), and every media file. */
 export async function clearAllData(): Promise<void> {
   const d = await getDb();
   for (const t of [
@@ -959,9 +1093,15 @@ export async function clearAllData(): Promise<void> {
     "usage_events",
     "images",
     "settings",
+    // Last: the deletes above leave tombstones. A fresh device id and
+    // backfill are created on the next launch.
+    "sync_meta",
+    "sync_outbox",
+    "sync_state",
   ]) {
     await d.execute(`DELETE FROM ${t}`);
   }
+  await gcBlobs([], 0);
 }
 
 /* ------------------------- Phone sharing: devices ------------------------ */

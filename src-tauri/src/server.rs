@@ -29,7 +29,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -159,6 +158,8 @@ impl ShareCtx {
 #[derive(Clone)]
 struct ServerState {
     pool: SqlitePool,
+    /// Media files referenced as `brewblob:` from rows (see blobs.rs).
+    blob_dir: PathBuf,
     audio_cache: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>,
     share: Arc<ShareCtx>,
 }
@@ -341,6 +342,7 @@ pub fn start_sharing_sync(
 ) -> Result<(ShareInfo, tokio::sync::oneshot::Sender<()>, Option<Child>), String> {
     std::fs::create_dir_all(&db_dir).map_err(|e| format!("app data dir: {e}"))?;
     let db_path = db_dir.join("brewlm.db");
+    let blob_dir = db_dir.join("blobs");
 
     let opts = SqliteConnectOptions::new()
         .filename(&db_path)
@@ -386,6 +388,7 @@ pub fn start_sharing_sync(
             }
             let state = ServerState {
                 pool,
+                blob_dir,
                 audio_cache: Arc::new(Mutex::new(HashMap::new())),
                 share: share_for_thread,
             };
@@ -710,7 +713,7 @@ async fn notebooks_handler(State(st): State<ServerState>, Path(key): Path<String
                         "id": r.get::<String, _>("id"),
                         "title": r.get::<String, _>("title"),
                         "description": r.get::<String, _>("description"),
-                        "cover": r.get::<String, _>("cover"),
+                        "cover": crate::blobs::to_data_url(&st.blob_dir, &r.get::<String, _>("cover")),
                         "updated_at": r.get::<i64, _>("updated_at"),
                     })
                 })
@@ -884,7 +887,7 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
         "id": nb.get::<String, _>("id"),
         "title": nb.get::<String, _>("title"),
         "description": nb.get::<String, _>("description"),
-        "cover": nb.get::<String, _>("cover"),
+        "cover": crate::blobs::to_data_url(&st.blob_dir, &nb.get::<String, _>("cover")),
         "sources": sources,
         "artifacts": artifacts,
     }))
@@ -962,7 +965,7 @@ async fn source_handler(State(st): State<ServerState>, Path((key, id)): Path<(St
             "id": r.get::<String, _>("id"),
             "type": r.get::<String, _>("type"),
             "title": r.get::<String, _>("title"),
-            "content": r.get::<String, _>("content"),
+            "content": crate::blobs::to_data_url(&st.blob_dir, &r.get::<String, _>("content")),
             "mime": r.get::<Option<String>, _>("mime"),
             "created_at": r.get::<i64, _>("created_at"),
         }))
@@ -1168,6 +1171,30 @@ fn html_to_text(html: &str, fallback_title: &str) -> (String, String) {
 const YOUTUBE_PENDING: &str =
     "[YouTube video — transcript pending. BrewLM on the desktop fetches it before the next answer.]";
 
+const LINK_IS_FILE: &str =
+    "That link is a file, not a web page — add it from BrewLM on your computer so its text can be extracted.";
+
+/// Phone links store their body as text, so only text-like responses are
+/// accepted; files (PDF, Office, zip, media…) are left to the desktop app,
+/// which extracts them properly. An empty content type is judged by the body.
+fn check_link_content_type(ctype: &str) -> Result<(), &'static str> {
+    let c = ctype.to_ascii_lowercase();
+    // "/xml" or "+xml" — Office types ("…openxmlformats…presentationml…") contain "xml" too.
+    let xml = c.contains("/xml") || c.contains("+xml");
+    if c.is_empty() || c.starts_with("text/") || c.contains("html") || c.contains("json") || xml {
+        Ok(())
+    } else {
+        Err(LINK_IS_FILE)
+    }
+}
+
+/// Raw binary decoded as text: NUL characters, or mostly U+FFFD replacements.
+fn looks_binary(text: &str) -> bool {
+    let head: Vec<char> = text.chars().take(8192).collect();
+    let bad = head.iter().filter(|&&c| c == '\u{FFFD}').count();
+    head.contains(&'\0') || (head.len() >= 64 && bad * 10 > head.len())
+}
+
 fn is_youtube_host(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
     let h = h
@@ -1297,10 +1324,16 @@ async fn source_url_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    if let Err(msg) = check_link_content_type(&ctype) {
+        return err_json(StatusCode::BAD_REQUEST, msg);
+    }
     let raw = match resp.text().await {
         Ok(t) => t,
         Err(e) => return err_json(StatusCode::BAD_GATEWAY, &format!("Read failed: {e}")),
     };
+    if looks_binary(&raw) {
+        return err_json(StatusCode::BAD_REQUEST, LINK_IS_FILE);
+    }
 
     let host = url.host_str().unwrap_or("link").to_string();
     let (title, mut text) = if ctype.contains("html") {
@@ -1542,7 +1575,7 @@ async fn artifact_handler(State(st): State<ServerState>, Path((key, id)): Path<(
 /* ------------------------------ audio streaming ---------------------------- */
 
 /// Parse an HTTP `Range` header for a body of `len` bytes.
-fn parse_range(h: Option<&str>, len: u64) -> Option<(u64, u64)> {
+pub(crate) fn parse_range(h: Option<&str>, len: u64) -> Option<(u64, u64)> {
     if len == 0 {
         return None;
     }
@@ -1610,23 +1643,12 @@ async fn audio_handler(
                 }
             };
             let audio = parsed.get("audio").and_then(|a| a.as_str()).unwrap_or("");
-            if !audio.starts_with("data:audio/") {
+            if !audio.starts_with("data:audio/") && !audio.starts_with(crate::blobs::REF_PREFIX) {
                 return (StatusCode::NOT_FOUND, "artifact has no audio (script only)")
                     .into_response();
             }
-            let Some((prefix, b64)) = audio.split_once(',') else {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "bad data url").into_response();
-            };
-            let mime = prefix
-                .trim_start_matches("data:")
-                .trim_end_matches(";base64")
-                .to_string();
-            let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
-            let bytes = match B64.decode(clean) {
-                Ok(b) => b,
-                Err(_) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "bad base64").into_response()
-                }
+            let Some((mime, bytes)) = crate::blobs::load(&st.blob_dir, audio, None) else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "audio file unreadable").into_response();
             };
             st.audio_cache
                 .lock()
@@ -1678,8 +1700,8 @@ async fn image_handler(State(st): State<ServerState>, Path((key, id)): Path<(Str
     };
     let mime: String = row.get("mime");
     let data: String = row.get("data");
-    let Ok(bytes) = B64.decode(data.trim()) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "bad base64").into_response();
+    let Some((mime, bytes)) = crate::blobs::load(&st.blob_dir, &data, Some(&mime)) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "image unreadable").into_response();
     };
     Response::builder()
         .status(StatusCode::OK)
@@ -1697,6 +1719,7 @@ async fn image_handler(State(st): State<ServerState>, Path((key, id)): Path<(Str
 mod tests {
     use super::*;
     use axum::http::Request;
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
     use tower::ServiceExt; // oneshot
 
     const FULL_KEY: &str = "full-device-key";
@@ -1786,6 +1809,7 @@ mod tests {
 
         let state = ServerState {
             pool,
+            blob_dir: dir.path().join("blobs"),
             audio_cache: Arc::new(Mutex::new(HashMap::new())),
             share: Arc::new(ShareCtx::new("full")),
         };
@@ -1834,6 +1858,61 @@ mod tests {
 
         let unauth = app.oneshot(get("/d/WRONG/api/images/img1")).await.unwrap();
         assert_eq!(unauth.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn serves_blob_backed_media() {
+        let (app, dir) = fixture().await;
+        let blobs = dir.path().join("blobs");
+        let audio_ref = crate::blobs::put(&blobs, b"m4a-bytes", "m4a").unwrap();
+        let img_ref = crate::blobs::put(&blobs, &[1u8, 2, 3], "png").unwrap();
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::query("UPDATE artifacts SET data = ? WHERE id = 'a1'")
+            .bind(format!(r#"{{"audio": "{audio_ref}", "script": "Alex: hi"}}"#))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE images SET data = ? WHERE id = 'img1'")
+            .bind(&img_ref)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE notebooks SET cover = ? WHERE id = 'nb1'")
+            .bind(&img_ref)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let resp = app.clone().oneshot(get(&format!("/d/{READ_KEY}/api/artifacts/a1/audio"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "audio/mp4");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), b"m4a-bytes");
+
+        let resp = app.clone().oneshot(get(&format!("/d/{READ_KEY}/api/images/img1"))).await.unwrap();
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), &[1u8, 2, 3]);
+
+        let list = body_string(app.oneshot(get(&format!("/d/{READ_KEY}/api/notebooks"))).await.unwrap()).await;
+        assert!(list.contains("data:image/png;base64,AQID"), "{list}");
+        assert!(!list.contains("brewblob:"));
+    }
+
+    #[test]
+    fn phone_links_reject_files() {
+        assert!(check_link_content_type("text/html; charset=utf-8").is_ok());
+        assert!(check_link_content_type("application/json").is_ok());
+        assert!(check_link_content_type("").is_ok());
+        assert!(check_link_content_type("application/rss+xml").is_ok());
+        for c in ["application/pdf", "application/zip", "image/png", "application/octet-stream",
+                  "application/vnd.openxmlformats-officedocument.presentationml.presentation"] {
+            assert!(check_link_content_type(c).is_err(), "{c}");
+        }
+        assert!(!looks_binary("Plain article text — with “quotes” and accents é."));
+        assert!(looks_binary("PK\u{3}\u{4}\u{14}\0\u{6}\0"));
+        assert!(looks_binary(&"\u{FFFD}x".repeat(100)));
     }
 
     #[tokio::test]

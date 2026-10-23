@@ -11,6 +11,7 @@
  */
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
 import { loadSettings } from "./settings";
@@ -342,7 +343,7 @@ export async function ensureMediaText(sources: Source[], settings?: Settings): P
       !attempted.has(s.id) &&
       (((s.type === "image" || s.type === "audio") &&
         !sourceText(s) &&
-        s.content.startsWith("data:")) ||
+        isMediaValue(s.content)) ||
         (s.type === "link" && s.content === YOUTUBE_PENDING && isYouTubeUrl(s.mime ?? "")))
   );
   if (pending.length === 0) return;
@@ -357,10 +358,11 @@ export async function ensureMediaText(sources: Source[], settings?: Settings): P
         src.content = text;
         continue;
       }
+      const media = isBlobRef(src.content) ? await mediaBlob(src.content) : src.content;
       const r =
         src.type === "image"
-          ? await describeImage(src.content, st)
-          : await transcribeAudio(src.content, src.title, st);
+          ? await describeImage(media, st)
+          : await transcribeAudio(media, src.title, st);
       if (!r.text) continue;
       await setSourceText(src.id, r.text);
       src.text = r.text;

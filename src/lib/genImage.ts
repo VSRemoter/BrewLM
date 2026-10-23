@@ -13,7 +13,8 @@
  *    bubbles from the library (cached blob URLs), with Edit / Remix / More
  *    like this hover actions.
  */
-import { addImage, getImage } from "./db";
+import { isBlobRef, mediaDataUrl, mediaSrc } from "./blobs";
+import { addImage, getImage, type LibraryImage } from "./db";
 
 /** Inline base64 embeds (chat-model output, and messages saved before the library). */
 const IMAGE_EMBED_RE = /!\[([^\]]*)\]\((data:image\/[a-zA-Z0-9.+-]+;base64,[^)\s]+)\)/g;
@@ -152,7 +153,8 @@ const REF_JPEG_QUALITY = 0.85;
 export async function libraryImageAsReference(id: string): Promise<string | null> {
   const img = await getImage(id);
   if (!img) return null;
-  const src = `data:${img.mime};base64,${img.data}`;
+  // A data URL keeps the canvas below untainted (and is the fallback upload).
+  const src = await imageDataUrl(img);
   return new Promise((resolve) => {
     const el = new Image();
     el.onload = () => {
@@ -183,13 +185,19 @@ const urlCache = new Map<string, Promise<string | null>>();
 /** Settled lookups, readable synchronously while rendering. null = image is gone. */
 const resolved = new Map<string, string | null>();
 
-/** Blob URL for a library image (cached for the session); null if it's gone. */
+/** A library image as an inline data URL (stored file or legacy base64 row). */
+async function imageDataUrl(img: LibraryImage): Promise<string> {
+  return isBlobRef(img.data) ? mediaDataUrl(img.data) : `data:${img.mime};base64,${img.data}`;
+}
+
+/** URL for a library image (cached for the session); null if it's gone. */
 export function libraryImageUrl(id: string): Promise<string | null> {
   let p = urlCache.get(id);
   if (!p) {
     p = getImage(id)
       .then((img) => {
         if (!img) return null;
+        if (isBlobRef(img.data)) return mediaSrc(img.data);
         const bin = atob(img.data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);

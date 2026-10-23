@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { mediaExt } from "../lib/blobs";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
 import { complete, extractJson, isAbortError, LONG_OUTPUT_TOKENS } from "../lib/llm";
 import {
@@ -948,7 +949,7 @@ const StudioPanel = forwardRef<
                       subtitle = `${JSON.parse(a.data).length} questions`;
                     else if (a.kind === "audio") {
                       const d = JSON.parse(a.data);
-                      subtitle = `${d.script?.length ?? 0} turns${d.audio ? " · mp3" : ""}`;
+                      subtitle = `${d.script?.length ?? 0} turns${d.audio ? ` · ${mediaExt(d.audio)}` : ""}`;
                     } else if (a.kind === "research") {
                       const d = JSON.parse(a.data);
                       subtitle = `${d.sources?.length ?? 0} sources read`;
