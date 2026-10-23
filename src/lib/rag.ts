@@ -529,7 +529,7 @@ async function condenseTo(
             provider: settings.provider,
             apiKey: activeKey(settings),
             model: settings.model,
-            maxTokens: 1024,
+            maxTokens: 2048,
             onUsage: (u) => addUsage(acc, u),
             messages: [
               {

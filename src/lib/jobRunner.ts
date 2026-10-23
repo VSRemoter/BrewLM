@@ -19,7 +19,7 @@ import {
   touchChat,
   touchNotebook,
 } from "./db";
-import { complete, extractJson } from "./llm";
+import { complete, extractJson, LONG_OUTPUT_TOKENS } from "./llm";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -265,7 +265,7 @@ async function runGenerateJob(p: {
         provider: settings.provider,
         apiKey: key,
         model: settings.model,
-        maxTokens: 4096,
+        maxTokens: LONG_OUTPUT_TOKENS,
         temperature: settings.temperature ?? undefined,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
         messages: [
@@ -279,7 +279,7 @@ async function runGenerateJob(p: {
       provider: settings.provider,
       apiKey: key,
       model: settings.model,
-      maxTokens: 4096,
+      maxTokens: LONG_OUTPUT_TOKENS,
       temperature: settings.temperature ?? undefined,
       onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
       messages: [

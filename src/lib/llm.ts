@@ -70,6 +70,14 @@ export async function* streamChat(opts: StreamOptions): AsyncGenerator<string> {
   }
 }
 
+/**
+ * Output ceiling for long-form generations (reports, mind maps, Studio decks,
+ * podcast scripts, research write-ups). Reasoning models spend part of it
+ * thinking, so 4096 could run out before the answer. It's a cap, not a cost —
+ * only the tokens actually written are billed.
+ */
+export const LONG_OUTPUT_TOKENS = 8192;
+
 /** Non-streaming helper — returns the full completion text. */
 export async function complete(opts: StreamOptions): Promise<string> {
   let out = "";
@@ -139,61 +147,89 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     body.temperature = opts.temperature;
   }
 
-  const res = await (local ? tauriFetch : fetch)(base, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  }).catch((e) => {
-    if (local && !isAbortError(e)) throw new Error(`Couldn't reach your local server at ${local.baseUrl}. Is it running?`);
-    throw e;
-  });
-  if (!res.ok) throw new Error(await apiError(res));
-  if (!res.body) throw new Error("Empty response body");
+  // A reasoning model can spend the whole output allowance thinking and stop
+  // ("length") before writing a word. Nothing has been shown yet then, so try
+  // once more with twice the room and its thinking turned down.
+  for (let attempt = 0; ; attempt++) {
+    const res = await (local ? tauriFetch : fetch)(base, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    }).catch((e) => {
+      if (local && !isAbortError(e)) throw new Error(`Couldn't reach your local server at ${local.baseUrl}. Is it running?`);
+      throw e;
+    });
+    if (!res.ok) throw new Error(await apiError(res));
+    if (!res.body) throw new Error("Empty response body");
 
-  // Image-capable models return binary output in `images` (or typed content
-  // parts), not in `content` — collect them and emit as markdown image embeds
-  // after the text stream ends.
-  const images: string[] = [];
-  const pushImage = (url: string | null) => {
-    if (url && !images.includes(url)) images.push(url);
-  };
-  let usage: StreamUsage = {};
+    // Image-capable models return binary output in `images` (or typed content
+    // parts), not in `content` — collect them and emit as markdown image embeds
+    // after the text stream ends.
+    const images: string[] = [];
+    const pushImage = (url: string | null) => {
+      if (url && !images.includes(url)) images.push(url);
+    };
+    let usage: StreamUsage = {};
+    let wroteText = false;
+    let finishReason: string | undefined;
 
-  for await (const payload of sseLines(res.body)) {
-    if (payload === "[DONE]") break;
-    try {
-      const json = JSON.parse(payload);
-      const choice = json.choices?.[0];
-      const delta = choice?.delta?.content ?? choice?.message?.content;
-      if (typeof delta === "string") {
-        if (delta) yield delta;
-      } else if (Array.isArray(delta)) {
-        // some providers stream content as typed parts
-        for (const part of delta) {
-          if (part?.type === "text" && typeof part.text === "string") yield part.text;
-          else pushImage(imagePartUrl(part));
+    for await (const payload of sseLines(res.body)) {
+      if (payload === "[DONE]") break;
+      try {
+        const json = JSON.parse(payload);
+        const choice = json.choices?.[0];
+        if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
+        const delta = choice?.delta?.content ?? choice?.message?.content;
+        if (typeof delta === "string") {
+          if (delta) {
+            wroteText = true;
+            yield delta;
+          }
+        } else if (Array.isArray(delta)) {
+          // some providers stream content as typed parts
+          for (const part of delta) {
+            if (part?.type === "text" && typeof part.text === "string") {
+              if (part.text) wroteText = true;
+              yield part.text;
+            } else pushImage(imagePartUrl(part));
+          }
         }
+        const imgs = choice?.delta?.images ?? choice?.message?.images;
+        if (Array.isArray(imgs)) for (const img of imgs) pushImage(imagePartUrl(img));
+        // Final usage chunk (arrives with empty choices when include_usage is set).
+        const u = json.usage;
+        if (u && typeof u === "object") {
+          usage = {
+            input: u.prompt_tokens ?? u.input_tokens ?? usage.input,
+            output: u.completion_tokens ?? u.output_tokens ?? usage.output,
+            cachedRead: u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? usage.cachedRead,
+            // OpenRouter reports the real billed amount when usage:include is set.
+            costUsd: typeof u.cost === "number" ? u.cost : usage.costUsd,
+          };
+        }
+      } catch {
+        // partial JSON chunk — ignore
       }
-      const imgs = choice?.delta?.images ?? choice?.message?.images;
-      if (Array.isArray(imgs)) for (const img of imgs) pushImage(imagePartUrl(img));
-      // Final usage chunk (arrives with empty choices when include_usage is set).
-      const u = json.usage;
-      if (u && typeof u === "object") {
-        usage = {
-          input: u.prompt_tokens ?? u.input_tokens ?? usage.input,
-          output: u.completion_tokens ?? u.output_tokens ?? usage.output,
-          cachedRead: u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? usage.cachedRead,
-          // OpenRouter reports the real billed amount when usage:include is set.
-          costUsd: typeof u.cost === "number" ? u.cost : usage.costUsd,
-        };
-      }
-    } catch {
-      // partial JSON chunk — ignore
     }
+    if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.(usage);
+    for (const url of images) yield `\n\n![generated image](${url})\n\n`;
+
+    const ranOutThinking = finishReason === "length" && !wroteText && images.length === 0;
+    if (!ranOutThinking) return;
+    const room = (body.max_completion_tokens ?? body.max_tokens) as number;
+    if (attempt === 0 && !local) {
+      if (body.max_completion_tokens) body.max_completion_tokens = room * 2;
+      else body.max_tokens = room * 2;
+      if (opts.provider === "openrouter") body.reasoning = { effort: "low" };
+      else if (isReasoningModel(opts.model)) body.reasoning_effort = "low";
+      continue;
+    }
+    throw new Error(
+      `“${opts.model}” spent its whole ${room.toLocaleString()}-token output allowance thinking and never wrote an answer. ` +
+        "Try again, or use a model that thinks less (or not at all) for this — reasoning models can run out of room on long outputs like reports and mind maps."
+    );
   }
-  if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.(usage);
-  for (const url of images) yield `\n\n![generated image](${url})\n\n`;
 }
 
 /** Pull an image URL/data-URI out of an OpenAI-style image part. */
