@@ -1,2 +1,9 @@
-# Copy to .dev.vars for `npm run dev`. Any long random string works locally.
+# Copy to .dev.vars for `npm run dev`.
+# Shared token for the two-copy dev setup (scripts/sync-dev-copy.sh). Any long random string.
 SYNC_DEV_TOKEN=change-me-to-a-long-random-string
+# Optional. Without it, sign-in links are printed to this console instead of emailed.
+RESEND_API_KEY=
+# Optional, for billing in Polar's sandbox (test mode): an organization access token
+# and the webhook secret from sandbox.polar.sh → Settings.
+POLAR_ACCESS_TOKEN=
+POLAR_WEBHOOK_SECRET=

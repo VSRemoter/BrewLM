@@ -10,6 +10,10 @@
  * Ordering: every accepted change gets the next `seq`; devices pull
  * `seq > cursor`. Conflicts are last-writer-wins on the HLC string, which
  * sorts by time, then counter, then device id.
+ *
+ * Storage: the vault keeps running totals of record and blob bytes and
+ * refuses writes that would take it past the caller's plan limit (writes that
+ * shrink it, like deletes, always go through).
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -37,6 +41,8 @@ export type StoredChange = Change & {
   device: string;
 };
 
+class StorageFull extends Error {}
+
 export class Vault extends DurableObject<Env> {
   private sql: SqlStorage;
 
@@ -60,6 +66,12 @@ export class Vault extends DurableObject<Env> {
     )`);
     // One-time device links: the vault key sealed with a secret only the QR
     // code carries, waiting (briefly) for the new device to take it.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS usage (k TEXT PRIMARY KEY, v INTEGER NOT NULL)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, size INTEGER NOT NULL)");
+    // Vaults from before storage tracking: count what they already hold, once.
+    this.sql.exec(
+      "INSERT OR IGNORE INTO usage (k, v) SELECT 'records', coalesce(sum(length(payload)), 0) FROM changes"
+    );
     this.sql.exec(`CREATE TABLE IF NOT EXISTS links (
       id TEXT PRIMARY KEY,
       sealed TEXT NOT NULL,
@@ -124,36 +136,73 @@ export class Vault extends DurableObject<Env> {
     return { ok: true, version: version + 1 };
   }
 
+  /** Bytes stored: records (the change log) and blobs (files in R2). */
+  usage(): { records: number; blobs: number; total: number } {
+    const records = this.sql.exec<{ v: number }>("SELECT v FROM usage WHERE k = 'records'").one().v;
+    const blobs = this.sql.exec<{ s: number | null }>("SELECT sum(size) AS s FROM blobs").one().s ?? 0;
+    return { records, blobs, total: records + blobs };
+  }
+
+  /**
+   * Make room for a blob about to be written to R2 (a rewrite of the same id
+   * replaces its old size). False if it would go past `limit`.
+   */
+  reserveBlob(id: string, size: number, limit: number): boolean {
+    const old = this.sql.exec<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id).toArray()[0]?.size ?? 0;
+    if (size > old && this.usage().total - old + size > limit) return false;
+    this.sql.exec("INSERT INTO blobs (id, size) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET size = excluded.size", id, size);
+    return true;
+  }
+
   private cursor(): number {
     return (this.sql.exec<{ s: number | null }>("SELECT max(seq) AS s FROM changes").one().s ?? 0) as number;
   }
 
-  /** Store changes that are newer than what the vault holds; report the rest as stale. */
-  push(device: string, changes: Change[]): { accepted: number; stale: string[]; cursor: number } {
+  /**
+   * Store changes that are newer than what the vault holds; report the rest as
+   * stale. The whole batch is refused (`full`) if it would grow the vault past
+   * `limit` bytes.
+   */
+  push(
+    device: string,
+    changes: Change[],
+    limit = Number.MAX_SAFE_INTEGER
+  ): { accepted: number; stale: string[]; cursor: number; full?: boolean } {
     const stale: string[] = [];
     let accepted = 0;
-    this.ctx.storage.transactionSync(() => {
-      let seq = this.cursor();
-      for (const c of changes) {
-        const cur = this.sql.exec<{ hlc: string }>("SELECT hlc FROM changes WHERE key = ?", c.key).toArray()[0];
-        if (cur && cur.hlc >= c.hlc) {
-          stale.push(c.key);
-          continue;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        let seq = this.cursor();
+        let delta = 0;
+        for (const c of changes) {
+          const cur = this.sql
+            .exec<{ hlc: string; len: number }>("SELECT hlc, length(payload) AS len FROM changes WHERE key = ?", c.key)
+            .toArray()[0];
+          if (cur && cur.hlc >= c.hlc) {
+            stale.push(c.key);
+            continue;
+          }
+          delta += c.payload.length - (cur?.len ?? 0);
+          seq += 1;
+          this.sql.exec(
+            `INSERT INTO changes (key, seq, hlc, device, payload) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (key) DO UPDATE SET seq = excluded.seq, hlc = excluded.hlc,
+               device = excluded.device, payload = excluded.payload`,
+            c.key,
+            seq,
+            c.hlc,
+            device,
+            c.payload
+          );
+          accepted += 1;
         }
-        seq += 1;
-        this.sql.exec(
-          `INSERT INTO changes (key, seq, hlc, device, payload) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (key) DO UPDATE SET seq = excluded.seq, hlc = excluded.hlc,
-             device = excluded.device, payload = excluded.payload`,
-          c.key,
-          seq,
-          c.hlc,
-          device,
-          c.payload
-        );
-        accepted += 1;
-      }
-    });
+        if (delta > 0 && this.usage().total + delta > limit) throw new StorageFull();
+        this.sql.exec("UPDATE usage SET v = v + ? WHERE k = 'records'", delta);
+      });
+    } catch (e) {
+      if (e instanceof StorageFull) return { accepted: 0, stale: [], cursor: this.cursor(), full: true };
+      throw e;
+    }
     return { accepted, stale, cursor: this.cursor() };
   }
 

@@ -1,6 +1,18 @@
 /**
  * BrewLM Sync server (Cloudflare Worker).
  *
+ * Accounts (auth.ts, billing.ts — D1):
+ *   POST   /v1/auth/start            { email } → { pendingId, code, expiresAt }   (emails a link)
+ *   GET    /v1/auth/verify?token=    confirm page;  POST (its button) approves
+ *   POST   /v1/auth/poll             { pendingId } → { status, session?, email?, vault? }
+ *   DELETE /v1/auth/session          sign this device out
+ *   GET    /v1/me                    → { email, vault, plan, canSync, limitBytes, usedBytes, … }
+ *   POST   /v1/billing/checkout      { plan, interval } → { url }   (Polar-hosted)
+ *   POST   /v1/billing/portal        → { url }
+ *   GET    /v1/billing/done          "return to BrewLM" page
+ *   POST   /v1/webhooks/polar        subscription updates from Polar
+ *
+ * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
  *   GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
  *   GET  /v1/vaults/:vault/keys            → { envelope, version }
@@ -13,13 +25,14 @@
  *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
  *   GET  /v1/vaults/:vault/blobs/:id
  *
- * Blobs are files kept in R2 under "<vault>/<id>": media (audio, images) and
- * records too big for the change log. Like records, they're opaque bytes.
- *
- * Milestone 2a: one shared dev token (SYNC_DEV_TOKEN, from .dev.vars) guards
- * every vault. Accounts, per-user vaults and quotas arrive in milestone 2e.
+ * Vault requests carry a session token (the vault must be the user's own) or,
+ * for local development, SYNC_DEV_TOKEN (any vault, no limits). Uploads need
+ * an active plan or trial and stay within its storage limit (402 / 413);
+ * reads always work, so a lapsed account can still download its library.
  * `Env` is generated from wrangler.jsonc by `npm run types`.
  */
+import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
+import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
 export { Vault };
@@ -40,13 +53,32 @@ function json(body: unknown, status = 200): Response {
 
 const fail = (status: number, error: string) => json({ error }, status);
 
-async function authorized(req: Request, env: Env): Promise<boolean> {
+const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+
+function isDevToken(req: Request, env: Env): boolean {
   const token = env.SYNC_DEV_TOKEN;
-  const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+  const given = bearer(req);
   if (!token || given.length !== token.length) return false;
   const enc = new TextEncoder();
   return crypto.subtle.timingSafeEqual(enc.encode(given), enc.encode(token));
 }
+
+/** Who is calling a vault route, and what they may do there. */
+interface Caller {
+  canWrite: boolean;
+  limitBytes: number;
+}
+
+async function vaultCaller(req: Request, env: Env, vault: string): Promise<Caller | Response> {
+  if (isDevToken(req, env)) return { canWrite: true, limitBytes: Number.MAX_SAFE_INTEGER };
+  const user = await userForSession(env, bearer(req));
+  if (!user) return fail(401, "unauthorized");
+  if (user.id !== vault) return fail(403, "not your vault");
+  const ent = await entitlement(env, user);
+  return { canWrite: ent.canSync, limitBytes: ent.limitBytes };
+}
+
+const NO_PLAN = "Your free trial has ended. Choose a plan to keep syncing; your library can still be downloaded.";
 
 function validChanges(v: unknown): v is Change[] {
   return (
@@ -66,15 +98,43 @@ function validChanges(v: unknown): v is Change[] {
   );
 }
 
+async function accountRoutes(req: Request, env: Env, path: string): Promise<Response | null> {
+  if (path === "/v1/auth/start" && req.method === "POST") return startSignIn(req, env);
+  if (path === "/v1/auth/verify" && (req.method === "GET" || req.method === "POST")) return verifySignIn(req, env);
+  if (path === "/v1/auth/poll" && req.method === "POST") return pollSignIn(req, env);
+  if (path === "/v1/billing/done" && req.method === "GET") return billingDone();
+  if (path === "/v1/webhooks/polar" && req.method === "POST") return polarWebhook(req, env);
+
+  const signedIn = ["/v1/auth/session", "/v1/me", "/v1/billing/checkout", "/v1/billing/portal"];
+  if (!signedIn.includes(path)) return null;
+  const user = await userForSession(env, bearer(req));
+  if (!user) return fail(401, "unauthorized");
+  if (path === "/v1/auth/session" && req.method === "DELETE") return signOut(env, bearer(req));
+  if (path === "/v1/me" && req.method === "GET") return me(env, user);
+  if (path === "/v1/billing/checkout" && req.method === "POST") return checkout(req, env, user);
+  if (path === "/v1/billing/portal" && req.method === "POST") return portal(env, user);
+  return fail(405, "method not allowed");
+}
+
+async function me(env: Env, user: User): Promise<Response> {
+  const ent = await entitlement(env, user);
+  const usage = await env.VAULT.get(env.VAULT.idFromName(user.id)).usage();
+  return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total });
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    const account = await accountRoutes(req, env, url.pathname);
+    if (account) return account;
+
     const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
     if (!m) return fail(404, "not found");
-    if (!env.SYNC_DEV_TOKEN) return fail(500, "server not configured");
-    if (!(await authorized(req, env))) return fail(401, "unauthorized");
     const [, vault, op, linkId, linkStatus, blobId] = m;
     if (!VAULT_RE.test(vault)) return fail(400, "bad vault id");
+    const caller = await vaultCaller(req, env, vault);
+    if (caller instanceof Response) return caller;
+    const stub = env.VAULT.get(env.VAULT.idFromName(vault));
 
     if (op === "blobs/missing") {
       if (req.method !== "POST") return fail(405, "method not allowed");
@@ -96,16 +156,16 @@ export default {
         });
       }
       if (req.method === "PUT") {
+        if (!caller.canWrite) return fail(402, NO_PLAN);
         const size = Number(req.headers.get("content-length") ?? "-1");
         if (!Number.isSafeInteger(size) || size < 0) return fail(411, "content-length required");
         if (size > MAX_BLOB) return fail(413, "blob too large");
+        if (!(await stub.reserveBlob(blobId, size, caller.limitBytes))) return fail(413, "storage full");
         await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
         return new Response(null, { status: 204 });
       }
       return fail(405, "method not allowed");
     }
-
-    const stub = env.VAULT.get(env.VAULT.idFromName(vault));
 
     if (linkId !== undefined) {
       if (linkStatus) {
@@ -150,6 +210,7 @@ export default {
     }
 
     if (req.method !== "POST") return fail(405, "method not allowed");
+    if (!caller.canWrite) return fail(402, NO_PLAN);
     let body: { device?: unknown; changes?: unknown };
     try {
       body = await req.json();
@@ -158,6 +219,7 @@ export default {
     }
     if (typeof body.device !== "string" || !UUID_RE.test(body.device)) return fail(400, "bad device");
     if (!validChanges(body.changes)) return fail(400, "bad changes");
-    return json(await stub.push(body.device, body.changes));
+    const res = await stub.push(body.device, body.changes, caller.limitBytes);
+    return res.full ? fail(413, "storage full") : json(res);
   },
 } satisfies ExportedHandler<Env>;

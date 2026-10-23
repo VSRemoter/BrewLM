@@ -8,5 +8,28 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "brewlm-sync-blobs" }],
+  // Accounts, sessions and subscriptions. Run migrations with
+  // `npx wrangler d1 migrations apply brewlm-sync --local` (or --remote).
+  // database_id is filled in when the database is created for deployment (2f).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "brewlm-sync",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Public settings. Secrets (RESEND_API_KEY, POLAR_ACCESS_TOKEN,
+  // POLAR_WEBHOOK_SECRET, SYNC_DEV_TOKEN) go in .dev.vars locally and
+  // `wrangler secret put` in production.
+  "vars": {
+    "PUBLIC_URL": "http://127.0.0.1:8787",
+    "POLAR_API_URL": "https://sandbox-api.polar.sh",
+    "EMAIL_FROM": "BrewLM <signin@brewlm.com>",
+    "POLAR_PRODUCT_SYNC_MONTHLY": "",
+    "POLAR_PRODUCT_SYNC_YEARLY": "",
+    "POLAR_PRODUCT_PLUS_MONTHLY": "",
+    "POLAR_PRODUCT_PLUS_YEARLY": ""
+  },
   "observability": { "enabled": true }
 }

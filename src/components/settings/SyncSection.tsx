@@ -1,12 +1,15 @@
 /**
- * Settings → Sync: create, unlock and manage the end-to-end encrypted vault
- * (src/lib/sync.ts). Shown only when this build has a sync server configured.
+ * Settings → Sync: sign in, plan and storage, then create, unlock and manage
+ * the end-to-end encrypted vault (src/lib/sync.ts). Shown only when this build
+ * has a sync server configured.
  */
 import { Check, Copy, KeyRound } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  type AccountInfo,
   cancelDeviceLink,
+  cancelSignIn,
   changeSyncPassword,
   type DeviceLink,
   deviceLinkPending,
@@ -15,13 +18,18 @@ import {
   MIN_PASSWORD,
   newSyncRecoveryKey,
   onSyncStatus,
+  openBillingPortal,
+  openCheckout,
   recoverSync,
   setSyncApiKeys,
   setUpSync,
+  type SignIn,
   signOutOfSync,
   startDeviceLink,
+  startSignIn,
   type SyncStatus,
   unlockSync,
+  waitForSignIn,
 } from "../../lib/sync";
 import { formatTime } from "../../lib/source";
 import { GhostButton, Modal, PrimaryButton } from "../ui";
@@ -214,6 +222,220 @@ function AddDeviceModal({ onClose }: { onClose: () => void }) {
     </Modal>
   );
 }
+
+/* --------------------------------- account -------------------------------- */
+
+function SignInCard() {
+  const [email, setEmail] = useState("");
+  const [attempt, setAttempt] = useState<SignIn | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => () => cancelSignIn(), []);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const a = await startSignIn(email);
+      setAttempt(a);
+      if (!(await waitForSignIn(a))) {
+        setAttempt(null);
+        setError("That sign-in link expired. Send a new one.");
+      }
+    } catch (err) {
+      setAttempt(null);
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <form onSubmit={submit}>
+        <Card>
+          {attempt ? (
+            <Row
+              label="Check your email"
+              desc={`We sent a sign-in link to ${email}. Open it, check the page shows this code, and press “Yes, sign in”.`}
+              alignTop
+            >
+              <div className="flex w-72 flex-col items-end gap-2">
+                <span className="font-mono text-[26px] font-bold tracking-[0.3em] text-ink">{attempt.code}</span>
+                <span className="flex items-center gap-2 text-[12px] text-ink-3">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-ink-3 border-t-transparent" />
+                  Waiting for you to confirm…
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    cancelSignIn();
+                    setAttempt(null);
+                  }}
+                  className="text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Use a different email
+                </button>
+              </div>
+            </Row>
+          ) : (
+            <>
+              <Row
+                label="Sign in"
+                desc="Free for 14 days, no card needed. We'll email you a link — no password for your account."
+                alignTop
+              >
+                <div className="w-72">
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className={inputClass}
+                  />
+                </div>
+              </Row>
+              <Row label="" alignTop>
+                <PrimaryButton type="submit" disabled={busy || !email.includes("@")}>
+                  {busy ? "Sending…" : "Email me a sign-in link"}
+                </PrimaryButton>
+              </Row>
+            </>
+          )}
+        </Card>
+      </form>
+      {error && <Footnote>{error}</Footnote>}
+    </>
+  );
+}
+
+const PLAN_LABEL: Record<AccountInfo["plan"], string> = {
+  trial: "Free trial",
+  sync: "Sync",
+  plus: "Sync Plus",
+  none: "No plan",
+};
+
+function formatBytes(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(0)} MB`;
+  return `${Math.max(0, Math.round(n / 1024))} KB`;
+}
+
+const day = (ts: number) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+function planLine(a: AccountInfo): string {
+  if (a.plan === "trial") {
+    const days = Math.max(0, Math.ceil((a.trialEndsAt - Date.now()) / 86_400_000));
+    return `Free trial · ${days} day${days === 1 ? "" : "s"} left`;
+  }
+  if (a.plan === "none") return "Your free trial has ended";
+  const end = a.periodEnd ? ` · ${a.cancelAtPeriodEnd ? "ends" : "renews"} ${day(a.periodEnd)}` : "";
+  return `${PLAN_LABEL[a.plan]}${end}`;
+}
+
+/** Plans as sold (Polar's checkout shows the final price, with any tax). */
+const PLANS = [
+  { id: "sync" as const, name: "Sync", storage: "10 GB", month: "$5 / month", year: "$48 / year ($4 / month)" },
+  { id: "plus" as const, name: "Sync Plus", storage: "100 GB", month: "$10 / month", year: "$96 / year ($8 / month)" },
+];
+
+function PlanModal({ onClose }: { onClose: () => void }) {
+  const [interval, setBilling] = useState<"year" | "month">("year");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const choose = async (plan: "sync" | "plus") => {
+    setBusy(plan);
+    setError(null);
+    try {
+      await openCheckout(plan, interval);
+      onClose();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <Modal title="Choose a plan" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-1 self-start rounded-full border border-edge p-0.5 text-[12.5px]">
+          {(["year", "month"] as const).map((i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setBilling(i)}
+              className={`rounded-full px-3 py-1 ${interval === i ? "bg-hover font-medium text-ink" : "text-ink-3"}`}
+            >
+              {i === "year" ? "Yearly — save 20%" : "Monthly"}
+            </button>
+          ))}
+        </div>
+        {PLANS.map((p) => (
+          <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-edge px-4 py-3">
+            <div>
+              <div className="text-[14px] font-semibold text-ink">{p.name}</div>
+              <div className="text-[12.5px] text-ink-3">
+                {p.storage} · {interval === "year" ? p.year : p.month}
+              </div>
+            </div>
+            <PrimaryButton onClick={() => void choose(p.id)} disabled={busy !== null}>
+              {busy === p.id ? "Opening…" : "Choose"}
+            </PrimaryButton>
+          </div>
+        ))}
+        <p className="text-[11.5px] leading-relaxed text-ink-3">
+          Checkout opens in your browser (payments by Polar, our reseller, who handles tax). Your plan updates here
+          within a minute of paying.
+        </p>
+        {error && <p className="text-[12px] text-danger">{error}</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function AccountCard({ account }: { account: AccountInfo }) {
+  const [choosing, setChoosing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const used = Math.min(1, account.usedBytes / Math.max(1, account.limitBytes));
+  const paid = account.plan === "sync" || account.plan === "plus";
+  return (
+    <>
+      <Card>
+        <Row label={account.email} desc={planLine(account)}>
+          {paid ? (
+            <GhostButton onClick={() => void openBillingPortal().catch((e) => setError(message(e)))}>
+              Manage billing…
+            </GhostButton>
+          ) : (
+            <PrimaryButton onClick={() => setChoosing(true)}>Choose a plan…</PrimaryButton>
+          )}
+        </Row>
+        <Row label="Storage" desc={`${formatBytes(account.usedBytes)} of ${formatBytes(account.limitBytes)} used`}>
+          <div className="h-2 w-44 overflow-hidden rounded-full bg-edge">
+            <div
+              className={`h-full rounded-full ${used > 0.9 ? "bg-danger" : "bg-accent"}`}
+              style={{ width: `${Math.max(2, used * 100)}%` }}
+            />
+          </div>
+        </Row>
+      </Card>
+      {!account.canSync && (
+        <Footnote>
+          Sync is paused: this computer still downloads changes from your other devices, but won't upload until you
+          choose a plan.
+        </Footnote>
+      )}
+      {error && <Footnote>{error}</Footnote>}
+      {choosing && <PlanModal onClose={() => setChoosing(false)} />}
+    </>
+  );
+}
+
+/* ---------------------------------- vault --------------------------------- */
 
 function SetUpCard() {
   const [pw, setPw] = useState("");
@@ -464,7 +686,10 @@ function OnCard({ status }: { status: SyncStatus }) {
             New recovery key…
           </GhostButton>
         </Row>
-        <Row label="Sign out on this computer" desc="Stops syncing here and forgets the key. Your notebooks stay on this computer.">
+        <Row
+          label="Sign out on this computer"
+          desc={`Stops syncing here and forgets the key${status.account ? ", and signs this computer out of your account" : ""}. Your notebooks stay on this computer.`}
+        >
           <GhostButton onClick={() => void run("signout", signOutOfSync)} disabled={busy !== null}>
             Sign out
           </GhostButton>
@@ -503,6 +728,8 @@ export default function SyncSection() {
         title="Sync"
         desc="Use BrewLM on your other devices, even when this computer is off. Everything is encrypted on your device first: the sync server only ever stores data it can't read."
       />
+      {status.state === "signed-out" && <SignInCard />}
+      {status.account && <AccountCard account={status.account} />}
       {status.state === "setup" && <SetUpCard />}
       {status.state === "locked" && <UnlockCard />}
       {status.state === "on" && <OnCard status={status} />}

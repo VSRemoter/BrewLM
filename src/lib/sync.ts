@@ -22,14 +22,19 @@
  * fetched as they appear, and images re-render once theirs lands.
  *
  * The vault key is kept in this install's `sync-device.json`, outside the
- * database, so it never ends up in a backup. Settings → Sync sets up or
- * unlocks the vault (password, recovery key, or a link code from a signed-in
- * device — see `startDeviceLink`). Server settings still come
- * from a dev build's environment (`BREWLM_SYNC_URL`, `_TOKEN`, `_VAULT`, and
- * `_PASSWORD` to set up/unlock without the UI); accounts arrive in 2e.
+ * database, so it never ends up in a backup. Settings → Sync signs in by email
+ * (an account = one vault, with a trial or a plan), then sets up or unlocks
+ * the vault (password, recovery key, or a link code from a signed-in device —
+ * see `startDeviceLink`). Without an active plan the account is read-only:
+ * this device keeps pulling but doesn't upload.
+ *
+ * The server address still comes from a dev build's environment
+ * (`BREWLM_SYNC_URL`); deployment is 2f. `BREWLM_SYNC_TOKEN` (+ `_VAULT`,
+ * `_PASSWORD`) skips accounts for the two-copy dev setup.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { BLOB_PREFIX, blobRefsIn, markArrived, mediaBytes, putBlob } from "./blobs";
 import { getDb, referencedBlobRefs, SYNCED_TABLES, uid } from "./db";
@@ -63,10 +68,39 @@ import {
 
 interface SyncConfig {
   url: string;
+  /** A session token after sign-in (or the dev token). */
   token: string;
   vault: string;
   /** Dev only: set up or unlock with this password, without the UI. */
   password?: string | null;
+}
+
+/** What the build provides: the server, and (dev) a shared token instead of an account. */
+interface ServerConfig {
+  url: string;
+  token?: string | null;
+  vault?: string;
+  password?: string | null;
+}
+
+/** The signed-in account, kept in sync-device.json. */
+interface Account {
+  session: string;
+  email: string;
+  vault: string;
+}
+
+/** From GET /v1/me. */
+export interface AccountInfo {
+  email: string;
+  plan: "trial" | "sync" | "plus" | "none";
+  /** False when the trial ended without a plan: download only. */
+  canSync: boolean;
+  limitBytes: number;
+  usedBytes: number;
+  trialEndsAt: number;
+  periodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
 }
 
 interface Payload {
@@ -89,6 +123,8 @@ export interface RemoteChanges {
 export type SyncState =
   /** No sync server configured in this build. */
   | "off"
+  /** Needs an account: sign in by email. */
+  | "signed-out"
   /** Server reachable, no vault yet: create one with a password. */
   | "setup"
   /** The vault exists but this device hasn't unlocked it. */
@@ -101,6 +137,8 @@ export interface SyncStatus {
   error?: string;
   lastSyncAt?: number;
   syncApiKeys: boolean;
+  /** Signed-in account and plan (absent in the dev-token setup). */
+  account?: AccountInfo;
 }
 
 const POLL_MS = 3000;
@@ -114,6 +152,8 @@ const MAX_RECORD = 50_000_000;
 const MEDIA_TABLES = ["notebooks", "folders", "sources", "images", "artifacts", "messages"];
 /** A file another device hasn't uploaded yet is retried this often. */
 const DOWNLOAD_RETRY_MS = 30_000;
+/** How often the plan and storage use are refreshed while syncing. */
+const ACCOUNT_REFRESH_MS = 60_000;
 export const MIN_PASSWORD = 10;
 
 /** Settings that describe this machine, never another device. */
@@ -228,8 +268,23 @@ async function api<T>(cfg: SyncConfig, path: string, body?: unknown, method?: st
     body: body === undefined ? undefined : JSON.stringify(body),
     connectTimeout: 15000,
   });
-  if (!res.ok) throw new Error(`sync server: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw await serverError(res);
   return (await res.json()) as T;
+}
+
+/** Errors worded for people; 402/413 also tell the loop to stop uploading. */
+async function serverError(res: Response): Promise<Error> {
+  let detail = "";
+  try {
+    detail = ((await res.json()) as { error?: string }).error ?? "";
+  } catch {
+    /* not JSON */
+  }
+  if (res.status === 402) return new Error(`sync server: HTTP 402 ${detail || "No active plan."}`);
+  if (res.status === 413 && detail === "storage full")
+    return new Error("sync server: HTTP 413 Your sync storage is full. Choose a bigger plan or remove large files.");
+  if (res.status === 401) return new Error("sync server: HTTP 401 Signed out — sign in again in Settings → Sync.");
+  return new Error(`sync server: HTTP ${res.status} ${detail}`.trim());
 }
 
 function blobUrl(cfg: SyncConfig, id: string): string {
@@ -243,7 +298,7 @@ async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Pr
     body: bytes,
     connectTimeout: 15000,
   });
-  if (!res.ok) throw new Error(`sync server: upload: HTTP ${res.status}`);
+  if (!res.ok) throw await serverError(res);
 }
 
 /** The blob's bytes, or null if the server doesn't have it (yet). */
@@ -545,6 +600,9 @@ function setStatus(next: Partial<SyncStatus>): void {
   for (const fn of statusListeners) fn(status);
 }
 
+/** The build's server settings. */
+let server: ServerConfig | null = null;
+/** Ready to talk to a vault: after sign-in (or with the dev token). */
 let cfg: SyncConfig | null = null;
 let device = "";
 let clock: Clock | null = null;
@@ -570,17 +628,24 @@ function loop(): void {
   const keys = vault.keys;
   const clk = clock;
   let delay = POLL_MS;
+  let accountCheckedAt = 0;
   const cycle = async () => {
     if (stopped || gen !== generation) return; // signed out, or restarted with another vault
     const changed: RemoteChanges = { tables: new Set(), notebookIds: new Set(), chatIds: new Set() };
     try {
+      if (account && Date.now() - accountCheckedAt > ACCOUNT_REFRESH_MS) {
+        accountCheckedAt = Date.now();
+        await refreshAccount();
+      }
       await pull(c, keys, device, clk, changed);
       if (!media.scanned) await scanMedia();
       const landed = await downloadMedia(c, keys);
       if (landed > 0) for (const t of MEDIA_TABLES) changed.tables.add(t);
       const before = media.uploaded;
-      const sent = await push(c, keys, device, clk);
-      await uploadMedia(c, keys); // files from the first scan, or left over from a failed cycle
+      // Without a plan the account is read-only: keep pulling, hold uploads.
+      const canUpload = status.account?.canSync !== false;
+      const sent = canUpload ? await push(c, keys, device, clk) : 0;
+      if (canUpload) await uploadMedia(c, keys); // files from the first scan, or left over from a failed cycle
       const uploaded = media.uploaded - before;
       if (changed.tables.size > 0 || sent > 0 || uploaded > 0)
         log(
@@ -593,7 +658,9 @@ function loop(): void {
       delay = Math.min(delay * 2, MAX_BACKOFF_MS);
       const msg = e instanceof Error ? e.message : String(e);
       log(`${msg} — retrying in ${delay / 1000}s`, true);
-      setStatus({ error: msg });
+      setStatus({ error: msg.replace(/^sync server: HTTP \d+ /, "") });
+      if (account && /HTTP (402|413)/.test(msg)) accountCheckedAt = 0; // plan or storage changed: re-check
+      if (account && msg.includes("HTTP 401")) await forgetAccount("signed-out");
     }
     if (changed.tables.size > 0) for (const fn of changeListeners) fn(changed);
     setTimeout(cycle, delay);
@@ -604,7 +671,7 @@ function loop(): void {
 /** Keep the unlocked vault key on this install and start syncing. */
 async function useVault(raw: Uint8Array, fresh: boolean): Promise<void> {
   const store = await deviceStore();
-  await store.set("vault", { name: cfg!.vault, key: toBase64(raw) });
+  await store.set("vault", { name: requireCfg().vault, key: toBase64(raw) });
   await store.save();
   if (fresh) await resendEverything();
   vault = { raw, keys: await deriveKeys(raw) };
@@ -632,8 +699,117 @@ async function resendEverything(): Promise<void> {
 }
 
 function requireCfg(): SyncConfig {
-  if (!cfg) throw new Error("Sync isn't available in this build.");
+  if (!cfg) throw new Error(server ? "Sign in first." : "Sync isn't available in this build.");
   return cfg;
+}
+
+/* -------------------------------- accounts -------------------------------- */
+
+let account: Account | null = null;
+/** Bumped to abandon a sign-in that's waiting for its email link. */
+let signInGeneration = 0;
+
+async function accountApi<T>(path: string, method: string, body?: unknown, session?: string): Promise<T> {
+  if (!server) throw new Error("Sync isn't available in this build.");
+  const res = await tauriFetch(`${server.url.replace(/\/$/, "")}${path}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      ...(session ? { authorization: `Bearer ${session}` } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    connectTimeout: 15000,
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { error?: string }).error ?? "";
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(detail || `The sync server said HTTP ${res.status}.`);
+  }
+  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+}
+
+/** Plan, trial and storage use for Settings; also decides whether this device uploads. */
+export async function refreshAccount(): Promise<void> {
+  if (!account) return;
+  const me = await accountApi<AccountInfo>("/v1/me", "GET", undefined, account.session);
+  setStatus({ account: me });
+}
+
+export interface SignIn {
+  pendingId: string;
+  /** Shown in the app; the confirm page shows the same code. */
+  code: string;
+  expiresAt: number;
+}
+
+/** Email a sign-in link. Then call `waitForSignIn`. */
+export async function startSignIn(email: string): Promise<SignIn> {
+  signInGeneration += 1;
+  return accountApi<SignIn>("/v1/auth/start", "POST", { email });
+}
+
+/** Wait until the emailed link was confirmed (true) or the attempt expired / was abandoned (false). */
+export async function waitForSignIn(attempt: SignIn): Promise<boolean> {
+  const mine = signInGeneration;
+  while (mine === signInGeneration && Date.now() < attempt.expiresAt) {
+    type Poll = { status: string; session?: string; email?: string; vault?: string };
+    const res = await accountApi<Poll>("/v1/auth/poll", "POST", { pendingId: attempt.pendingId }).catch(
+      (): Poll => ({ status: "pending" }) // a network blip: keep waiting
+    );
+    if (res.status === "ok" && res.session && res.email && res.vault) {
+      await useAccount({ session: res.session, email: res.email, vault: res.vault });
+      log(`signed in as ${res.email}`);
+      return true;
+    }
+    if (res.status === "expired") return false;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return false;
+}
+
+export function cancelSignIn(): void {
+  signInGeneration += 1;
+}
+
+async function useAccount(a: Account): Promise<void> {
+  const store = await deviceStore();
+  await store.set("account", a);
+  await store.save();
+  account = a;
+  cfg = { url: server!.url, token: a.session, vault: a.vault };
+  await refreshAccount().catch(() => {});
+  await resumeVault(cfg);
+}
+
+/** Back to signed out: forget the session (and, with it, this device's vault key). */
+async function forgetAccount(state: SyncState): Promise<void> {
+  generation += 1;
+  vault = null;
+  account = null;
+  cfg = null;
+  const store = await deviceStore();
+  await store.delete("account");
+  await store.delete("vault");
+  await store.save();
+  setStatus({ state, account: undefined, error: undefined });
+}
+
+/** Choose a plan: opens Polar's checkout in the browser. */
+export async function openCheckout(plan: "sync" | "plus", interval: "month" | "year"): Promise<void> {
+  if (!account) throw new Error("Sign in first.");
+  const { url } = await accountApi<{ url: string }>("/v1/billing/checkout", "POST", { plan, interval }, account.session);
+  await openUrl(url);
+}
+
+/** Change plan, card or cancel: opens Polar's billing page in the browser. */
+export async function openBillingPortal(): Promise<void> {
+  if (!account) throw new Error("Sign in first.");
+  const { url } = await accountApi<{ url: string }>("/v1/billing/portal", "POST", undefined, account.session);
+  await openUrl(url);
 }
 
 /** First device: create the vault. Returns the recovery key to show (once). */
@@ -741,8 +917,17 @@ export async function linkThisDevice(text: string): Promise<void> {
   log("device linked");
 }
 
-/** Stop syncing on this device and forget its copy of the vault key. Local data stays. */
+/**
+ * Stop syncing on this device and forget its copy of the vault key (and, with
+ * an account, sign out of it). Local data stays.
+ */
 export async function signOutOfSync(): Promise<void> {
+  if (account) {
+    const session = account.session;
+    await forgetAccount("signed-out");
+    await accountApi("/v1/auth/session", "DELETE", undefined, session).catch(() => {});
+    return;
+  }
   generation += 1;
   vault = null;
   const store = await deviceStore();
@@ -764,15 +949,34 @@ export async function setSyncApiKeys(on: boolean): Promise<void> {
 
 /** Start syncing if this build has a sync server configured (dev builds, for now). */
 export async function startSync(): Promise<void> {
-  if (cfg) return;
-  const c = await invoke<SyncConfig | null>("sync_dev_config");
-  if (!c) return;
-  cfg = c;
+  if (server) return;
+  const s = await invoke<ServerConfig | null>("sync_dev_config");
+  if (!s) return;
+  server = s;
   device = await deviceId();
   clock = Clock.parse(device, await getState("hlc_last"));
   setStatus({ syncApiKeys: (await getState("sync_api_keys")) !== "0" });
-  log(`server ${c.url}, vault "${c.vault}", device ${device.slice(0, 8)}`);
 
+  if (s.token) {
+    // Dev: shared token, fixed vault, no account.
+    cfg = { url: s.url, token: s.token, vault: s.vault ?? "dev", password: s.password };
+    log(`server ${s.url}, vault "${cfg.vault}" (dev token), device ${device.slice(0, 8)}`);
+    await resumeVault(cfg);
+    return;
+  }
+  log(`server ${s.url}, device ${device.slice(0, 8)}`);
+  const saved = await (await deviceStore()).get<Account>("account");
+  if (!saved) return setStatus({ state: "signed-out" });
+  account = saved;
+  cfg = { url: s.url, token: saved.session, vault: saved.vault };
+  await refreshAccount().catch((e) => {
+    if (e instanceof Error && /HTTP 401|unauthorized/i.test(e.message)) void forgetAccount("signed-out");
+  });
+  if (cfg) await resumeVault(cfg);
+}
+
+/** Use this device's saved vault key, or find out whether the vault needs setting up or unlocking. */
+async function resumeVault(c: SyncConfig): Promise<void> {
   const saved = await (await deviceStore()).get<{ name: string; key: string }>("vault");
   if (saved?.name === c.vault) {
     vault = { raw: fromBase64(saved.key), keys: await deriveKeys(fromBase64(saved.key)) };
@@ -792,10 +996,12 @@ async function checkVault(c: SyncConfig, delay: number): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     setStatus({ state: status.state === "off" ? "locked" : status.state, error: `Can't reach the sync server (${msg})` });
     log(`can't reach the sync server — retrying in ${delay / 1000}s`, true);
-    setTimeout(() => void checkVault(c, Math.min(delay * 2, MAX_BACKOFF_MS)), delay);
+    setTimeout(() => {
+      if (cfg === c) void checkVault(c, Math.min(delay * 2, MAX_BACKOFF_MS));
+    }, delay);
     return;
   }
-  if (vault) return; // unlocked from Settings meanwhile
+  if (vault || cfg !== c) return; // unlocked from Settings meanwhile, or signed out
   setStatus({ state: envelope ? "locked" : "setup", error: undefined });
   if (!c.password) return;
   try {
