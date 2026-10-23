@@ -1,0 +1,61 @@
+name: Check
+
+# Typecheck, frontend build and Rust tests on every OS we ship, so a change
+# that only breaks Windows or Linux shows up before a release tag does.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck and build the frontend
+        run: npm run build
+
+      # The bundler wants the cloudflared sidecar for this platform to exist.
+      - name: Fetch sidecar binaries
+        shell: bash
+        run: bash scripts/fetch-sidecars.sh
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
