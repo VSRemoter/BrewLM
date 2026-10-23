@@ -6,8 +6,15 @@ import {
   deriveKeys,
   encryptBlob,
   encryptRecord,
+  formatLinkCode,
   formatRecoveryKey,
   hiddenId,
+  linkId,
+  linkUri,
+  newLinkSecret,
+  openLink,
+  parseLink,
+  sealForLink,
   type Kdf,
   newRecoveryKey,
   newVaultKey,
@@ -104,5 +111,27 @@ describe("recovery key text", () => {
     expect(parseRecoveryKey(text)).toEqual(rk);
     expect(parseRecoveryKey("too short")).toBeNull();
     expect(parseRecoveryKey(text.replace(/.$/, "U"))).toBeNull(); // U isn't in the alphabet
+  });
+});
+
+describe("device links", () => {
+  it("hands the vault key over with the secret, and only with it", async () => {
+    const vk = newVaultKey();
+    const secret = newLinkSecret();
+    const sealed = await sealForLink(secret, vk);
+    expect(await openLink(secret, sealed)).toEqual(vk);
+    await expect(openLink(newLinkSecret(), sealed)).rejects.toBeInstanceOf(WrongSecretError);
+    expect(await linkId(secret)).toMatch(/^[0-9a-f]{64}$/);
+    expect(await linkId(secret)).not.toBe(await linkId(newLinkSecret()));
+  });
+
+  it("reads a scanned link or a typed code", () => {
+    const secret = newLinkSecret();
+    expect(parseLink(linkUri("my-vault", secret))).toEqual({ vault: "my-vault", secret });
+    const typed = formatLinkCode(secret).toLowerCase().replace(/-/g, " ");
+    expect(parseLink(typed)).toEqual({ vault: null, secret });
+    expect(formatLinkCode(secret)).toHaveLength(52 + 10); // 52 characters + dashes
+    expect(parseLink("brewlm-link:1:v:TOOSHORT")).toBeNull();
+    expect(parseLink("hello")).toBeNull();
   });
 });

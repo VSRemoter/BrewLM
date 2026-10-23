@@ -23,7 +23,8 @@
  *
  * The vault key is kept in this install's `sync-device.json`, outside the
  * database, so it never ends up in a backup. Settings → Sync sets up or
- * unlocks the vault (password or recovery key). Server settings still come
+ * unlocks the vault (password, recovery key, or a link code from a signed-in
+ * device — see `startDeviceLink`). Server settings still come
  * from a dev build's environment (`BREWLM_SYNC_URL`, `_TOKEN`, `_VAULT`, and
  * `_PASSWORD` to set up/unlock without the UI); accounts arrive in 2e.
  */
@@ -40,9 +41,16 @@ import {
   encryptBlob,
   encryptRecord,
   type Envelope,
+  formatLinkCode,
   formatRecoveryKey,
   fromBase64,
   hiddenId,
+  linkId,
+  linkUri,
+  newLinkSecret,
+  openLink,
+  parseLink,
+  sealForLink,
   newRecoveryKey,
   newVaultKey,
   rewrapPassword,
@@ -680,6 +688,57 @@ export async function newSyncRecoveryKey(): Promise<string> {
   const recovery = newRecoveryKey();
   await putEnvelope(c, await rewrapRecovery(envelope, vault.raw, recovery), version);
   return formatRecoveryKey(recovery);
+}
+
+export interface DeviceLink {
+  /** What the QR code holds. */
+  uri: string;
+  /** The same secret, to type. */
+  code: string;
+  expiresAt: number;
+  id: string;
+}
+
+/** Signed-in device: make a one-time link a new device can use instead of the password. */
+export async function startDeviceLink(): Promise<DeviceLink> {
+  const c = requireCfg();
+  if (!vault) throw new Error("Unlock sync first.");
+  const secret = newLinkSecret();
+  const id = await linkId(secret);
+  const { expires } = await api<{ expires: number }>(c, `links/${id}`, { sealed: await sealForLink(secret, vault.raw) }, "PUT");
+  return { uri: linkUri(c.vault, secret), code: formatLinkCode(secret), expiresAt: expires, id };
+}
+
+/** Is the link still waiting for its device? (false once used, cancelled or expired) */
+export async function deviceLinkPending(id: string): Promise<boolean> {
+  return (await api<{ pending: boolean }>(requireCfg(), `links/${id}/status`)).pending;
+}
+
+export async function cancelDeviceLink(id: string): Promise<void> {
+  const c = requireCfg();
+  await tauriFetch(`${c.url.replace(/\/$/, "")}/v1/vaults/${c.vault}/links/${id}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${c.token}` },
+    connectTimeout: 15000,
+  }).catch(() => {});
+}
+
+/** New device: join the vault with a link scanned or typed from a signed-in device. */
+export async function linkThisDevice(text: string): Promise<void> {
+  const c = requireCfg();
+  const parsed = parseLink(text);
+  if (!parsed) throw new Error("That isn't a link code — it's 52 letters and numbers.");
+  if (parsed.vault && parsed.vault !== c.vault) throw new Error("That code is for a different sync account.");
+  let sealed: string;
+  try {
+    ({ sealed } = await api<{ sealed: string }>(c, `links/${await linkId(parsed.secret)}`));
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("HTTP 404"))
+      throw new Error("That code has expired or was already used. Make a new one on your other device.");
+    throw e;
+  }
+  await useVault(await openLink(parsed.secret, sealed), true);
+  log("device linked");
 }
 
 /** Stop syncing on this device and forget its copy of the vault key. Local data stays. */

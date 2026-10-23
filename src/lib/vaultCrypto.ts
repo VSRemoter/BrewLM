@@ -16,6 +16,12 @@
  * once under the printable recovery key. Either unlocks it; losing both loses
  * the cloud copy (local data is unaffected). What the server still sees:
  * sizes, timing, and random device ids.
+ *
+ * Linking a new device: an unlocked device makes a one-time LINK SECRET (256
+ * bits, shown as a QR code / typed code) and leaves the vault key on the
+ * server encrypted with it, under an id derived from it. The new device turns
+ * the code back into the secret, fetches that one item and decrypts it. The
+ * server never sees the secret, so it can't use the link itself.
  */
 import { argon2id } from "hash-wasm";
 
@@ -228,18 +234,13 @@ export async function rewrapRecovery(env: Envelope, vaultKey: Uint8Array, recove
   return { ...env, byRecovery: toBase64(await seal(await recoveryKeyKey(recovery), vaultKey, WRAP_AAD)) };
 }
 
-/* ----------------------------- recovery key ------------------------------ */
+/* -------------------------------- base32 -------------------------------- */
 
 // Crockford base32: no I, L, O or U, so it reads and types cleanly.
 const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/** 200 random bits. */
-export function newRecoveryKey(): Uint8Array {
-  return randomBytes(25);
-}
-
-/** 40 characters in groups of five: `7K3QX-…`. */
-export function formatRecoveryKey(key: Uint8Array): string {
+/** Groups of five characters: `7K3QX-…`. */
+function encodeB32(key: Uint8Array): string {
   let bits = 0;
   let value = 0;
   let out = "";
@@ -256,10 +257,10 @@ export function formatRecoveryKey(key: Uint8Array): string {
 }
 
 /** Accepts any case, spaces or dashes, and the usual look-alikes (I/L → 1, O → 0). */
-export function parseRecoveryKey(text: string): Uint8Array | null {
+function decodeB32(text: string, bytes: number): Uint8Array | null {
   const clean = text.toUpperCase().replace(/[\s-]/g, "").replace(/[IL]/g, "1").replace(/O/g, "0");
-  if (clean.length !== 40) return null;
-  const out = new Uint8Array(25);
+  if (clean.length !== Math.ceil((bytes * 8) / 5)) return null;
+  const out = new Uint8Array(bytes);
   let bits = 0;
   let value = 0;
   let i = 0;
@@ -274,4 +275,79 @@ export function parseRecoveryKey(text: string): Uint8Array | null {
     }
   }
   return out;
+}
+
+/* ----------------------------- recovery key ------------------------------ */
+
+/** 200 random bits. */
+export function newRecoveryKey(): Uint8Array {
+  return randomBytes(25);
+}
+
+/** 40 characters in groups of five. */
+export function formatRecoveryKey(key: Uint8Array): string {
+  return encodeB32(key);
+}
+
+export function parseRecoveryKey(text: string): Uint8Array | null {
+  return decodeB32(text, 25);
+}
+
+/* ------------------------------ device links ------------------------------ */
+
+const LINK_PREFIX = "brewlm-link:1:";
+const LINK_AAD = enc.encode("brewlm/v1/link");
+
+export function newLinkSecret(): Uint8Array {
+  return randomBytes(32);
+}
+
+/** What the QR code holds: `brewlm-link:1:<vault>:<code>`. */
+export function linkUri(vault: string, secret: Uint8Array): string {
+  return `${LINK_PREFIX}${vault}:${encodeB32(secret)}`;
+}
+
+/** The typed form: 52 characters in groups of five. */
+export function formatLinkCode(secret: Uint8Array): string {
+  return encodeB32(secret);
+}
+
+/** A scanned link or a typed code (vault is null for a bare code). */
+export function parseLink(text: string): { vault: string | null; secret: Uint8Array } | null {
+  const t = text.trim();
+  if (t.startsWith(LINK_PREFIX)) {
+    const rest = t.slice(LINK_PREFIX.length);
+    const cut = rest.lastIndexOf(":");
+    const secret = decodeB32(rest.slice(cut + 1), 32);
+    return secret && cut > 0 ? { vault: rest.slice(0, cut), secret } : null;
+  }
+  const secret = decodeB32(t, 32);
+  return secret ? { vault: null, secret } : null;
+}
+
+/** Where the server keeps the link's sealed vault key (64 hex chars). */
+export async function linkId(secret: Uint8Array): Promise<string> {
+  const data = new Uint8Array(LINK_AAD.length + secret.length);
+  data.set(LINK_AAD);
+  data.set(secret, LINK_AAD.length);
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", buf(data))));
+}
+
+async function linkKey(secret: Uint8Array): Promise<CryptoKey> {
+  const base = await crypto.subtle.importKey("raw", buf(secret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: LINK_AAD },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+export async function sealForLink(secret: Uint8Array, vaultKey: Uint8Array): Promise<string> {
+  return toBase64(await seal(await linkKey(secret), vaultKey, enc.encode(await linkId(secret))));
+}
+
+export async function openLink(secret: Uint8Array, sealed: string): Promise<Uint8Array> {
+  return open(await linkKey(secret), fromBase64(sealed), enc.encode(await linkId(secret)));
 }

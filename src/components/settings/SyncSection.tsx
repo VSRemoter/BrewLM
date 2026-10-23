@@ -3,10 +3,15 @@
  * (src/lib/sync.ts). Shown only when this build has a sync server configured.
  */
 import { Check, Copy, KeyRound } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  cancelDeviceLink,
   changeSyncPassword,
+  type DeviceLink,
+  deviceLinkPending,
   getSyncStatus,
+  linkThisDevice,
   MIN_PASSWORD,
   newSyncRecoveryKey,
   onSyncStatus,
@@ -14,6 +19,7 @@ import {
   setSyncApiKeys,
   setUpSync,
   signOutOfSync,
+  startDeviceLink,
   type SyncStatus,
   unlockSync,
 } from "../../lib/sync";
@@ -112,6 +118,103 @@ function RecoveryKeyModal({ recoveryKey, onDone }: { recoveryKey: string; onDone
   );
 }
 
+/**
+ * A one-time code for a new device: QR to scan (phones) or text to type. It
+ * works once, for 10 minutes; closing this cancels it unless it was used.
+ */
+function AddDeviceModal({ onClose }: { onClose: () => void }) {
+  const [link, setLink] = useState<DeviceLink | null>(null);
+  const [state, setState] = useState<"waiting" | "linked" | "expired">("waiting");
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let made: DeviceLink | null = null;
+    let done = false;
+    let closed = false;
+    startDeviceLink()
+      .then((l) => {
+        if (closed) return void cancelDeviceLink(l.id); // closed before it arrived
+        made = l;
+        setLink(l);
+      })
+      .catch((e) => setError(message(e)));
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    const poll = setInterval(() => {
+      if (!made || done) return;
+      const l = made;
+      void deviceLinkPending(l.id)
+        .then((pending) => {
+          if (pending || done) return;
+          done = true;
+          setState(Date.now() >= l.expiresAt ? "expired" : "linked");
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => {
+      closed = true;
+      clearInterval(tick);
+      clearInterval(poll);
+      if (made && !done) void cancelDeviceLink(made.id);
+    };
+  }, []);
+
+  const left = link ? Math.max(0, link.expiresAt - now) : 0;
+  const expired = state === "expired" || (link !== null && left === 0 && state === "waiting");
+  const clock = `${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, "0")}`;
+
+  return (
+    <Modal title="Add a device" onClose={onClose}>
+      <div className="flex flex-col items-center gap-4">
+        {error ? (
+          <p className="text-[13px] text-danger">{error}</p>
+        ) : !link ? (
+          <span className="my-10 inline-block h-5 w-5 animate-spin rounded-full border-2 border-ink-3 border-t-transparent" />
+        ) : state === "linked" ? (
+          <div className="flex flex-col items-center gap-2 py-6">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-accent-ink">
+              <Check size={20} strokeWidth={2.5} />
+            </span>
+            <p className="text-[14px] font-medium text-ink">Device linked</p>
+            <p className="text-[12.5px] text-ink-3">It's downloading your library now.</p>
+          </div>
+        ) : expired ? (
+          <p className="py-6 text-[13px] text-ink-2">This code expired. Close this and make a new one.</p>
+        ) : (
+          <>
+            <p className="text-center text-[13px] leading-relaxed text-ink-2">
+              On the new device, open Settings → Sync and choose “Use a code from your other device”. Scan this, or
+              type the code below. It works once, for the next {clock}.
+            </p>
+            <div className="rounded-xl bg-white p-3">
+              <QRCodeSVG value={link.uri} size={180} />
+            </div>
+            <div className="flex w-full items-center gap-2 rounded-xl border border-edge bg-canvas px-3 py-2.5">
+              <code className="min-w-0 flex-1 select-all break-all font-mono text-[12px] tracking-wide text-ink">
+                {link.code}
+              </code>
+              <button
+                type="button"
+                onClick={() => void navigator.clipboard.writeText(link.code).then(() => setCopied(true))}
+                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-ink-2 hover:bg-hover-soft"
+              >
+                {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <p className="text-center text-[11.5px] leading-relaxed text-ink-3">
+              Anyone with this code can join your library, so only show it to your own devices.
+            </p>
+          </>
+        )}
+        <div className="flex w-full justify-end">
+          <GhostButton onClick={onClose}>{state === "linked" ? "Done" : "Cancel"}</GhostButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function SetUpCard() {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -159,8 +262,9 @@ function SetUpCard() {
 }
 
 function UnlockCard() {
-  const [mode, setMode] = useState<"password" | "recovery">("password");
+  const [mode, setMode] = useState<"password" | "recovery" | "link">("password");
   const [pw, setPw] = useState("");
+  const [code, setCode] = useState("");
   const [recovery, setRecovery] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -177,6 +281,7 @@ function UnlockCard() {
     setError(null);
     try {
       if (mode === "password") await unlockSync(pw);
+      else if (mode === "link") await linkThisDevice(code);
       else await recoverSync(recovery, newPw);
     } catch (err) {
       setError(message(err));
@@ -189,7 +294,23 @@ function UnlockCard() {
     <>
       <form onSubmit={submit}>
         <Card>
-          {mode === "password" ? (
+          {mode === "link" ? (
+            <Row
+              label="Code from your other device"
+              desc="On a device that's already syncing: Settings → Sync → Add a device."
+              alignTop
+            >
+              <div className="w-72">
+                <input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="XXXXX-XXXXX-XXXXX-…"
+                  spellCheck={false}
+                  className={`${inputClass} font-mono`}
+                />
+              </div>
+            </Row>
+          ) : mode === "password" ? (
             <Row label="Enter your sync password" desc="The one you chose when you turned on sync." alignTop>
               <div className="w-72">
                 <input
@@ -227,20 +348,34 @@ function UnlockCard() {
             </>
           )}
           <Row label="" alignTop>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setMode(mode === "password" ? "recovery" : "password");
-                  setError(null);
-                }}
-                className="text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+            <div className="flex flex-col items-end gap-2">
+              <PrimaryButton
+                type="submit"
+                disabled={busy || (mode === "password" ? !pw : mode === "link" ? !code : !recovery || !newPw)}
               >
-                {mode === "password" ? "Forgot it? Use your recovery key" : "Use your password instead"}
-              </button>
-              <PrimaryButton type="submit" disabled={busy || (mode === "password" ? !pw : !recovery || !newPw)}>
-                {busy ? "Unlocking…" : "Unlock"}
+                {busy ? "Unlocking…" : mode === "link" ? "Link this device" : "Unlock"}
               </PrimaryButton>
+              <div className="flex gap-3">
+                {(["password", "link", "recovery"] as const)
+                  .filter((m) => m !== mode)
+                  .map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => {
+                        setMode(m);
+                        setError(null);
+                      }}
+                      className="text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      {m === "password"
+                        ? "Use your password"
+                        : m === "link"
+                          ? "Use a code from your other device"
+                          : "Forgot it? Use your recovery key"}
+                    </button>
+                  ))}
+              </div>
             </div>
           </Row>
         </Card>
@@ -258,6 +393,7 @@ function OnCard({ status }: { status: SyncStatus }) {
   const [note, setNote] = useState<string | null>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [confirmNewKey, setConfirmNewKey] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const run = async (what: string, fn: () => Promise<void>) => {
     setBusy(what);
@@ -298,6 +434,9 @@ function OnCard({ status }: { status: SyncStatus }) {
           }
         >
           <span className={`inline-block h-2 w-2 rounded-full ${status.error ? "bg-danger" : "bg-accent"}`} />
+        </Row>
+        <Row label="Add a device" desc="Show a one-time code to scan or type on your new device, instead of your password.">
+          <GhostButton onClick={() => setAdding(true)}>Add a device…</GhostButton>
         </Row>
         <Row
           label="Sync API keys"
@@ -351,6 +490,7 @@ function OnCard({ status }: { status: SyncStatus }) {
         </Modal>
       )}
       {recoveryKey && <RecoveryKeyModal recoveryKey={recoveryKey} onDone={() => setRecoveryKey(null)} />}
+      {adding && <AddDeviceModal onClose={() => setAdding(false)} />}
     </>
   );
 }

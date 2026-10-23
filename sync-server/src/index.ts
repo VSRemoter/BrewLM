@@ -5,6 +5,10 @@
  *   GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
  *   GET  /v1/vaults/:vault/keys            → { envelope, version }
  *   PUT  /v1/vaults/:vault/keys            { envelope, expectVersion } (409 if stale)
+ *   PUT  /v1/vaults/:vault/links/:id       { sealed } → { expires }  (one-time, 10 min)
+ *   GET  /v1/vaults/:vault/links/:id       → { sealed }  (deleted as it's read)
+ *   GET  /v1/vaults/:vault/links/:id/status → { pending }
+ *   DELETE /v1/vaults/:vault/links/:id
  *   POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
  *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
  *   GET  /v1/vaults/:vault/blobs/:id
@@ -65,11 +69,11 @@ function validChanges(v: unknown): v is Change[] {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
+    const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
     if (!m) return fail(404, "not found");
     if (!env.SYNC_DEV_TOKEN) return fail(500, "server not configured");
     if (!(await authorized(req, env))) return fail(401, "unauthorized");
-    const [, vault, op, blobId] = m;
+    const [, vault, op, linkId, linkStatus, blobId] = m;
     if (!VAULT_RE.test(vault)) return fail(400, "bad vault id");
 
     if (op === "blobs/missing") {
@@ -102,6 +106,27 @@ export default {
     }
 
     const stub = env.VAULT.get(env.VAULT.idFromName(vault));
+
+    if (linkId !== undefined) {
+      if (linkStatus) {
+        if (req.method !== "GET") return fail(405, "method not allowed");
+        return json({ pending: await stub.linkPending(linkId) });
+      }
+      if (req.method === "GET") {
+        const sealed = await stub.takeLink(linkId);
+        return sealed ? json({ sealed }) : fail(404, "no such link (used, cancelled or expired)");
+      }
+      if (req.method === "DELETE") {
+        await stub.cancelLink(linkId);
+        return new Response(null, { status: 204 });
+      }
+      if (req.method !== "PUT") return fail(405, "method not allowed");
+      const body = await req.json<{ sealed?: unknown }>().catch(() => ({}) as { sealed?: unknown });
+      if (typeof body.sealed !== "string" || body.sealed.length === 0 || body.sealed.length > MAX_ENVELOPE)
+        return fail(400, "bad sealed key");
+      const res = await stub.putLink(linkId, body.sealed);
+      return res.ok ? json({ expires: res.expires }) : fail(429, "too many open device links");
+    }
 
     if (op === "keys") {
       if (req.method === "GET") return json(await stub.getKeys());

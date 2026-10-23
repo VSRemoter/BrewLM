@@ -157,3 +157,47 @@ describe("key envelope", () => {
     expect((await put("k2", "x".repeat(16 * 1024 + 1), 0)).status).toBe(400);
   });
 });
+
+describe("device links", () => {
+  const ID = "a".repeat(64);
+  const link = (vault: string, path = "", init?: RequestInit) =>
+    exports.default.fetch(`https://sync.test/v1/vaults/${vault}/links/${ID}${path}`, {
+      ...init,
+      headers: { ...AUTH, "content-type": "application/json" },
+    });
+  const status = async (vault: string) => ((await (await link(vault, "/status")).json()) as { pending: boolean }).pending;
+
+  it("hands the sealed key over exactly once", async () => {
+    expect(await status("l1")).toBe(false);
+    const put = await link("l1", "", { method: "PUT", body: JSON.stringify({ sealed: "ciphertext" }) });
+    expect(put.status).toBe(200);
+    expect(await status("l1")).toBe(true);
+    const got = await link("l1");
+    expect(await got.json()).toEqual({ sealed: "ciphertext" });
+    expect((await link("l1")).status).toBe(404); // single use
+    expect(await status("l1")).toBe(false);
+  });
+
+  it("can be cancelled, and stays inside its vault", async () => {
+    await link("l2", "", { method: "PUT", body: JSON.stringify({ sealed: "x" }) });
+    expect((await link("l3")).status).toBe(404);
+    expect((await link("l2", "", { method: "DELETE" })).status).toBe(204);
+    expect((await link("l2")).status).toBe(404);
+  });
+
+  it("caps open links and rejects bad ids", async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = String(i).repeat(64);
+      const res = await exports.default.fetch(`https://sync.test/v1/vaults/l4/links/${id}`, {
+        method: "PUT",
+        headers: { ...AUTH, "content-type": "application/json" },
+        body: JSON.stringify({ sealed: "x" }),
+      });
+      expect(res.status).toBe(200);
+    }
+    const sixth = await link("l4", "", { method: "PUT", body: JSON.stringify({ sealed: "x" }) });
+    expect(sixth.status).toBe(429);
+    const bad = await exports.default.fetch("https://sync.test/v1/vaults/l4/links/not-hex", { headers: AUTH });
+    expect(bad.status).toBe(404);
+  });
+});

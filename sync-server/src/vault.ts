@@ -21,6 +21,9 @@ export const MAX_PUSH = 500;
 export const MAX_PULL = 500;
 /** The key envelope is a few hundred bytes of JSON; anything near this is junk. */
 export const MAX_ENVELOPE = 16 * 1024;
+/** A device link waits this long for the new device, then is gone. */
+export const LINK_TTL_MS = 10 * 60 * 1000;
+const MAX_LINKS = 5;
 
 // Type aliases (not interfaces) so they satisfy SqlStorage's row constraint.
 export type Change = {
@@ -55,6 +58,49 @@ export class Vault extends DurableObject<Env> {
       envelope TEXT NOT NULL,
       version INTEGER NOT NULL
     )`);
+    // One-time device links: the vault key sealed with a secret only the QR
+    // code carries, waiting (briefly) for the new device to take it.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS links (
+      id TEXT PRIMARY KEY,
+      sealed TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
+  }
+
+  private purgeLinks(): void {
+    this.sql.exec("DELETE FROM links WHERE expires <= ?", Date.now());
+  }
+
+  putLink(id: string, sealed: string): { ok: boolean; expires: number } {
+    this.purgeLinks();
+    const open = this.sql.exec<{ n: number }>("SELECT count(*) AS n FROM links WHERE id != ?", id).one().n;
+    if (open >= MAX_LINKS) return { ok: false, expires: 0 };
+    const expires = Date.now() + LINK_TTL_MS;
+    this.sql.exec(
+      "INSERT INTO links (id, sealed, expires) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET sealed = excluded.sealed, expires = excluded.expires",
+      id,
+      sealed,
+      expires
+    );
+    return { ok: true, expires };
+  }
+
+  /** Hand the sealed key over once: it's deleted as it's read. */
+  takeLink(id: string): string | null {
+    this.purgeLinks();
+    const row = this.sql.exec<{ sealed: string }>("SELECT sealed FROM links WHERE id = ?", id).toArray()[0];
+    if (row) this.sql.exec("DELETE FROM links WHERE id = ?", id);
+    return row?.sealed ?? null;
+  }
+
+  /** Still waiting? (false once used, cancelled or expired) */
+  linkPending(id: string): boolean {
+    this.purgeLinks();
+    return this.sql.exec("SELECT 1 FROM links WHERE id = ?", id).toArray().length > 0;
+  }
+
+  cancelLink(id: string): void {
+    this.sql.exec("DELETE FROM links WHERE id = ?", id);
   }
 
   getKeys(): { envelope: string | null; version: number } {
