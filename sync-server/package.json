@@ -7,7 +7,10 @@
     "dev": "wrangler dev --port 8787",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "types": "wrangler types --env-file .dev.vars.example"
+    "types": "wrangler types --env-file .dev.vars.example",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply brewlm-sync --local",
+    "migrate:remote": "wrangler d1 migrations apply brewlm-sync --remote"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.3.7",

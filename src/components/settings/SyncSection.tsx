@@ -19,6 +19,7 @@ import {
   newSyncRecoveryKey,
   onSyncStatus,
   openBillingPortal,
+  refreshAccount,
   openCheckout,
   recoverSync,
   setSyncApiKeys,
@@ -722,6 +723,8 @@ function OnCard({ status }: { status: SyncStatus }) {
 
 export default function SyncSection() {
   const status = useSyncStatus();
+  // Fresh plan and storage figures whenever the section is opened.
+  useEffect(() => void refreshAccount().catch(() => {}), []);
   return (
     <div>
       <SectionTitle

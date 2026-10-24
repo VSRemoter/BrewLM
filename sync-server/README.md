@@ -67,9 +67,36 @@ To watch two copies of BrewLM sync on one machine, run the app with
 account). To try accounts, run a copy without the token:
 `BREWLM_PROFILE=d BREWLM_SYNC_URL=http://127.0.0.1:8787 src-tauri/target/debug/brewlm`.
 
+## Deploy (https://sync.brewlm.com)
+
+One-time setup, from `sync-server/`:
+
+```bash
+npx wrangler login                                   # opens Cloudflare in the browser
+npx wrangler r2 bucket create brewlm-sync-blobs
+npx wrangler d1 create brewlm-sync                   # paste its database_id into wrangler.jsonc
+npm run migrate:remote                               # account tables
+npx wrangler secret put RESEND_API_KEY               # each prompts for the value
+npx wrangler secret put POLAR_ACCESS_TOKEN
+npx wrangler secret put POLAR_WEBHOOK_SECRET
+```
+
+Set the four `POLAR_PRODUCT_*` ids in `wrangler.jsonc` (they're public), then
+`npm run deploy`. Cloudflare attaches `sync.brewlm.com` and its certificate.
+In Polar, add a webhook to `https://sync.brewlm.com/v1/webhooks/polar` for the
+`subscription.*` events. Never set `SYNC_DEV_TOKEN` in production (the server
+ignores it there anyway).
+
+`POLAR_API_URL` points at Polar's sandbox (test mode). For real payments,
+change it to `https://api.polar.sh` and use production products and keys.
+After a schema change, `npm run migrate:remote` before `npm run deploy`.
+
 ## Status
 
-Milestones 2a–2e: end-to-end encrypted records and media, device linking by
-one-time code, accounts with email sign-in, a 14-day trial, Polar plans and
-storage limits; polling every 3 s. Still to come: deployment (2f), and
-cleaning up server files nothing points to any more.
+Milestones 2a–2f: end-to-end encrypted records and media, device linking by
+one-time code, accounts with email sign-in, a 14-day trial, Polar plans,
+storage limits, and the production setup above. Release builds of the app
+sync with https://sync.brewlm.com: uploads go out within seconds, other
+devices' changes are fetched every 30 s and when the window regains focus.
+Still to come: live updates (WebSocket) and cleaning up server files nothing
+points to any more.

@@ -1,4 +1,6 @@
 # Copy to .dev.vars for `npm run dev`.
+# The local server's own address (production uses https://sync.brewlm.com).
+PUBLIC_URL=http://127.0.0.1:8787
 # Shared token for the two-copy dev setup (scripts/sync-dev-copy.sh). Any long random string.
 SYNC_DEV_TOKEN=change-me-to-a-long-random-string
 # Optional. Without it, sign-in links are printed to this console instead of emailed.

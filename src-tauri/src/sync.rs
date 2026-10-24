@@ -104,15 +104,15 @@ pub async fn sync_mark_pushed(app: tauri::AppHandle, pushed: Vec<Pushed>) -> Res
     mark_pushed(&mut conn, &pushed).await
 }
 
-/// Dev-only until deployment (2f): the sync server address from the environment.
-/// `BREWLM_SYNC_TOKEN` additionally skips accounts (the two-copy dev setup).
+/// Where to sync. Release builds use the BrewLM Sync service; dev builds use
+/// `BREWLM_SYNC_URL` if set (none = sync off), and `BREWLM_SYNC_TOKEN`
+/// (+ `_VAULT`, `_PASSWORD`) skips accounts for the two-copy dev setup.
 #[tauri::command]
-pub fn sync_dev_config() -> Option<serde_json::Value> {
+pub fn sync_config() -> Option<serde_json::Value> {
     if !cfg!(debug_assertions) {
-        return None;
+        return Some(serde_json::json!({ "url": "https://sync.brewlm.com" }));
     }
     let url = std::env::var("BREWLM_SYNC_URL").ok()?;
-    // Optional: a shared dev token instead of signing in with an account.
     let token = std::env::var("BREWLM_SYNC_TOKEN").ok();
     let vault = std::env::var("BREWLM_SYNC_VAULT").unwrap_or_else(|_| "dev".into());
     // Optional: set up or unlock the vault with this password, without the UI.

@@ -62,3 +62,23 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test
+
+  # The sync server (Cloudflare Worker): typecheck and tests in the Workers runtime.
+  sync-server:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: sync-server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sync-server/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test

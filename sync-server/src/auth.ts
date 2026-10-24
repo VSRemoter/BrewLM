@@ -18,6 +18,10 @@ import { sendSignInEmail } from "./email";
 export const SIGN_IN_TTL_MS = 15 * 60 * 1000;
 export const TRIAL_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_SIGN_INS_PER_HOUR = 5;
+/** Per network address, across emails: stops the server being used to spam people. */
+const MAX_SIGN_INS_PER_IP_HOUR = 20;
+/** A session unused this long stops working (each use extends it). */
+export const SESSION_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/;
 
 export interface User {
@@ -72,20 +76,26 @@ export async function startSignIn(req: Request, env: Env): Promise<Response> {
   if (!EMAIL_RE.test(email)) return json({ error: "That doesn't look like an email address." }, 400);
 
   const now = Date.now();
-  const recent = await env.DB.prepare("SELECT count(*) AS n FROM sign_ins WHERE email = ? AND created_at > ?")
-    .bind(email, now - 60 * 60 * 1000)
-    .first<{ n: number }>();
-  if ((recent?.n ?? 0) >= MAX_SIGN_INS_PER_HOUR)
+  const hourAgo = now - 60 * 60 * 1000;
+  const ip = req.headers.get("cf-connecting-ip") ?? "";
+  const recent = await env.DB.prepare(
+    "SELECT sum(email = ?) AS byEmail, sum(ip = ? AND ip != '') AS byIp FROM sign_ins WHERE created_at > ?"
+  )
+    .bind(email, ip, hourAgo)
+    .first<{ byEmail: number | null; byIp: number | null }>();
+  if ((recent?.byEmail ?? 0) >= MAX_SIGN_INS_PER_HOUR || (recent?.byIp ?? 0) >= MAX_SIGN_INS_PER_IP_HOUR)
     return json({ error: "Too many sign-in emails. Try again in an hour." }, 429);
+  // Old attempts are no use to anyone; keep the table small.
+  await env.DB.prepare("DELETE FROM sign_ins WHERE created_at < ?").bind(now - 24 * 60 * 60 * 1000).run();
 
   const pendingId = randomToken();
   const token = randomToken();
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, "0");
   const expiresAt = now + SIGN_IN_TTL_MS;
   await env.DB.prepare(
-    "INSERT INTO sign_ins (pending_hash, token_hash, email, code, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
+    "INSERT INTO sign_ins (pending_hash, token_hash, email, code, created_at, expires_at, ip) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(await sha256(pendingId), await sha256(token), email, code, now, expiresAt)
+    .bind(await sha256(pendingId), await sha256(token), email, code, now, expiresAt, ip)
     .run();
 
   const link = `${env.PUBLIC_URL.replace(/\/$/, "")}/v1/auth/verify?token=${encodeURIComponent(token)}`;
@@ -159,9 +169,9 @@ export async function userForSession(env: Env, bearer: string): Promise<User | n
   if (!bearer) return null;
   const hash = await sha256(bearer);
   const user = await env.DB.prepare(
-    "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?"
+    "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.last_used_at > ?"
   )
-    .bind(hash)
+    .bind(hash, Date.now() - SESSION_IDLE_MS)
     .first<User>();
   if (user) {
     // Touch at most hourly: cheap enough, and enough to spot stale sessions later.

@@ -9,6 +9,9 @@ export default defineConfig(async () => ({
       miniflare: {
         bindings: {
           SYNC_DEV_TOKEN: "test-token",
+          PUBLIC_URL: "http://127.0.0.1:8787",
+          // Tests never send mail, even when .dev.vars holds a real key.
+          RESEND_API_KEY: "",
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
           POLAR_ACCESS_TOKEN: "polar_oat_test",
           POLAR_WEBHOOK_SECRET: "whsec_dGVzdC1zZWNyZXQtdGVzdC1zZWNyZXQ=",

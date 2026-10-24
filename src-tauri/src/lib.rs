@@ -71,7 +71,7 @@ pub fn run() {
             blobs::prune_media_snapshot,
             sync::sync_apply,
             sync::sync_mark_pushed,
-            sync::sync_dev_config,
+            sync::sync_config,
             sync::sync_log,
         ])
         .setup(move |app| {

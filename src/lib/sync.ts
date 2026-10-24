@@ -2,11 +2,14 @@
  * BrewLM Sync engine — milestones 2a–2c: end-to-end encrypted records and
  * media, a dev server, polling.
  *
- * Every few seconds: PULL changes other devices made (server `seq` after our
- * cursor) and apply them through Rust in one transaction (src-tauri/src/sync.rs,
- * which also settles conflicts), then PUSH rows the change-tracking triggers
+ * A sync cycle PULLS changes other devices made (server `seq` after our
+ * cursor) and applies them through Rust in one transaction (src-tauri/src/sync.rs,
+ * which also settles conflicts), then PUSHES rows the change-tracking triggers
  * put in `sync_outbox` (db.ts). Pulling first means a conflicting edit made
- * elsewhere is seen before ours goes out.
+ * elsewhere is seen before ours goes out. A cycle runs as soon as there's
+ * something to upload (the outbox is checked locally every few seconds), and
+ * otherwise every 30 s or when the window regains focus, to pick up other
+ * devices' changes without a constant stream of requests.
  *
  * Versions are hybrid logical clocks — `<ms>:<counter>:<device id>` strings
  * that sort as text: wall-clock time, kept ahead of every version this device
@@ -28,8 +31,8 @@
  * see `startDeviceLink`). Without an active plan the account is read-only:
  * this device keeps pulling but doesn't upload.
  *
- * The server address still comes from a dev build's environment
- * (`BREWLM_SYNC_URL`); deployment is 2f. `BREWLM_SYNC_TOKEN` (+ `_VAULT`,
+ * Release builds sync with https://sync.brewlm.com. Dev builds use
+ * `BREWLM_SYNC_URL` (none = sync off); `BREWLM_SYNC_TOKEN` (+ `_VAULT`,
  * `_PASSWORD`) skips accounts for the two-copy dev setup.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -141,7 +144,10 @@ export interface SyncStatus {
   account?: AccountInfo;
 }
 
-const POLL_MS = 3000;
+/** How often the outbox is checked (locally — no request unless there's something to send). */
+const TICK_MS = 3000;
+/** How often other devices' changes are fetched when nothing else prompts a cycle. */
+const PULL_MS = import.meta.env.DEV ? 3000 : 30_000;
 const MAX_BACKOFF_MS = 60_000;
 const PUSH_BATCH = 200;
 /** Records above this travel as blobs (the server's change-log cap is 1.5M chars, after base64). */
@@ -152,8 +158,8 @@ const MAX_RECORD = 50_000_000;
 const MEDIA_TABLES = ["notebooks", "folders", "sources", "images", "artifacts", "messages"];
 /** A file another device hasn't uploaded yet is retried this often. */
 const DOWNLOAD_RETRY_MS = 30_000;
-/** How often the plan and storage use are refreshed while syncing. */
-const ACCOUNT_REFRESH_MS = 60_000;
+/** How often the plan and storage use are refreshed while syncing (and whenever Settings → Sync opens). */
+const ACCOUNT_REFRESH_MS = import.meta.env.DEV ? 60_000 : 10 * 60_000;
 export const MIN_PASSWORD = 10;
 
 /** Settings that describe this machine, never another device. */
@@ -621,16 +627,38 @@ if (import.meta.hot) {
   import.meta.hot.accept(() => window.location.reload());
 }
 
+/** Set when the window regains focus: fetch other devices' changes on the next tick. */
+let wakeSoon = false;
+if (typeof window !== "undefined") window.addEventListener("focus", () => (wakeSoon = true));
+
+/** Is there anything this device should send now? (local checks only) */
+async function somethingToSend(): Promise<boolean> {
+  if (status.account?.canSync === false) return false;
+  if (media.toUpload.size > 0) return true;
+  const rows = await (await getDb()).select<{ k: string }[]>(
+    "SELECT tbl || ':' || row_id AS k FROM sync_outbox LIMIT 100"
+  );
+  return rows.some((r) => !oversized.has(r.k));
+}
+
 function loop(): void {
   if (!cfg || !vault || !clock) return;
   const gen = ++generation;
   const c = cfg;
   const keys = vault.keys;
   const clk = clock;
-  let delay = POLL_MS;
+  let delay = TICK_MS;
   let accountCheckedAt = 0;
+  let pulledAt = 0;
   const cycle = async () => {
     if (stopped || gen !== generation) return; // signed out, or restarted with another vault
+    const due = wakeSoon || Date.now() - pulledAt >= PULL_MS || (await somethingToSend().catch(() => false));
+    if (!due) {
+      setTimeout(cycle, TICK_MS);
+      return;
+    }
+    wakeSoon = false;
+    pulledAt = Date.now();
     const changed: RemoteChanges = { tables: new Set(), notebookIds: new Set(), chatIds: new Set() };
     try {
       if (account && Date.now() - accountCheckedAt > ACCOUNT_REFRESH_MS) {
@@ -652,10 +680,10 @@ function loop(): void {
           `pulled changes to ${[...changed.tables].join(", ") || "nothing"}; pushed ${sent}` +
             (landed || uploaded ? `; files: ${landed} down, ${uploaded} up` : "")
         );
-      delay = POLL_MS;
+      delay = TICK_MS;
       setStatus({ error: undefined, lastSyncAt: Date.now() });
     } catch (e) {
-      delay = Math.min(delay * 2, MAX_BACKOFF_MS);
+      delay = Math.min(Math.max(delay, PULL_MS) * 2, MAX_BACKOFF_MS);
       const msg = e instanceof Error ? e.message : String(e);
       log(`${msg} — retrying in ${delay / 1000}s`, true);
       setStatus({ error: msg.replace(/^sync server: HTTP \d+ /, "") });
@@ -950,7 +978,7 @@ export async function setSyncApiKeys(on: boolean): Promise<void> {
 /** Start syncing if this build has a sync server configured (dev builds, for now). */
 export async function startSync(): Promise<void> {
   if (server) return;
-  const s = await invoke<ServerConfig | null>("sync_dev_config");
+  const s = await invoke<ServerConfig | null>("sync_config");
   if (!s) return;
   server = s;
   device = await deviceId();
@@ -984,7 +1012,7 @@ async function resumeVault(c: SyncConfig): Promise<void> {
     loop();
     return;
   }
-  await checkVault(c, POLL_MS);
+  await checkVault(c, TICK_MS);
 }
 
 /** Does the vault exist yet? Retried with backoff while the server is unreachable (offline at launch). */

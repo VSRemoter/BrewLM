@@ -55,7 +55,12 @@ const fail = (status: number, error: string) => json({ error }, status);
 
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 
-function isDevToken(req: Request, env: Env): boolean {
+/**
+ * The shared dev token skips accounts entirely, so it only counts on a local
+ * server — never on the deployed one, even if the secret were set by mistake.
+ */
+export function isDevToken(req: Request, env: Env): boolean {
+  if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(env.PUBLIC_URL)) return false;
   const token = env.SYNC_DEV_TOKEN;
   const given = bearer(req);
   if (!token || given.length !== token.length) return false;

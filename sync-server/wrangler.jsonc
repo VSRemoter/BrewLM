@@ -3,6 +3,10 @@
   "name": "brewlm-sync",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
+  // Served at https://sync.brewlm.com (Cloudflare creates the DNS record and
+  // certificate on deploy; brewlm.com must be a zone in this account).
+  "routes": [{ "pattern": "sync.brewlm.com", "custom_domain": true }],
+  "workers_dev": false,
   "durable_objects": {
     "bindings": [{ "name": "VAULT", "class_name": "Vault" }]
   },
@@ -10,12 +14,11 @@
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "brewlm-sync-blobs" }],
   // Accounts, sessions and subscriptions. Run migrations with
   // `npx wrangler d1 migrations apply brewlm-sync --local` (or --remote).
-  // database_id is filled in when the database is created for deployment (2f).
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "brewlm-sync",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "6300334e-53d4-476d-8de5-c27a61c46df1",
       "migrations_dir": "migrations"
     }
   ],
@@ -23,12 +26,13 @@
   // POLAR_WEBHOOK_SECRET, SYNC_DEV_TOKEN) go in .dev.vars locally and
   // `wrangler secret put` in production.
   "vars": {
-    "PUBLIC_URL": "http://127.0.0.1:8787",
+    // Overridden to http://127.0.0.1:8787 in .dev.vars for local development.
+    "PUBLIC_URL": "https://sync.brewlm.com",
     "POLAR_API_URL": "https://sandbox-api.polar.sh",
     "EMAIL_FROM": "BrewLM <signin@brewlm.com>",
-    "POLAR_PRODUCT_SYNC_MONTHLY": "",
+    "POLAR_PRODUCT_SYNC_MONTHLY": "2c5b79e7-3ea2-497a-bcf8-3fa70f50cdad",
     "POLAR_PRODUCT_SYNC_YEARLY": "",
-    "POLAR_PRODUCT_PLUS_MONTHLY": "",
+    "POLAR_PRODUCT_PLUS_MONTHLY": "7a50c5ce-dabb-4127-9a52-558945554dcf",
     "POLAR_PRODUCT_PLUS_YEARLY": ""
   },
   "observability": { "enabled": true }

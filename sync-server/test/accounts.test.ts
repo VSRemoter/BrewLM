@@ -217,3 +217,31 @@ describe("billing", () => {
     expect(portal.url).toBe(`https://polar.test/portal?customer=${vault}`);
   });
 });
+
+describe("production safeguards", () => {
+  it("only honours the dev token on a local server", async () => {
+    const { isDevToken } = await import("../src/index");
+    const req = new Request("https://x", { headers: { authorization: "Bearer test-token" } });
+    expect(isDevToken(req, { ...env, PUBLIC_URL: "http://127.0.0.1:8787" } as Env)).toBe(true);
+    expect(isDevToken(req, { ...env, PUBLIC_URL: "https://sync.brewlm.com" } as unknown as Env)).toBe(false);
+    expect(isDevToken(new Request("https://x"), env as Env)).toBe(false);
+  });
+
+  it("limits sign-in emails per network address", async () => {
+    const start = (email: string) =>
+      call("/v1/auth/start", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+        headers: { "cf-connecting-ip": "203.0.113.7" },
+      });
+    for (let i = 0; i < 20; i++) expect((await start(`spam${i}@example.com`)).status).toBe(200);
+    expect((await start("spam-last@example.com")).status).toBe(429);
+  });
+
+  it("expires sessions unused for 90 days", async () => {
+    const { session } = await signIn("idle@example.com");
+    expect((await call("/v1/me", { session })).status).toBe(200);
+    await env.DB.prepare("UPDATE sessions SET last_used_at = ?").bind(Date.now() - 91 * 86_400_000).run();
+    expect((await call("/v1/me", { session })).status).toBe(401);
+  });
+});
