@@ -26,14 +26,14 @@
   // POLAR_WEBHOOK_SECRET, SYNC_DEV_TOKEN) go in .dev.vars locally and
   // `wrangler secret put` in production.
   "vars": {
-    // Overridden to http://127.0.0.1:8787 in .dev.vars for local development.
+    // PUBLIC_URL and POLAR_API_URL are overridden in .dev.vars for local development.
     "PUBLIC_URL": "https://sync.brewlm.com",
-    "POLAR_API_URL": "https://sandbox-api.polar.sh",
+    "POLAR_API_URL": "https://api.polar.sh",
     "EMAIL_FROM": "BrewLM <signin@brewlm.com>",
     "POLAR_PRODUCT_SYNC_MONTHLY": "2c5b79e7-3ea2-497a-bcf8-3fa70f50cdad",
-    "POLAR_PRODUCT_SYNC_YEARLY": "",
+    "POLAR_PRODUCT_SYNC_YEARLY": "8b553fae-d7ce-415d-aec4-c03e7b00e63f",
     "POLAR_PRODUCT_PLUS_MONTHLY": "7a50c5ce-dabb-4127-9a52-558945554dcf",
-    "POLAR_PRODUCT_PLUS_YEARLY": ""
+    "POLAR_PRODUCT_PLUS_YEARLY": "07300213-6aa1-4e95-bfb9-4d4dc15c440b"
   },
   "observability": { "enabled": true }
 }

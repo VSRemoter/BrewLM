@@ -6,6 +6,7 @@ SYNC_DEV_TOKEN=change-me-to-a-long-random-string
 # Optional. Without it, sign-in links are printed to this console instead of emailed.
 RESEND_API_KEY=
 # Optional, for billing in Polar's sandbox (test mode): an organization access token
-# and the webhook secret from sandbox.polar.sh → Settings.
+# and the webhook secret from sandbox.polar.sh → Settings, and sandbox POLAR_PRODUCT_* ids.
+POLAR_API_URL=https://sandbox-api.polar.sh
 POLAR_ACCESS_TOKEN=
 POLAR_WEBHOOK_SECRET=

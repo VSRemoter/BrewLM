@@ -87,8 +87,9 @@ In Polar, add a webhook to `https://sync.brewlm.com/v1/webhooks/polar` for the
 `subscription.*` events. Never set `SYNC_DEV_TOKEN` in production (the server
 ignores it there anyway).
 
-`POLAR_API_URL` points at Polar's sandbox (test mode). For real payments,
-change it to `https://api.polar.sh` and use production products and keys.
+Production uses live Polar (`api.polar.sh`) and the live products in
+`wrangler.jsonc`; `.dev.vars` points local development at Polar's sandbox.
+To test a purchase in production without paying, use a 100%-off discount code.
 After a schema change, `npm run migrate:remote` before `npm run deploy`.
 
 ## Status
