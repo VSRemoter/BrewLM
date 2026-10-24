@@ -17,13 +17,14 @@ export function Modal({
   actions?: ReactNode;
 }) {
   return (
+    // On a phone the dialog is a sheet along the bottom edge, clear of the home indicator.
     <div
-      className="anim-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px]"
+      className="anim-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/30 backdrop-blur-[2px] md:items-center"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className={`anim-pop mx-4 max-h-[calc(85vh/var(--om-zoom,1))] w-full overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl ${
-          wide ? "max-w-2xl" : "max-w-md"
+        className={`anim-pop safe-bottom max-h-[90dvh] w-full overflow-hidden rounded-t-2xl border border-edge bg-panel shadow-2xl md:mx-4 md:max-h-[calc(85vh/var(--om-zoom,1))] md:rounded-2xl md:pb-0 ${
+          wide ? "md:max-w-2xl" : "md:max-w-md"
         }`}
         role="dialog"
         aria-label={title}
@@ -34,14 +35,14 @@ export function Modal({
             {actions}
             <button
               onClick={onClose}
-              className="rounded-md p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+              className="rounded-md p-2 text-ink-3 transition-colors hover:bg-hover hover:text-ink md:p-1"
               aria-label="Close"
             >
               <X size={15} strokeWidth={2} />
             </button>
           </div>
         </div>
-        <div className="max-h-[calc(85vh/var(--om-zoom,1)_-_52px)] overflow-y-auto px-5 py-4">
+        <div className="max-h-[calc(90dvh_-_52px)] overflow-y-auto px-5 py-4 md:max-h-[calc(85vh/var(--om-zoom,1)_-_52px)]">
           {children}
         </div>
       </div>
@@ -108,7 +109,8 @@ export function IconButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`rounded-md p-1.5 text-ink-3 transition-colors ${
+      // Phones: a bigger hit area for fingers.
+      className={`rounded-md p-2.5 text-ink-3 transition-colors md:p-1.5 ${
         danger ? "hover:bg-danger-bg hover:text-danger" : "hover:bg-hover hover:text-ink"
       }`}
     >

@@ -1,4 +1,11 @@
-import { ArrowLeft, Settings as SettingsIcon, Smartphone } from "lucide-react";
+import {
+  ArrowLeft,
+  Library,
+  MessageSquare,
+  Settings as SettingsIcon,
+  Smartphone,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
   addMessage,
@@ -31,6 +38,7 @@ import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
 import { IconButton, Modal } from "./ui";
 import { onRemoteChanges } from "../lib/sync";
 import { platform } from "../platform";
+import { NARROW, useMediaQuery } from "../lib/usePhone";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
 const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
@@ -74,6 +82,10 @@ export default function NotebookView({
   const [rightW, setRightW] = useState(() => clamp(240, 620, num(LS.right, 288)));
   const [split, setSplit] = useState(() => clamp(0.25, 0.8, num(LS.split, 0.62)));
   const leftColRef = useRef<HTMLDivElement>(null);
+  /** Phones and upright tablets show one panel at a time (see the end of this component). */
+  const phone = useMediaQuery(NARROW);
+  const [tab, setTab] = useState<"sources" | "chat" | "studio">("chat");
+  const [chatsOpen, setChatsOpen] = useState(false);
   const studioRef = useRef<StudioPanelHandle>(null);
 
   // persist layout preferences
@@ -319,36 +331,173 @@ export default function NotebookView({
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
+  // Each panel is built once and placed in whichever layout this screen uses.
+  const header = (
+    <header
+      className={`flex shrink-0 items-center gap-2 border-b border-edge-soft bg-panel px-3 ${
+        phone ? "safe-top box-content h-12" : "h-12"
+      }`}
+    >
+      <IconButton onClick={onBack} label="Back to notebooks">
+        <ArrowLeft size={16} strokeWidth={1.8} />
+      </IconButton>
+      <input
+        value={titleDraft}
+        onChange={(e) => setTitleDraft(e.target.value)}
+        onBlur={commitTitle}
+        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
+        aria-label="Notebook title"
+      />
+      {platform.kind === "desktop" && (
+        <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
+          <Smartphone size={15} strokeWidth={1.8} />
+        </IconButton>
+      )}
+      <IconButton onClick={onOpenSettings} label="Settings">
+        <SettingsIcon size={15} strokeWidth={1.8} />
+      </IconButton>
+    </header>
+  );
+
+  const sourcesPanel = <SourcesPanel notebookId={notebook.id} sources={sources} onChanged={refreshSources} />;
+
+  const chatsPanel = (
+    <ChatsPanel
+      chats={chats}
+      activeChatId={activeChatId}
+      onSelect={(chatId) => {
+        setActiveChatId(chatId);
+        setChatsOpen(false);
+      }}
+      onNew={() => {
+        void newChat();
+        setChatsOpen(false);
+      }}
+      onRename={async (chatId, title) => {
+        await renameChat(chatId, title);
+        await refreshChats();
+      }}
+      onDelete={handleDeleteChat}
+      onPin={async (chatId, pinned) => {
+        await setChatPinned(chatId, pinned);
+        await refreshChats();
+      }}
+    />
+  );
+
+  const chatPanel = (
+    <ChatPanel
+      notebookId={notebook.id}
+      chatId={activeChatId}
+      notebookTitle={notebook.title}
+      notebookFolderId={notebook.folder_id}
+      chatTitle={activeChat?.title ?? ""}
+      sources={sources}
+      artifacts={artifacts}
+      settings={settings}
+      onOpenSettings={onOpenSettings}
+      onChatActivity={handleChatActivity}
+      onAddFiles={handleChatFiles}
+      onNotebookMoved={onNotebookMoved}
+      onNewChat={newChat}
+      onAddNote={handleAddNote}
+      onAddLink={handleAddLink}
+      onClearChat={handleClearChat}
+      onReturnHome={onBack}
+      onSettingsChanged={onSettingsChanged}
+      onStudioCommand={(cmd) => {
+        if (phone) setTab("studio"); // show what the command makes
+        return studioRef.current!.run(cmd);
+      }}
+      onCloneNotebook={handleClone}
+      onRemove={handleRemove}
+      notebookStarred={notebook.starred === 1}
+      notebookGrounded={notebook.grounded ?? 1}
+      chatBg={notebook.chat_bg}
+      chatBgDim={notebook.chat_bg_dim}
+      onChatBgChange={async (bg, dim) => {
+        await setNotebookChatBg(notebook.id, bg);
+        await setNotebookChatBgDim(notebook.id, dim);
+        onNotebookMoved();
+      }}
+      onShowChats={phone ? () => setChatsOpen(true) : undefined}
+    />
+  );
+
+  const studioPanel = (
+    <StudioPanel
+      ref={studioRef}
+      notebookId={notebook.id}
+      width={phone ? "100%" : studioW}
+      onReadingChange={setStudioReading}
+      sources={sources}
+      artifacts={artifacts}
+      settings={settings}
+      onArtifactsChanged={refreshArtifacts}
+      onSourcesChanged={refreshSources}
+      onOpenSettings={onOpenSettings}
+    />
+  );
+
+  const pairModal = pairOpen && (
+    <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
+      <PairPhonePanel />
+    </Modal>
+  );
+
+  if (phone) {
+    // One panel at a time, picked from the tab bar. All three stay mounted
+    // (hidden ones too), so a streaming reply or a Studio job carries on.
+    const tabs = [
+      { id: "sources", label: "Sources", icon: Library, badge: sources.length || undefined },
+      { id: "chat", label: "Chat", icon: MessageSquare },
+      { id: "studio", label: "Studio", icon: Sparkles, badge: artifacts.length || undefined },
+    ] as const;
+    return (
+      <div className="flex h-full flex-col">
+        {header}
+        <div className="relative min-h-0 flex-1">
+          <div className={`absolute inset-0 flex flex-col bg-panel ${tab === "sources" ? "" : "hidden"}`}>{sourcesPanel}</div>
+          <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{chatPanel}</div>
+          <div className={`absolute inset-0 flex flex-col ${tab === "studio" ? "" : "hidden"}`}>{studioPanel}</div>
+        </div>
+        <nav className="safe-bottom flex shrink-0 border-t border-edge-soft bg-panel" aria-label="Notebook sections">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              aria-current={tab === t.id ? "page" : undefined}
+              className={`flex h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors ${
+                tab === t.id ? "text-accent" : "text-ink-3"
+              }`}
+            >
+              <span className="relative">
+                <t.icon size={20} strokeWidth={tab === t.id ? 2.1 : 1.7} />
+                {"badge" in t && t.badge !== undefined && (
+                  <span className="absolute -right-2.5 -top-1 min-w-4 rounded-full bg-hover px-1 text-center text-[9.5px] leading-4 text-ink-2">
+                    {t.badge}
+                  </span>
+                )}
+              </span>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        {chatsOpen && (
+          <Modal title="Chats" onClose={() => setChatsOpen(false)}>
+            <div className="-mx-5 -my-4 flex max-h-[60dvh] min-h-48 flex-col">{chatsPanel}</div>
+          </Modal>
+        )}
+        {pairModal}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
-      {/* notebook header */}
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-edge-soft bg-panel px-3">
-        <IconButton onClick={onBack} label="Back to notebooks">
-          <ArrowLeft size={16} strokeWidth={1.8} />
-        </IconButton>
-        <input
-         	value={titleDraft}
-          onChange={(e) => setTitleDraft(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-          className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
-          aria-label="Notebook title"
-        />
-        {platform.kind === "desktop" && (
-          <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
-            <Smartphone size={15} strokeWidth={1.8} />
-          </IconButton>
-        )}
-        <IconButton onClick={onOpenSettings} label="Settings">
-          <SettingsIcon size={15} strokeWidth={1.8} />
-        </IconButton>
-      </header>
-
-      {pairOpen && (
-        <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
-          <PairPhonePanel />
-        </Modal>
-      )}
+      {header}
+      {pairModal}
 
       {/* three panels */}
       <div className="flex min-h-0 flex-1">
@@ -358,11 +507,7 @@ export default function NotebookView({
           style={{ width: leftW }}
         >
           <div className="flex min-h-0 flex-col" style={{ flex: `${split} 1 0%`, minHeight: 110 }}>
-            <SourcesPanel
-              notebookId={notebook.id}
-              sources={sources}
-              onChanged={refreshSources}
-            />
+            {sourcesPanel}
           </div>
           <div
             role="separator"
@@ -375,21 +520,7 @@ export default function NotebookView({
             className="h-[5px] shrink-0 cursor-row-resize border-t border-edge-soft transition-colors hover:bg-hover"
           />
           <div className="flex min-h-0 flex-col" style={{ flex: `${1 - split} 1 0%`, minHeight: 90 }}>
-            <ChatsPanel
-              chats={chats}
-              activeChatId={activeChatId}
-              onSelect={setActiveChatId}
-              onNew={newChat}
-              onRename={async (chatId, title) => {
-                await renameChat(chatId, title);
-                await refreshChats();
-              }}
-              onDelete={handleDeleteChat}
-              onPin={async (chatId, pinned) => {
-                await setChatPinned(chatId, pinned);
-                await refreshChats();
-              }}
-            />
+            {chatsPanel}
           </div>
         </div>
         <div
@@ -401,38 +532,7 @@ export default function NotebookView({
           }}
           className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
         />
-        <ChatPanel
-          notebookId={notebook.id}
-          chatId={activeChatId}
-          notebookTitle={notebook.title}
-          notebookFolderId={notebook.folder_id}
-          chatTitle={activeChat?.title ?? ""}
-          sources={sources}
-          artifacts={artifacts}
-          settings={settings}
-          onOpenSettings={onOpenSettings}
-          onChatActivity={handleChatActivity}
-          onAddFiles={handleChatFiles}
-          onNotebookMoved={onNotebookMoved}
-          onNewChat={newChat}
-          onAddNote={handleAddNote}
-          onAddLink={handleAddLink}
-          onClearChat={handleClearChat}
-          onReturnHome={onBack}
-          onSettingsChanged={onSettingsChanged}
-          onStudioCommand={(cmd) => studioRef.current!.run(cmd)}
-          onCloneNotebook={handleClone}
-          onRemove={handleRemove}
-            notebookStarred={notebook.starred === 1}
-            notebookGrounded={notebook.grounded ?? 1}
-            chatBg={notebook.chat_bg}
-           chatBgDim={notebook.chat_bg_dim}
-           onChatBgChange={async (bg, dim) => {
-             await setNotebookChatBg(notebook.id, bg);
-             await setNotebookChatBgDim(notebook.id, dim);
-             onNotebookMoved();
-           }}
-         />
+        {chatPanel}
         <div
           role="separator"
           aria-label="Resize studio panel"
@@ -442,18 +542,7 @@ export default function NotebookView({
           }}
           className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
         />
-        <StudioPanel
-          ref={studioRef}
-          notebookId={notebook.id}
-          width={studioW}
-          onReadingChange={setStudioReading}
-          sources={sources}
-          artifacts={artifacts}
-          settings={settings}
-          onArtifactsChanged={refreshArtifacts}
-          onSourcesChanged={refreshSources}
-          onOpenSettings={onOpenSettings}
-        />
+        {studioPanel}
       </div>
     </div>
   );

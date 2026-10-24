@@ -52,8 +52,8 @@ export default defineConfig(async ({ mode }) => {
                 }
               : undefined,
             watch: {
-              // 3. tell Vite to ignore watching `src-tauri`
-              ignored: ["**/src-tauri/**"],
+              // 3. tell Vite to ignore watching `src-tauri` (and the web build's output)
+              ignored: ["**/src-tauri/**", "**/dist-web/**"],
             },
           },
         }),

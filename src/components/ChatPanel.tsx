@@ -7,6 +7,7 @@ import {
   AudioLines,
   BookOpen,
   Check,
+  ChevronDown,
   Copy,
   FilePlus2,
   FileText,
@@ -789,6 +790,7 @@ export default function ChatPanel({
   chatBg,
   chatBgDim,
   onChatBgChange,
+  onShowChats,
 }: {
   notebookId: string;
   chatId: string | null;
@@ -833,6 +835,8 @@ export default function ChatPanel({
   chatBgDim: number;
   /** Set/clear (bg="") the chat background and/or its dim strength. */
   onChatBgChange: (bg: string, dim: number) => void | Promise<void>;
+  /** Phones: the chat list is a sheet; the title opens it and a new-chat button sits beside it. */
+  onShowChats?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -2447,10 +2451,26 @@ export default function ChatPanel({
       )}
       {/* header (z-20: above the chat surface so its popover menus stay clickable) */}
       <div className="relative z-20 flex h-11 shrink-0 items-center justify-between border-b border-edge-soft bg-panel px-4">
-        <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
-          Chat{chatTitle ? ` · ${chatTitle}` : ""}
-        </span>
+        {onShowChats ? (
+          <button
+            onClick={onShowChats}
+            className="-ml-2 flex min-w-0 items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-semibold text-ink-2 active:bg-hover-soft"
+            aria-label="Switch chat"
+          >
+            <span className="truncate">{chatTitle || "Chat"}</span>
+            <ChevronDown size={14} className="shrink-0 text-ink-3" />
+          </button>
+        ) : (
+          <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
+            Chat{chatTitle ? ` · ${chatTitle}` : ""}
+          </span>
+        )}
         <div className="flex items-center gap-1">
+          {onShowChats && (
+            <IconButton onClick={onNewChat} label="New chat">
+              <MessageSquarePlus size={15} strokeWidth={1.8} />
+            </IconButton>
+          )}
           {!keyed && (
             <button
               onClick={onOpenSettings}

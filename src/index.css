@@ -868,3 +868,36 @@ html[data-drawing] .mini-player {
   left: 50%;
   translate: -50% 0;
 }
+
+/* ================================= phones ================================= */
+/* The web app on a phone (< 768px wide; the desktop window is never that
+   narrow). Layout switches happen in components via usePhone(). */
+
+/* Room for the notch / Dynamic Island and the home indicator (index.html
+   sets viewport-fit=cover, so the page runs edge to edge). */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Touch screens have no hover, so controls that appear on hover stay visible. */
+@media (hover: none) {
+  .opacity-0.group-hover\:opacity-100 {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 767px) {
+  /* iOS zooms the page into any field with text under 16px. */
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em) !important;
+  }
+  /* No grey flash on tap: it should feel like an app. */
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
+}

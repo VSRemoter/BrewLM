@@ -120,7 +120,7 @@ const StudioPanel = forwardRef<
   StudioPanelHandle,
   {
     notebookId: string;
-    width?: number;
+    width?: number | string;
     sources: Source[];
     artifacts: Artifact[];
     settings: Settings;

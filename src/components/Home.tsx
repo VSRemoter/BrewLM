@@ -24,6 +24,7 @@ import type { Folder, Notebook } from "../lib/types";
 import { mediaSrc } from "../lib/blobs";
 import type { UpdateInfo } from "../lib/updates";
 import { fileToCoverDataUrl, formatTime } from "../lib/source";
+import { usePhone } from "../lib/usePhone";
 import { BrewIcon } from "./BrewIcon";
 import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
 
@@ -134,6 +135,7 @@ export default function Home({
   const [description, setDescription] = useState("");
   const [createCover, setCreateCover] = useState("");
   const createCoverInputRef = useRef<HTMLInputElement>(null);
+  const phone = usePhone();
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Notebook | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -744,10 +746,11 @@ export default function Home({
   return (
     <div className="flex h-full flex-col">
       {/* Top bar */}
-      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-edge-soft bg-panel px-6">
+      <header className="safe-top box-content flex h-14 shrink-0 items-center gap-3 border-b border-edge-soft bg-panel px-3 md:gap-4 md:px-6">
         <div className="flex shrink-0 items-center gap-2.5">
           <BrewIcon size={22} className="text-ink" />
-          <span className="text-[15px] font-semibold tracking-tight">BrewLM</span>
+          {/* Phones: the logo alone, so the search field has room. */}
+          <span className="hidden text-[15px] font-semibold tracking-tight md:inline">BrewLM</span>
         </div>
         <div className="relative mx-auto w-full max-w-md">
           <Search
@@ -806,7 +809,7 @@ export default function Home({
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-8 py-8">
+      <div className="safe-bottom flex-1 overflow-y-auto px-4 py-5 md:px-8 md:py-8">
         {trashOpen ? (
           <div className="mx-auto max-w-5xl">
             <div className="mb-6 flex items-end justify-between gap-4">
@@ -1171,10 +1174,12 @@ export default function Home({
             </div>
           ) : view === "grid" ? (
             <>
+              {/* Phones: the three action tiles would fill the first screen; use the slim strip. */}
+              {phone && listActions}
               <div className={gridClass}>
-                {newNotebookCard}
-                {!viewing && newFolderCard}
-                {!viewing && trashCard}
+                {!phone && newNotebookCard}
+                {!phone && !viewing && newFolderCard}
+                {!phone && !viewing && trashCard}
                 {visibleFolders.map(renderFolderCard)}
                 {ordered.map(renderCard)}
               </div>

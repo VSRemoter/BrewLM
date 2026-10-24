@@ -35,6 +35,10 @@ import {
 import { formatTime } from "../../lib/source";
 import { GhostButton, Modal, PrimaryButton } from "../ui";
 import { Card, Footnote, Row, SectionTitle, Toggle } from "./controls";
+import { platform } from "../../platform";
+
+/** What to call the device this runs on ("this computer" / "this device"). */
+const HERE = platform.kind === "desktop" ? "computer" : "device";
 
 const inputClass =
   "w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
@@ -426,7 +430,7 @@ function AccountCard({ account }: { account: AccountInfo }) {
       </Card>
       {!account.canSync && (
         <Footnote>
-          Sync is paused: this computer still downloads changes from your other devices, but won't upload until you
+          Sync is paused: this {HERE} still downloads changes from your other devices, but won't upload until you
           choose a plan.
         </Footnote>
       )}
@@ -466,7 +470,7 @@ function SetUpCard() {
         <Card>
           <Row
             label="Create a sync password"
-            desc="Your library is encrypted with it before it leaves this computer. You'll enter it once on each new device."
+            desc={`Your library is encrypted with it before it leaves this ${HERE}. You'll enter it once on each new device.`}
             alignTop
           >
             <PasswordFields value={pw} confirm={confirm} onChange={setPw} onConfirm={setConfirm} />
@@ -688,8 +692,8 @@ function OnCard({ status }: { status: SyncStatus }) {
           </GhostButton>
         </Row>
         <Row
-          label="Sign out on this computer"
-          desc={`Stops syncing here and forgets the key${status.account ? ", and signs this computer out of your account" : ""}. Your notebooks stay on this computer.`}
+          label={`Sign out on this ${HERE}`}
+          desc={`Stops syncing here and forgets the key${status.account ? `, and signs this ${HERE} out of your account` : ""}. Your notebooks stay on this ${HERE}.`}
         >
           <GhostButton onClick={() => void run("signout", signOutOfSync)} disabled={busy !== null}>
             Sign out
@@ -729,7 +733,7 @@ export default function SyncSection() {
     <div>
       <SectionTitle
         title="Sync"
-        desc="Use BrewLM on your other devices, even when this computer is off. Everything is encrypted on your device first: the sync server only ever stores data it can't read."
+        desc="Use BrewLM on all your devices, even when your main computer is off. Everything is encrypted on your device first: the sync server only ever stores data it can't read."
       />
       {status.state === "signed-out" && <SignInCard />}
       {status.account && <AccountCard account={status.account} />}

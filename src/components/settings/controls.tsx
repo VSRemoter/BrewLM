@@ -33,12 +33,17 @@ export function Row({
   alignTop?: boolean;
 }) {
   return (
-    <div className={`flex justify-between gap-6 py-3 ${alignTop ? "items-start" : "items-center"}`}>
-      <div className="min-w-0">
+    // Phones: a control too wide to sit beside its label wraps onto its own line.
+    <div
+      className={`flex flex-wrap justify-between gap-x-6 gap-y-2 py-3 md:flex-nowrap ${
+        alignTop ? "items-start" : "items-center"
+      }`}
+    >
+      <div className="min-w-0 grow basis-40 md:grow-0 md:basis-auto">
         <div className="text-[13px] font-medium text-ink">{label}</div>
         {desc && <div className="mt-0.5 text-[12px] leading-relaxed text-ink-3">{desc}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="max-w-full shrink-0">{children}</div>
     </div>
   );
 }

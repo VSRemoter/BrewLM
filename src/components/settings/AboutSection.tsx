@@ -40,48 +40,53 @@ export default function AboutSection({
         <Row label="BrewLM" desc="Your personal research copilot — local-first, no account, no telemetry.">
           <span className="font-mono text-[12.5px] text-ink-2">v{version || "…"}</span>
         </Row>
-        <Row
-          label="Check for updates on launch"
-          desc="One anonymous request to GitHub Releases; compares version numbers only."
-        >
-          <Toggle
-            label="Check for updates on launch"
-            checked={settings.updateCheckOnLaunch}
-            onChange={(v) => patch({ updateCheckOnLaunch: v })}
-          />
-        </Row>
-        <Row label="Update status">
-          <div className="flex items-center gap-3">
-            <span className="text-[12.5px] text-ink-3">
-              {checking
-                ? "Checking…"
-                : !checked && !result
-                  ? "Not checked yet"
-                  : !result
-                    ? "Couldn't check — offline?"
-                    : result.isNewer
-                      ? `v${result.latest} available (you have v${result.current})`
-                      : `Up to date (v${result.current})`}
-            </span>
-            {result?.isNewer && (
-              <a
-                href={result.url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 text-[12.5px] text-link hover:underline"
-              >
-                Download <ExternalLink size={11} />
-              </a>
-            )}
-            <button
-              onClick={() => void check()}
-              disabled={checking}
-              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+        {/* The web app is always the latest version: update checks are for the desktop app. */}
+        {platform.kind === "desktop" && (
+          <>
+            <Row
+              label="Check for updates on launch"
+              desc="One anonymous request to GitHub Releases; compares version numbers only."
             >
-              <RefreshCw size={12} /> Check now
-            </button>
-          </div>
-        </Row>
+              <Toggle
+                label="Check for updates on launch"
+                checked={settings.updateCheckOnLaunch}
+                onChange={(v) => patch({ updateCheckOnLaunch: v })}
+              />
+            </Row>
+            <Row label="Update status">
+              <div className="flex items-center gap-3">
+                <span className="text-[12.5px] text-ink-3">
+                  {checking
+                    ? "Checking…"
+                    : !checked && !result
+                      ? "Not checked yet"
+                      : !result
+                        ? "Couldn't check — offline?"
+                        : result.isNewer
+                          ? `v${result.latest} available (you have v${result.current})`
+                          : `Up to date (v${result.current})`}
+                </span>
+                {result?.isNewer && (
+                  <a
+                    href={result.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1 text-[12.5px] text-link hover:underline"
+                  >
+                    Download <ExternalLink size={11} />
+                  </a>
+                )}
+                <button
+                  onClick={() => void check()}
+                  disabled={checking}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+                >
+                  <RefreshCw size={12} /> Check now
+                </button>
+              </div>
+            </Row>
+          </>
+        )}
       </Card>
 
       <SectionTitle title="Links" />
