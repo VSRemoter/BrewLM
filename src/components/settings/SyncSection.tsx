@@ -344,8 +344,8 @@ function planLine(a: AccountInfo): string {
 
 /** Plans as sold (Polar's checkout shows the final price, with any tax). */
 const PLANS = [
-  { id: "sync" as const, name: "Sync", storage: "10 GB", month: "$5 / month", year: "$48 / year ($4 / month)" },
-  { id: "plus" as const, name: "Sync Plus", storage: "100 GB", month: "$10 / month", year: "$96 / year ($8 / month)" },
+  { id: "sync" as const, name: "Sync", storage: "10 GB", month: "$5 / month", year: "$40 / year ($3.33 / month)" },
+  { id: "plus" as const, name: "Sync Plus", storage: "100 GB", month: "$9 / month", year: "$80 / year ($6.67 / month)" },
 ];
 
 function PlanModal({ onClose }: { onClose: () => void }) {
