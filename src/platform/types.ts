@@ -91,6 +91,11 @@ export interface Platform {
     url(name: string): string;
     missing(names: string[]): Promise<string[]>;
     gc(keep: string[], graceMs: number): Promise<{ removed: number; freed_bytes: number }>;
+    /**
+     * Web only: called when a file is opened that this device doesn't have;
+     * `fetch` downloads it (Sync) and resolves true once it's stored.
+     */
+    onMissing?(fetch: (name: string) => Promise<boolean>): void;
   };
 
   sync: {

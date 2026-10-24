@@ -4,6 +4,8 @@
  * Serves media files from Cache Storage at /_media/<sha256>.<ext> — the web
  * build's version of the desktop `brewblob:` scheme (src/platform/web.ts).
  * Byte ranges are answered with 206, which Safari needs to play and seek audio.
+ * A file this device doesn't have yet is asked of the page that wants it,
+ * which downloads it through Sync (lib/sync.ts, fetchFileNow) and replies.
  */
 const MEDIA_CACHE = "brewlm-media";
 const MEDIA_PATH = "/_media/";
@@ -14,13 +16,40 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== self.location.origin || !url.pathname.startsWith(MEDIA_PATH)) return;
-  e.respondWith(serveMedia(e.request, url));
+  e.respondWith(serveMedia(e.request, url, e.clientId || e.resultingClientId));
 });
 
-async function serveMedia(request, url) {
+/** How long a page may take to download a missing file (large audio, slow network). */
+const FETCH_TIMEOUT_MS = 120_000;
+
+function askClient(client, name) {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => resolve(false), FETCH_TIMEOUT_MS);
+    channel.port1.onmessage = (e) => {
+      clearTimeout(timer);
+      resolve(e.data === true);
+    };
+    client.postMessage({ type: "brewlm:need-media", name }, [channel.port2]);
+  });
+}
+
+/** Ask the page that wants the file (else any open BrewLM window) to download it. */
+async function fetchViaPage(clientId, name) {
+  const asker = clientId ? await self.clients.get(clientId) : null;
+  const others = await self.clients.matchAll({ type: "window" });
+  for (const client of asker ? [asker, ...others.filter((c) => c.id !== asker.id)] : others) {
+    if (await askClient(client, name)) return true;
+  }
+  return false;
+}
+
+async function serveMedia(request, url, clientId) {
   const cache = await caches.open(MEDIA_CACHE);
   // The query (?arrived, see lib/blobs.ts) only forces a reload; files are keyed by path.
-  const hit = await cache.match(url.origin + url.pathname);
+  const key = url.origin + url.pathname;
+  let hit = await cache.match(key);
+  if (!hit && (await fetchViaPage(clientId, url.pathname.slice(MEDIA_PATH.length)))) hit = await cache.match(key);
   if (!hit) return new Response("media file not on this device", { status: 404 });
   const headers = {
     "content-type": hit.headers.get("content-type") || "application/octet-stream",

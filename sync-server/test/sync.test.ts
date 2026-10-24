@@ -42,6 +42,40 @@ describe("auth and validation", () => {
   });
 });
 
+describe("web app access (CORS)", () => {
+  const APP = "https://app.brewlm.com";
+
+  it("answers preflights only for allowed origins", async () => {
+    const pre = (origin: string) =>
+      exports.default.fetch("https://sync.test/v1/vaults/v1/push", {
+        method: "OPTIONS",
+        headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type" },
+      });
+    const ok = await pre(APP);
+    expect(ok.status).toBe(204);
+    expect(ok.headers.get("access-control-allow-origin")).toBe(APP);
+    expect(ok.headers.get("access-control-allow-headers")).toContain("authorization");
+    expect(ok.headers.get("access-control-allow-methods")).toContain("PUT");
+    const bad = await pre("https://evil.example");
+    expect(bad.status).toBe(403);
+    expect(bad.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("labels responses, errors included, for allowed origins only", async () => {
+    const res = await push("v1", DEV_A, [], { ...AUTH, origin: APP });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(APP);
+    expect(res.headers.get("vary")).toContain("Origin");
+    const unauthorized = await push("v1", DEV_A, [], { origin: APP });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("access-control-allow-origin")).toBe(APP);
+    const other = await push("v1", DEV_A, [], { ...AUTH, origin: "https://evil.example" });
+    expect(other.headers.get("access-control-allow-origin")).toBeNull();
+    const desktop = await push("v1", DEV_A, [], AUTH);
+    expect(desktop.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});
+
 describe("push and pull", () => {
   it("returns changes in order with a cursor and paging", async () => {
     const res = await push("v2", DEV_A, [

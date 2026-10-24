@@ -30,6 +30,9 @@
     "PUBLIC_URL": "https://sync.brewlm.com",
     "POLAR_API_URL": "https://api.polar.sh",
     "EMAIL_FROM": "BrewLM <signin@brewlm.com>",
+    // Web app origins allowed to call the API (comma-separated): the deployed
+    // phone app, and `npm run dev:web` for testing against this server.
+    "CORS_ORIGINS": "https://app.brewlm.com,http://localhost:1430",
     "POLAR_PRODUCT_SYNC_MONTHLY": "2c5b79e7-3ea2-497a-bcf8-3fa70f50cdad",
     "POLAR_PRODUCT_SYNC_YEARLY": "8b553fae-d7ce-415d-aec4-c03e7b00e63f",
     "POLAR_PRODUCT_PLUS_MONTHLY": "7a50c5ce-dabb-4127-9a52-558945554dcf",

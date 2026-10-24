@@ -531,11 +531,41 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   }
 }
 
+/**
+ * The web app (on a phone) doesn't download every file up front: images come
+ * right away (covers, pictures — small, and needed to browse), audio, video
+ * and PDFs the first time they're opened (`fetchFileNow`, asked for by the
+ * web build's service worker). Either way a file stays on the device after.
+ */
+const UP_FRONT_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif", "svg", "avif", "heic", "bmp", "tif", "tiff"]);
+const downloadsUpFront = (name: string) =>
+  platform.kind === "desktop" || UP_FRONT_EXT.has(name.slice(name.lastIndexOf(".") + 1));
+
+/** Fetch, decrypt and store one file; "absent" = the server doesn't have it (yet). */
+async function fetchFile(cfg: SyncConfig, keys: VaultKeys, name: string): Promise<"landed" | "absent" | "damaged"> {
+  const id = await fileId(keys, name);
+  const sealed = await getRemoteBlob(cfg, id);
+  if (!sealed) return "absent";
+  let ref = "";
+  try {
+    ref = await putBlob(await decryptBlob(keys, id, sealed), name.slice(name.lastIndexOf(".") + 1));
+  } catch {
+    /* doesn't decrypt: reported below */
+  }
+  if (ref !== `${BLOB_PREFIX}${name}`) {
+    log(`file ${name} arrived damaged (it doesn't decrypt to what its name says) — skipped`, true);
+    return "damaged";
+  }
+  media.onServer.add(name);
+  return "landed";
+}
+
 /** Download files rows point at that this device lacks; returns how many landed. */
 async function downloadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<number> {
   if (media.wanted.size === 0) return 0;
   const now = Date.now();
-  const due = [...media.wanted].filter((n) => (media.retryAt.get(n) ?? 0) <= now);
+  const due = [...media.wanted].filter((n) => downloadsUpFront(n) && (media.retryAt.get(n) ?? 0) <= now);
+  if (due.length === 0) return 0;
   const absent = new Set(await platform.blobs.missing(due));
   let landed = 0;
   for (const name of due) {
@@ -543,29 +573,44 @@ async function downloadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<number> 
       media.wanted.delete(name); // already here
       continue;
     }
-    const id = await fileId(keys, name);
-    const sealed = await getRemoteBlob(cfg, id);
-    if (!sealed) {
+    const result = await fetchFile(cfg, keys, name);
+    if (result === "absent") {
       media.retryAt.set(name, now + DOWNLOAD_RETRY_MS);
       continue;
     }
     media.wanted.delete(name);
     media.retryAt.delete(name);
-    let ref = "";
-    try {
-      ref = await putBlob(await decryptBlob(keys, id, sealed), name.slice(name.lastIndexOf(".") + 1));
-    } catch {
-      /* doesn't decrypt: reported below */
-    }
-    if (ref !== `${BLOB_PREFIX}${name}`) {
-      log(`file ${name} arrived damaged (it doesn't decrypt to what its name says) — skipped`, true);
-      continue;
-    }
-    media.onServer.add(name);
+    if (result !== "landed") continue;
     markArrived(name);
     landed += 1;
   }
   return landed;
+}
+
+const fetching = new Map<string, Promise<boolean>>();
+
+/** A file this device lacks, needed now (it's being opened); true once it's stored here. */
+function fetchFileNow(name: string): Promise<boolean> {
+  if (!cfg || !vault) return Promise.resolve(false);
+  const c = cfg;
+  const keys = vault.keys;
+  let p = fetching.get(name);
+  if (!p) {
+    p = fetchFile(c, keys, name)
+      .then(
+        (r) => {
+          if (r === "landed") media.wanted.delete(name);
+          return r === "landed";
+        },
+        (e) => {
+          log(`couldn't download ${name}: ${e instanceof Error ? e.message : e}`, true);
+          return false;
+        }
+      )
+      .finally(() => fetching.delete(name));
+    fetching.set(name, p);
+  }
+  return p;
 }
 
 /* ------------------------------ status & loop ----------------------------- */
@@ -966,6 +1011,7 @@ export async function startSync(): Promise<void> {
   const s = await platform.sync.config();
   if (!s) return;
   server = s;
+  platform.blobs.onMissing?.(fetchFileNow);
   device = await deviceId();
   clock = Clock.parse(device, await getState("hlc_last"));
   setStatus({ syncApiKeys: (await getState("sync_api_keys")) !== "0" });

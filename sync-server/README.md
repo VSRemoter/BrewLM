@@ -67,6 +67,12 @@ To watch two copies of BrewLM sync on one machine, run the app with
 account). To try accounts, run a copy without the token:
 `BREWLM_PROFILE=d BREWLM_SYNC_URL=http://127.0.0.1:8787 src-tauri/target/debug/brewlm`.
 
+The web app (`npm run dev:web`, http://localhost:1430) syncs when
+`VITE_SYNC_URL` is set, e.g. in a git-ignored `.env.web.local` at the repo
+root (`VITE_SYNC_TOKEN` and `VITE_SYNC_VAULT` work like the desktop dev
+variables). `CORS_ORIGINS` lists the web origins the server answers; add
+others to `.dev.vars` for local testing.
+
 ## Deploy (https://sync.brewlm.com)
 
 One-time setup, from `sync-server/`:
@@ -99,5 +105,6 @@ one-time code, accounts with email sign-in, a 14-day trial, Polar plans,
 storage limits, and the production setup above. Release builds of the app
 sync with https://sync.brewlm.com: uploads go out within seconds, other
 devices' changes are fetched every 30 s and when the window regains focus.
-Still to come: live updates (WebSocket) and cleaning up server files nothing
-points to any more.
+The web app (milestone 3b) uses the same API from the browser: CORS allows
+https://app.brewlm.com. Still to come: live updates (WebSocket) and cleaning
+up server files nothing points to any more.

@@ -25,6 +25,10 @@
  *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
  *   GET  /v1/vaults/:vault/blobs/:id
  *
+ * The web app (another origin) may call every route: CORS_ORIGINS lists the
+ * origins allowed. Requests authenticate with a bearer token, never cookies,
+ * so allowing an origin grants it nothing a signed-out page couldn't do.
+ *
  * Vault requests carry a session token (the vault must be the user's own) or,
  * for local development, SYNC_DEV_TOKEN (any vault, no limits). Uploads need
  * an active plan or trial and stay within its storage limit (402 / 413);
@@ -127,104 +131,134 @@ async function me(env: Env, user: User): Promise<Response> {
   return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total });
 }
 
+/** The request's origin if CORS_ORIGINS allows it. */
+function allowedOrigin(req: Request, env: Env): string | null {
+  const origin = req.headers.get("origin");
+  if (!origin) return null;
+  return (env.CORS_ORIGINS ?? "").split(",").some((o) => o.trim() === origin) ? origin : null;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-    const account = await accountRoutes(req, env, url.pathname);
-    if (account) return account;
-
-    const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
-    if (!m) return fail(404, "not found");
-    const [, vault, op, linkId, linkStatus, blobId] = m;
-    if (!VAULT_RE.test(vault)) return fail(400, "bad vault id");
-    const caller = await vaultCaller(req, env, vault);
-    if (caller instanceof Response) return caller;
-    const stub = env.VAULT.get(env.VAULT.idFromName(vault));
-
-    if (op === "blobs/missing") {
-      if (req.method !== "POST") return fail(405, "method not allowed");
-      const body = await req.json<{ ids?: unknown }>().catch(() => ({ ids: undefined }));
-      const ids = body.ids;
-      if (!Array.isArray(ids) || ids.length > MAX_MISSING || !ids.every((id) => typeof id === "string" && BLOB_RE.test(id)))
-        return fail(400, "bad ids");
-      const heads = await Promise.all(ids.map((id) => env.BLOBS.head(`${vault}/${id}`)));
-      return json({ missing: ids.filter((_, i) => !heads[i]) });
+    const origin = allowedOrigin(req, env);
+    if (req.method === "OPTIONS") {
+      if (!origin) return new Response(null, { status: 403 });
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "access-control-allow-origin": origin,
+          "access-control-allow-methods": "GET, POST, PUT, DELETE",
+          "access-control-allow-headers": "authorization, content-type",
+          "access-control-max-age": "86400",
+          vary: "Origin",
+        },
+      });
     }
-    if (blobId !== undefined) {
-      if (!BLOB_RE.test(blobId)) return fail(400, "bad blob id");
-      const key = `${vault}/${blobId}`;
-      if (req.method === "GET") {
-        const obj = await env.BLOBS.get(key);
-        if (!obj) return fail(404, "no such blob");
-        return new Response(obj.body, {
-          headers: { "content-type": "application/octet-stream", "content-length": String(obj.size) },
-        });
-      }
-      if (req.method === "PUT") {
-        if (!caller.canWrite) return fail(402, NO_PLAN);
-        const size = Number(req.headers.get("content-length") ?? "-1");
-        if (!Number.isSafeInteger(size) || size < 0) return fail(411, "content-length required");
-        if (size > MAX_BLOB) return fail(413, "blob too large");
-        if (!(await stub.reserveBlob(blobId, size, caller.limitBytes))) return fail(413, "storage full");
-        await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
-        return new Response(null, { status: 204 });
-      }
-      return fail(405, "method not allowed");
-    }
-
-    if (linkId !== undefined) {
-      if (linkStatus) {
-        if (req.method !== "GET") return fail(405, "method not allowed");
-        return json({ pending: await stub.linkPending(linkId) });
-      }
-      if (req.method === "GET") {
-        const sealed = await stub.takeLink(linkId);
-        return sealed ? json({ sealed }) : fail(404, "no such link (used, cancelled or expired)");
-      }
-      if (req.method === "DELETE") {
-        await stub.cancelLink(linkId);
-        return new Response(null, { status: 204 });
-      }
-      if (req.method !== "PUT") return fail(405, "method not allowed");
-      const body = await req.json<{ sealed?: unknown }>().catch(() => ({}) as { sealed?: unknown });
-      if (typeof body.sealed !== "string" || body.sealed.length === 0 || body.sealed.length > MAX_ENVELOPE)
-        return fail(400, "bad sealed key");
-      const res = await stub.putLink(linkId, body.sealed);
-      return res.ok ? json({ expires: res.expires }) : fail(429, "too many open device links");
-    }
-
-    if (op === "keys") {
-      if (req.method === "GET") return json(await stub.getKeys());
-      if (req.method !== "PUT") return fail(405, "method not allowed");
-      const body = await req.json<{ envelope?: unknown; expectVersion?: unknown }>().catch(() => ({}) as Record<string, unknown>);
-      const { envelope, expectVersion } = body as { envelope?: unknown; expectVersion?: unknown };
-      if (typeof envelope !== "string" || envelope.length === 0 || envelope.length > MAX_ENVELOPE)
-        return fail(400, "bad envelope");
-      if (!Number.isSafeInteger(expectVersion) || (expectVersion as number) < 0) return fail(400, "bad expectVersion");
-      const res = await stub.putKeys(envelope, expectVersion as number);
-      return res.ok ? json({ version: res.version }) : json({ error: "envelope changed", version: res.version }, 409);
-    }
-
-    if (op === "pull") {
-      if (req.method !== "GET") return fail(405, "method not allowed");
-      const since = Number(url.searchParams.get("since") ?? "0");
-      const limit = Number(url.searchParams.get("limit") ?? String(MAX_PULL));
-      if (!Number.isSafeInteger(since) || since < 0) return fail(400, "bad since");
-      if (!Number.isSafeInteger(limit) || limit < 1) return fail(400, "bad limit");
-      return json(await stub.pull(since, Math.min(limit, MAX_PULL)));
-    }
-
-    if (req.method !== "POST") return fail(405, "method not allowed");
-    if (!caller.canWrite) return fail(402, NO_PLAN);
-    let body: { device?: unknown; changes?: unknown };
-    try {
-      body = await req.json();
-    } catch {
-      return fail(400, "bad json");
-    }
-    if (typeof body.device !== "string" || !UUID_RE.test(body.device)) return fail(400, "bad device");
-    if (!validChanges(body.changes)) return fail(400, "bad changes");
-    const res = await stub.push(body.device, body.changes, caller.limitBytes);
-    return res.full ? fail(413, "storage full") : json(res);
+    const res = await route(req, env);
+    if (!origin) return res;
+    const out = new Response(res.body, res);
+    out.headers.set("access-control-allow-origin", origin);
+    out.headers.append("vary", "Origin");
+    return out;
   },
 } satisfies ExportedHandler<Env>;
+
+async function route(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  const account = await accountRoutes(req, env, url.pathname);
+  if (account) return account;
+
+  const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
+  if (!m) return fail(404, "not found");
+  const [, vault, op, linkId, linkStatus, blobId] = m;
+  if (!VAULT_RE.test(vault)) return fail(400, "bad vault id");
+  const caller = await vaultCaller(req, env, vault);
+  if (caller instanceof Response) return caller;
+  const stub = env.VAULT.get(env.VAULT.idFromName(vault));
+
+  if (op === "blobs/missing") {
+    if (req.method !== "POST") return fail(405, "method not allowed");
+    const body = await req.json<{ ids?: unknown }>().catch(() => ({ ids: undefined }));
+    const ids = body.ids;
+    if (!Array.isArray(ids) || ids.length > MAX_MISSING || !ids.every((id) => typeof id === "string" && BLOB_RE.test(id)))
+      return fail(400, "bad ids");
+    const heads = await Promise.all(ids.map((id) => env.BLOBS.head(`${vault}/${id}`)));
+    return json({ missing: ids.filter((_, i) => !heads[i]) });
+  }
+  if (blobId !== undefined) {
+    if (!BLOB_RE.test(blobId)) return fail(400, "bad blob id");
+    const key = `${vault}/${blobId}`;
+    if (req.method === "GET") {
+      const obj = await env.BLOBS.get(key);
+      if (!obj) return fail(404, "no such blob");
+      return new Response(obj.body, {
+        headers: { "content-type": "application/octet-stream", "content-length": String(obj.size) },
+      });
+    }
+    if (req.method === "PUT") {
+      if (!caller.canWrite) return fail(402, NO_PLAN);
+      const size = Number(req.headers.get("content-length") ?? "-1");
+      if (!Number.isSafeInteger(size) || size < 0) return fail(411, "content-length required");
+      if (size > MAX_BLOB) return fail(413, "blob too large");
+      if (!(await stub.reserveBlob(blobId, size, caller.limitBytes))) return fail(413, "storage full");
+      await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
+      return new Response(null, { status: 204 });
+    }
+    return fail(405, "method not allowed");
+  }
+
+  if (linkId !== undefined) {
+    if (linkStatus) {
+      if (req.method !== "GET") return fail(405, "method not allowed");
+      return json({ pending: await stub.linkPending(linkId) });
+    }
+    if (req.method === "GET") {
+      const sealed = await stub.takeLink(linkId);
+      return sealed ? json({ sealed }) : fail(404, "no such link (used, cancelled or expired)");
+    }
+    if (req.method === "DELETE") {
+      await stub.cancelLink(linkId);
+      return new Response(null, { status: 204 });
+    }
+    if (req.method !== "PUT") return fail(405, "method not allowed");
+    const body = await req.json<{ sealed?: unknown }>().catch(() => ({}) as { sealed?: unknown });
+    if (typeof body.sealed !== "string" || body.sealed.length === 0 || body.sealed.length > MAX_ENVELOPE)
+      return fail(400, "bad sealed key");
+    const res = await stub.putLink(linkId, body.sealed);
+    return res.ok ? json({ expires: res.expires }) : fail(429, "too many open device links");
+  }
+
+  if (op === "keys") {
+    if (req.method === "GET") return json(await stub.getKeys());
+    if (req.method !== "PUT") return fail(405, "method not allowed");
+    const body = await req.json<{ envelope?: unknown; expectVersion?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+    const { envelope, expectVersion } = body as { envelope?: unknown; expectVersion?: unknown };
+    if (typeof envelope !== "string" || envelope.length === 0 || envelope.length > MAX_ENVELOPE)
+      return fail(400, "bad envelope");
+    if (!Number.isSafeInteger(expectVersion) || (expectVersion as number) < 0) return fail(400, "bad expectVersion");
+    const res = await stub.putKeys(envelope, expectVersion as number);
+    return res.ok ? json({ version: res.version }) : json({ error: "envelope changed", version: res.version }, 409);
+  }
+
+  if (op === "pull") {
+    if (req.method !== "GET") return fail(405, "method not allowed");
+    const since = Number(url.searchParams.get("since") ?? "0");
+    const limit = Number(url.searchParams.get("limit") ?? String(MAX_PULL));
+    if (!Number.isSafeInteger(since) || since < 0) return fail(400, "bad since");
+    if (!Number.isSafeInteger(limit) || limit < 1) return fail(400, "bad limit");
+    return json(await stub.pull(since, Math.min(limit, MAX_PULL)));
+  }
+
+  if (req.method !== "POST") return fail(405, "method not allowed");
+  if (!caller.canWrite) return fail(402, NO_PLAN);
+  let body: { device?: unknown; changes?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return fail(400, "bad json");
+  }
+  if (typeof body.device !== "string" || !UUID_RE.test(body.device)) return fail(400, "bad device");
+  if (!validChanges(body.changes)) return fail(400, "bad changes");
+  const res = await stub.push(body.device, body.changes, caller.limitBytes);
+  return res.full ? fail(413, "storage full") : json(res);
+}

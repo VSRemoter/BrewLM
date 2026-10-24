@@ -127,7 +127,26 @@ const blobs: Platform["blobs"] = {
     }
     return { removed, freed_bytes: freed };
   },
+  onMissing: (fetch) => void (fetchMissing = fetch),
 };
+
+/** Set by Sync: downloads a file this device doesn't have yet. */
+let fetchMissing: ((name: string) => Promise<boolean>) | null = null;
+
+/** The service worker asks for files it can't find (public/sw.js); answer through the message's port. */
+function answerMediaRequests(): void {
+  navigator.serviceWorker.addEventListener("message", (e: MessageEvent) => {
+    if (e.data?.type !== "brewlm:need-media" || !e.ports[0]) return;
+    const name = String(e.data.name ?? "");
+    const port = e.ports[0];
+    const fetch = fetchMissing;
+    (NAME_RE.test(name) && fetch ? fetch(name) : Promise.resolve(false)).then(
+      (ok) => port.postMessage(ok),
+      () => port.postMessage(false)
+    );
+  });
+  navigator.serviceWorker.startMessages();
+}
 
 /* --------------------------------- files --------------------------------- */
 
@@ -146,6 +165,7 @@ async function ready(): Promise<void> {
   // Ask the browser not to evict BrewLM's storage under pressure (best effort).
   void navigator.storage?.persist?.().catch(() => {});
   if (!("serviceWorker" in navigator)) throw new Error("This browser can't run BrewLM (no service workers).");
+  answerMediaRequests();
   await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
   if (navigator.serviceWorker.controller) return;
@@ -206,9 +226,12 @@ export const platform: Platform = {
   sync: {
     apply: (deviceId, changes) => call({ op: "apply", deviceId, changes }),
     markPushed: (pushed) => call({ op: "markPushed", pushed }),
-    // Off unless a dev server is named; the deployed app turns it on in milestone 3b.
+    // The deployed app syncs with sync.brewlm.com; `npm run dev:web` only when
+    // VITE_SYNC_URL names a server (as BREWLM_SYNC_URL does for desktop dev builds).
     config: async () => {
-      const url = import.meta.env.VITE_SYNC_URL as string | undefined;
+      const url =
+        (import.meta.env.VITE_SYNC_URL as string | undefined) ||
+        (import.meta.env.PROD ? "https://sync.brewlm.com" : undefined);
       if (!url) return null;
       return {
         url,
