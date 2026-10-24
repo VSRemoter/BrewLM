@@ -8,7 +8,7 @@
  * along so the model knows what the video is even when captions are missing.
  */
 
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 
 /** Placeholder content for a YouTube link whose transcript hasn't been fetched yet (phone adds). */
 export const YOUTUBE_PENDING =
@@ -112,7 +112,7 @@ function extractJsonAfter(html: string, marker: string): unknown {
 
 async function fetchWatchPage(id: string): Promise<{ apiKey: string; player: PlayerResponse | null }> {
   try {
-    const res = await tauriFetch(`https://www.youtube.com/watch?v=${id}&hl=en`, {
+    const res = await platform.fetch(`https://www.youtube.com/watch?v=${id}&hl=en`, {
       method: "GET",
       headers: { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" },
       connectTimeout: 20000,
@@ -129,7 +129,7 @@ async function fetchWatchPage(id: string): Promise<{ apiKey: string; player: Pla
 
 async function fetchPlayer(id: string, apiKey: string): Promise<PlayerResponse | null> {
   try {
-    const res = await tauriFetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}&prettyPrint=false`, {
+    const res = await platform.fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}&prettyPrint=false`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -161,7 +161,7 @@ function pickTrack(tracks: CaptionTrack[]): CaptionTrack | null {
 async function fetchTrackText(track: CaptionTrack): Promise<string> {
   const url = new URL(track.baseUrl);
   url.searchParams.delete("fmt");
-  const res = await tauriFetch(url.toString(), {
+  const res = await platform.fetch(url.toString(), {
     method: "GET",
     headers: { "User-Agent": BROWSER_UA },
     connectTimeout: 20000,

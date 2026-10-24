@@ -1,4 +1,5 @@
-import Database from "@tauri-apps/plugin-sql";
+import { platform, type SqlDb } from "../platform";
+import { SYNCED_TABLES } from "./syncTables";
 import { blobRefsIn, gcBlobs, isBlobRef, isMediaValue, storeArtifactMedia, storeMedia } from "./blobs";
 import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceChunk, SourceType } from "./types";
 
@@ -6,18 +7,18 @@ export function uid(): string {
   return crypto.randomUUID();
 }
 
-let dbPromise: Promise<Database> | null = null;
+let dbPromise: Promise<SqlDb> | null = null;
 
 /**
  * Serializes init: concurrent callers share ONE migration pass (two passes
  * would race on ALTERs — "duplicate column name").
  */
-export async function getDb(): Promise<Database> {
+export async function getDb(): Promise<SqlDb> {
   return (dbPromise ??= initDb());
 }
 
-async function initDb(): Promise<Database> {
-  const db = await Database.load("sqlite:brewlm.db");
+async function initDb(): Promise<SqlDb> {
+  const db = await platform.openDb();
   await db.execute(`
     CREATE TABLE IF NOT EXISTS notebooks (
       id TEXT PRIMARY KEY,
@@ -230,19 +231,7 @@ async function initDb(): Promise<Database> {
 
 /* ------------------------- Sync change tracking ------------------------- */
 
-/** Tables BrewLM Sync replicates, with their primary key column (mirrored in src-tauri/src/sync.rs). */
-export const SYNCED_TABLES: Record<string, string> = {
-  notebooks: "id",
-  folders: "id",
-  sources: "id",
-  chats: "id",
-  messages: "id",
-  artifacts: "id",
-  images: "id",
-  // Machine-specific keys (local model server…) get filtered at push time.
-  settings: "key",
-  usage_events: "id",
-};
+export { SYNCED_TABLES };
 
 const NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
 
@@ -259,7 +248,7 @@ const NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
  * - sync_state: this device's id; `applying` = '1' silences the triggers
  *   while changes pulled from other devices are written.
  */
-async function ensureSyncTracking(db: Database): Promise<void> {
+async function ensureSyncTracking(db: SqlDb): Promise<void> {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_meta (
       tbl TEXT NOT NULL,

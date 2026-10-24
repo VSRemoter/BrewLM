@@ -13,7 +13,7 @@
  * keeps retrieval working for Anthropic-only users and offline sessions.
  */
 
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 import {
   chunksForNotebook,
   chunksForSource,
@@ -139,7 +139,7 @@ async function embedBatch(texts: string[], targets: EmbedTarget[]): Promise<numb
   for (const t of targets) {
     try {
       const url = t.local ? `${(await loadLocalServer()).baseUrl}/embeddings` : t.url;
-      const res = await tauriFetch(url, {
+      const res = await platform.fetch(url, {
         method: "POST",
         headers: t.local ? localHeaders(t.key) : { "Content-Type": "application/json", Authorization: `Bearer ${t.key}` },
         body: JSON.stringify(

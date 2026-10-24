@@ -1,6 +1,4 @@
 import { Download } from "lucide-react";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useMemo, useState } from "react";
 import {
   bucketize,
@@ -16,6 +14,7 @@ import {
 import { Segmented, Spinner } from "../ui";
 import { ActivityChart, type Metric } from "./charts";
 import { Footnote, SectionTitle } from "./controls";
+import { platform } from "../../platform";
 
 type Range = "1" | "7" | "30" | "90" | "all";
 
@@ -135,12 +134,12 @@ export default function UsageSection() {
   const exportCsv = async () => {
     if (!events?.length) return;
     setExportNote(null);
-    const dest = await save({
-      defaultPath: `brewlm-usage-${new Date().toISOString().slice(0, 10)}.csv`,
+    const dest = await platform.saveFile({
+      defaultName: `brewlm-usage-${new Date().toISOString().slice(0, 10)}.csv`,
       filters: [{ name: "CSV", extensions: ["csv"] }],
+      data: usageToCsv(events),
     });
     if (!dest) return;
-    await writeTextFile(dest, usageToCsv(events));
     setExportNote(`Exported ${events.length} rows to ${dest}`);
   };
 

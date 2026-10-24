@@ -31,6 +31,7 @@ import { applyFont } from "./lib/fonts";
 import { applyTheme } from "./lib/themes";
 import { setSmoothScroll } from "./lib/smoothScroll";
 import { checkForUpdate, type UpdateInfo } from "./lib/updates";
+import { platform } from "./platform";
 import type { Folder, Notebook, Settings } from "./lib/types";
 import { AudioPlayerProvider } from "./components/AudioPlayer";
 
@@ -106,7 +107,7 @@ export default function App() {
           .catch((e) => console.warn("media migration:", e));
         void startSync().catch((e) => console.warn("sync:", e));
         // Non-blocking update check — never delays or breaks startup.
-        if (s.updateCheckOnLaunch) {
+        if (s.updateCheckOnLaunch && platform.kind === "desktop") {
           void checkForUpdate().then((info) => {
             if (info?.isNewer) setUpdateInfo(info);
           });
@@ -125,7 +126,9 @@ export default function App() {
             BrewLM couldn't load its database
           </p>
           <p className="mt-2 text-[13px] leading-relaxed text-ink-3">
-            Try relaunching the app. If it persists, the app data folder may need to be reset.
+            {platform.kind === "desktop"
+              ? "Try relaunching the app. If it persists, the app data folder may need to be reset."
+              : "Try reloading the page. If it persists, the details below say why."}
           </p>
           <pre className="mt-4 max-h-40 overflow-auto rounded-xl border border-danger-edge bg-danger-bg p-3 text-left text-[11px] leading-snug text-danger">
             {fatal}

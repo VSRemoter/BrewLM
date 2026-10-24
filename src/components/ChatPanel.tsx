@@ -109,8 +109,7 @@ import {
   type VoiceProvider,
   voicesNeedIds,
 } from "../lib/settings";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
+import { platform } from "../platform";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { fmtReplyCost, recordUsage, replyCostUsd } from "../lib/usage";
@@ -885,14 +884,11 @@ export default function ChatPanel({
   /** Native file picker → compress → save as chat background (webview <input type=file> is unreliable). */
   const pickChatBg = async () => {
     try {
-      const path = await openFileDialog({
-        multiple: false,
+      const picked = await platform.pickFile({
         filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"] }],
       });
-      if (!path) return;
-      const data = await readFile(path as string);
-      const base = (path as string).split(/[\\/]/).pop() ?? "background";
-      const file = new File([data as unknown as BlobPart], base, { type: "image/*" });
+      if (!picked) return;
+      const file = new File([picked.bytes as BlobPart], picked.name, { type: "image/*" });
       const bg = await fileToCoverDataUrl(file, 1600, 0.8);
       setBgMenuOpen(false);
       await onChatBgChange(bg, dimDraft);

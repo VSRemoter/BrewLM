@@ -3,7 +3,7 @@
  * would need tauri-plugin-updater plus signed releases). Fails soft: any
  * network/parse problem yields null and the app simply skips the banner.
  */
-import { getVersion } from "@tauri-apps/api/app";
+import { platform } from "../platform";
 
 export interface UpdateInfo {
   current: string;
@@ -23,7 +23,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     const json = await res.json();
     const latest = String(json.tag_name ?? "").replace(/^v/, "");
     if (!latest) return null;
-    const current = await getVersion();
+    const current = await platform.appVersion();
     return {
       current,
       latest,

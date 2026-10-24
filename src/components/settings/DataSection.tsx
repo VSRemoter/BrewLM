@@ -9,6 +9,7 @@ import {
   revealDataFolder,
 } from "../../lib/backup";
 import type { Settings } from "../../lib/types";
+import { platform } from "../../platform";
 import { GhostButton, Modal, Segmented } from "../ui";
 import { Card, Footnote, Row, SectionTitle } from "./controls";
 
@@ -26,9 +27,12 @@ export default function DataSection({
   const [importError, setImportError] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
 
+  // The database file and zip backups live on the desktop; the web build keeps its data in the browser.
+  const desktop = platform.kind === "desktop";
+
   useEffect(() => {
-    dbFilePath().then(setDbPath).catch(() => {});
-  }, []);
+    if (desktop) dbFilePath().then(setDbPath).catch(() => {});
+  }, [desktop]);
 
   const doExport = async () => {
     setBusy("export");
@@ -65,41 +69,45 @@ export default function DataSection({
     <div>
       <SectionTitle title="Data & Storage" />
 
-      {/* Storage location */}
-      <Card>
-        <Row label="Database" desc={dbPath || "…"} alignTop>
-          <button
-            onClick={() => void revealDataFolder()}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-          >
-            <FolderOpen size={13} /> Reveal
-          </button>
-        </Row>
-      </Card>
+      {desktop && (
+        <>
+          {/* Storage location */}
+          <Card>
+            <Row label="Database" desc={dbPath || "…"} alignTop>
+              <button
+                onClick={() => void revealDataFolder()}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+              >
+                <FolderOpen size={13} /> Reveal
+              </button>
+            </Row>
+          </Card>
 
-      {/* Backup & restore */}
-      <SectionTitle title="Backup & Restore" />
-      <Card>
-        <Row label="Export backup" desc="A self-contained .zip of your notebooks and their media you can archive or move to another machine.">
-          <button
-            onClick={() => void doExport()}
-            disabled={busy === "export"}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
-          >
-            <Download size={13} /> {busy === "export" ? "Exporting…" : "Export"}
-          </button>
-        </Row>
-        <Row label="Import backup" desc="Replaces ALL current data with a backup file, then reloads the app.">
-          <button
-            onClick={() => setImportOpen(true)}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-          >
-            <Upload size={13} /> Import
-          </button>
-        </Row>
-      </Card>
-      {exportedTo && <Footnote>Backup saved to {exportedTo}</Footnote>}
-      {importError && <Footnote>{importError}</Footnote>}
+          {/* Backup & restore */}
+          <SectionTitle title="Backup & Restore" />
+          <Card>
+            <Row label="Export backup" desc="A self-contained .zip of your notebooks and their media you can archive or move to another machine.">
+              <button
+                onClick={() => void doExport()}
+                disabled={busy === "export"}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
+              >
+                <Download size={13} /> {busy === "export" ? "Exporting…" : "Export"}
+              </button>
+            </Row>
+            <Row label="Import backup" desc="Replaces ALL current data with a backup file, then reloads the app.">
+              <button
+                onClick={() => setImportOpen(true)}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+              >
+                <Upload size={13} /> Import
+              </button>
+            </Row>
+          </Card>
+          {exportedTo && <Footnote>Backup saved to {exportedTo}</Footnote>}
+          {importError && <Footnote>{importError}</Footnote>}
+        </>
+      )}
 
       {/* Trash */}
       <SectionTitle title="Trash" />

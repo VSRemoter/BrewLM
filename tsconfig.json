@@ -18,7 +18,10 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* The build picks the platform (vite.config.ts); type-check against desktop. */
+    "paths": { "@platform-impl": ["./src/platform/desktop.ts"] }
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

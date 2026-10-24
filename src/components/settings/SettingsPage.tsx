@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { loadSettings, patchSettings } from "../../lib/settings";
 import type { Settings } from "../../lib/types";
 import type { UpdateInfo } from "../../lib/updates";
+import { platform } from "../../platform";
 import PairPhonePanel from "../PairPhonePanel";
 import AboutSection from "./AboutSection";
 import AiModelSection from "./AiModelSection";
@@ -80,7 +81,10 @@ export default function SettingsPage({
       <div className="flex min-h-0 flex-1">
         {/* Section nav */}
         <nav className="w-52 shrink-0 space-y-0.5 overflow-y-auto border-r border-edge-soft p-3">
-          {SECTIONS.filter((s) => s.id !== "sync" || syncAvailable).map((s) => {
+          {SECTIONS.filter(
+            // Phone Pairing serves the library from this computer: desktop only.
+            (s) => (s.id !== "sync" || syncAvailable) && (s.id !== "phone" || platform.kind === "desktop")
+          ).map((s) => {
             const Icon = s.icon;
             const active = section === s.id;
             return (

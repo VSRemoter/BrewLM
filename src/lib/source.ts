@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 // WKWebView (and older Safari) may lack ES2024 APIs the modern pdf.js build
 // uses (Promise.withResolvers, async helpers) — the legacy build is transpiled
 // for exactly these environments.
@@ -148,7 +148,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
   // Video pages are player boilerplate as HTML; read the transcript instead.
   if (isYouTubeUrl(parsed.toString())) return fetchYouTubeTranscript(parsed.toString());
 
-  const res = await tauriFetch(parsed.toString(), {
+  const res = await platform.fetch(parsed.toString(), {
     method: "GET",
     headers: {
       "User-Agent":

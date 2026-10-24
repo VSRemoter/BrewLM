@@ -30,6 +30,7 @@ import SourcesPanel from "./SourcesPanel";
 import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
 import { IconButton, Modal } from "./ui";
 import { onRemoteChanges } from "../lib/sync";
+import { platform } from "../platform";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
 const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
@@ -333,9 +334,11 @@ export default function NotebookView({
           className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
           aria-label="Notebook title"
         />
-        <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
-          <Smartphone size={15} strokeWidth={1.8} />
-        </IconButton>
+        {platform.kind === "desktop" && (
+          <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
+            <Smartphone size={15} strokeWidth={1.8} />
+          </IconButton>
+        )}
         <IconButton onClick={onOpenSettings} label="Settings">
           <SettingsIcon size={15} strokeWidth={1.8} />
         </IconButton>

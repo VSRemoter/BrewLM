@@ -3,8 +3,8 @@
  * media, a dev server, polling.
  *
  * A sync cycle PULLS changes other devices made (server `seq` after our
- * cursor) and applies them through Rust in one transaction (src-tauri/src/sync.rs,
- * which also settles conflicts), then PUSHES rows the change-tracking triggers
+ * cursor) and applies them in one transaction (src-tauri/src/sync.rs on desktop,
+ * syncApply.ts on the web; both settle conflicts the same way), then PUSHES rows the change-tracking triggers
  * put in `sync_outbox` (db.ts). Pulling first means a conflicting edit made
  * elsewhere is seen before ours goes out. A cycle runs as soon as there's
  * something to upload (the outbox is checked locally every few seconds), and
@@ -35,10 +35,7 @@
  * `BREWLM_SYNC_URL` (none = sync off); `BREWLM_SYNC_TOKEN` (+ `_VAULT`,
  * `_PASSWORD`) skips accounts for the two-copy dev setup.
  */
-import { invoke } from "@tauri-apps/api/core";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { load, type Store } from "@tauri-apps/plugin-store";
+import { platform } from "../platform";
 import { BLOB_PREFIX, blobRefsIn, markArrived, mediaBytes, putBlob } from "./blobs";
 import { getDb, referencedBlobRefs, SYNCED_TABLES, uid } from "./db";
 import {
@@ -190,10 +187,8 @@ async function setState(key: string, value: string): Promise<void> {
   );
 }
 
-/** This install's settings file: device id and vault key, never in the database or backups. */
-async function deviceStore(): Promise<Store> {
-  return load("sync-device.json", { autoSave: false, defaults: {} });
-}
+/** This install's own values (device id, vault key, account): never in the database or backups. */
+const deviceStore = platform.kv;
 
 /**
  * This install's device id lives outside the database, so a database that
@@ -202,12 +197,10 @@ async function deviceStore(): Promise<Store> {
  * decides, row by row, which version is newer.
  */
 async function deviceId(): Promise<string> {
-  const store = await deviceStore();
-  let id = await store.get<string>("deviceId");
+  let id = await deviceStore.get<string>("deviceId");
   if (!id) {
     id = uid();
-    await store.set("deviceId", id);
-    await store.save();
+    await deviceStore.set("deviceId", id);
   }
   if ((await getState("device_id")) !== id) {
     await setState("device_id", id);
@@ -262,13 +255,13 @@ class Clock {
 /** Log to the console and the launching terminal (see `sync_log`). */
 function log(line: string, warn = false): void {
   (warn ? console.warn : console.info)(`sync: ${line}`);
-  void invoke("sync_log", { line }).catch(() => {});
+  platform.sync.log(line);
 }
 
 /* --------------------------------- server -------------------------------- */
 
 async function api<T>(cfg: SyncConfig, path: string, body?: unknown, method?: string): Promise<T> {
-  const res = await tauriFetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/${path}`, {
+  const res = await platform.fetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/${path}`, {
     method: method ?? (body === undefined ? "GET" : "POST"),
     headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -298,7 +291,7 @@ function blobUrl(cfg: SyncConfig, id: string): string {
 }
 
 async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Promise<void> {
-  const res = await tauriFetch(blobUrl(cfg, id), {
+  const res = await platform.fetch(blobUrl(cfg, id), {
     method: "PUT",
     headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/octet-stream" },
     body: bytes,
@@ -309,7 +302,7 @@ async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Pr
 
 /** The blob's bytes, or null if the server doesn't have it (yet). */
 async function getRemoteBlob(cfg: SyncConfig, id: string): Promise<Uint8Array | null> {
-  const res = await tauriFetch(blobUrl(cfg, id), {
+  const res = await platform.fetch(blobUrl(cfg, id), {
     headers: { authorization: `Bearer ${cfg.token}` },
     connectTimeout: 15000,
   });
@@ -324,7 +317,7 @@ async function getEnvelope(cfg: SyncConfig): Promise<{ envelope: Envelope | null
 }
 
 async function putEnvelope(cfg: SyncConfig, envelope: Envelope, expectVersion: number): Promise<void> {
-  const res = await tauriFetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/keys`, {
+  const res = await platform.fetch(`${cfg.url.replace(/\/$/, "")}/v1/vaults/${cfg.vault}/keys`, {
     method: "PUT",
     headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
     body: JSON.stringify({ envelope: JSON.stringify(envelope), expectVersion }),
@@ -382,7 +375,7 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       batch.push({ tbl: p.tbl, row_id: p.id, hlc: c.hlc, deleted: p.deleted, row: p.row });
     }
     if (batch.length > 0) {
-      const { applied } = await invoke<{ applied: number[] }>("sync_apply", { deviceId: device, changes: batch });
+      const { applied } = await platform.sync.apply(device, batch);
       for (const i of applied) {
         const { tbl, row_id, row } = batch[i];
         out.tables.add(tbl);
@@ -474,7 +467,7 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
         if (s) s.hlc = null;
       }
     }
-    await invoke("sync_mark_pushed", { pushed: sent });
+    await platform.sync.markPushed(sent);
     await setState("hlc_last", clock.toString());
   }
 }
@@ -501,7 +494,7 @@ const fileId = (keys: VaultKeys, name: string) => hiddenId(keys, `file:${name}`)
 
 async function scanMedia(): Promise<void> {
   const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
-  const absent = new Set(await invoke<string[]>("blob_missing", { names }));
+  const absent = new Set(await platform.blobs.missing(names));
   for (const n of names) (absent.has(n) ? media.wanted : media.toUpload).add(n);
   media.scanned = true;
 }
@@ -543,7 +536,7 @@ async function downloadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<number> 
   if (media.wanted.size === 0) return 0;
   const now = Date.now();
   const due = [...media.wanted].filter((n) => (media.retryAt.get(n) ?? 0) <= now);
-  const absent = new Set(await invoke<string[]>("blob_missing", { names: due }));
+  const absent = new Set(await platform.blobs.missing(due));
   let landed = 0;
   for (const name of due) {
     if (!absent.has(name)) {
@@ -698,9 +691,7 @@ function loop(): void {
 
 /** Keep the unlocked vault key on this install and start syncing. */
 async function useVault(raw: Uint8Array, fresh: boolean): Promise<void> {
-  const store = await deviceStore();
-  await store.set("vault", { name: requireCfg().vault, key: toBase64(raw) });
-  await store.save();
+  await deviceStore.set("vault", { name: requireCfg().vault, key: toBase64(raw) });
   if (fresh) await resendEverything();
   vault = { raw, keys: await deriveKeys(raw) };
   setStatus({ state: "on", error: undefined });
@@ -739,7 +730,7 @@ let signInGeneration = 0;
 
 async function accountApi<T>(path: string, method: string, body?: unknown, session?: string): Promise<T> {
   if (!server) throw new Error("Sync isn't available in this build.");
-  const res = await tauriFetch(`${server.url.replace(/\/$/, "")}${path}`, {
+  const res = await platform.fetch(`${server.url.replace(/\/$/, "")}${path}`, {
     method,
     headers: {
       "content-type": "application/json",
@@ -804,9 +795,7 @@ export function cancelSignIn(): void {
 }
 
 async function useAccount(a: Account): Promise<void> {
-  const store = await deviceStore();
-  await store.set("account", a);
-  await store.save();
+  await deviceStore.set("account", a);
   account = a;
   cfg = { url: server!.url, token: a.session, vault: a.vault };
   await refreshAccount().catch(() => {});
@@ -819,10 +808,8 @@ async function forgetAccount(state: SyncState): Promise<void> {
   vault = null;
   account = null;
   cfg = null;
-  const store = await deviceStore();
-  await store.delete("account");
-  await store.delete("vault");
-  await store.save();
+  await deviceStore.delete("account");
+  await deviceStore.delete("vault");
   setStatus({ state, account: undefined, error: undefined });
 }
 
@@ -830,14 +817,14 @@ async function forgetAccount(state: SyncState): Promise<void> {
 export async function openCheckout(plan: "sync" | "plus", interval: "month" | "year"): Promise<void> {
   if (!account) throw new Error("Sign in first.");
   const { url } = await accountApi<{ url: string }>("/v1/billing/checkout", "POST", { plan, interval }, account.session);
-  await openUrl(url);
+  await platform.openUrl(url);
 }
 
 /** Change plan, card or cancel: opens Polar's billing page in the browser. */
 export async function openBillingPortal(): Promise<void> {
   if (!account) throw new Error("Sign in first.");
   const { url } = await accountApi<{ url: string }>("/v1/billing/portal", "POST", undefined, account.session);
-  await openUrl(url);
+  await platform.openUrl(url);
 }
 
 /** First device: create the vault. Returns the recovery key to show (once). */
@@ -920,7 +907,7 @@ export async function deviceLinkPending(id: string): Promise<boolean> {
 
 export async function cancelDeviceLink(id: string): Promise<void> {
   const c = requireCfg();
-  await tauriFetch(`${c.url.replace(/\/$/, "")}/v1/vaults/${c.vault}/links/${id}`, {
+  await platform.fetch(`${c.url.replace(/\/$/, "")}/v1/vaults/${c.vault}/links/${id}`, {
     method: "DELETE",
     headers: { authorization: `Bearer ${c.token}` },
     connectTimeout: 15000,
@@ -958,9 +945,7 @@ export async function signOutOfSync(): Promise<void> {
   }
   generation += 1;
   vault = null;
-  const store = await deviceStore();
-  await store.delete("vault");
-  await store.save();
+  await deviceStore.delete("vault");
   setStatus({ state: "locked", error: undefined });
 }
 
@@ -978,7 +963,7 @@ export async function setSyncApiKeys(on: boolean): Promise<void> {
 /** Start syncing if this build has a sync server configured (dev builds, for now). */
 export async function startSync(): Promise<void> {
   if (server) return;
-  const s = await invoke<ServerConfig | null>("sync_config");
+  const s = await platform.sync.config();
   if (!s) return;
   server = s;
   device = await deviceId();
@@ -993,7 +978,7 @@ export async function startSync(): Promise<void> {
     return;
   }
   log(`server ${s.url}, device ${device.slice(0, 8)}`);
-  const saved = await (await deviceStore()).get<Account>("account");
+  const saved = await deviceStore.get<Account>("account");
   if (!saved) return setStatus({ state: "signed-out" });
   account = saved;
   cfg = { url: s.url, token: saved.session, vault: saved.vault };
@@ -1005,7 +990,7 @@ export async function startSync(): Promise<void> {
 
 /** Use this device's saved vault key, or find out whether the vault needs setting up or unlocking. */
 async function resumeVault(c: SyncConfig): Promise<void> {
-  const saved = await (await deviceStore()).get<{ name: string; key: string }>("vault");
+  const saved = await deviceStore.get<{ name: string; key: string }>("vault");
   if (saved?.name === c.vault) {
     vault = { raw: fromBase64(saved.key), keys: await deriveKeys(fromBase64(saved.key)) };
     setStatus({ state: "on" });

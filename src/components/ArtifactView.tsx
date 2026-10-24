@@ -1,5 +1,3 @@
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, FilePlus2, Loader2, Minimize2, Play, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isMediaValue, mediaBytes, mediaExt, mediaSrc } from "../lib/blobs";
@@ -10,6 +8,7 @@ import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
+import { platform } from "../platform";
 import { GhostButton, IconButton } from "./ui";
 
 /** Filesystem-safe name for downloads. */
@@ -86,12 +85,11 @@ export default function ArtifactView({
         const parsed = parseAudio(artifact.data);
         if (parsed?.audio) {
           const ext = mediaExt(parsed.audio);
-          const path = await save({
-            defaultPath: exportName(artifact.title, ext),
+          await platform.saveFile({
+            defaultName: exportName(artifact.title, ext),
             filters: [{ name: "Audio", extensions: [ext] }],
+            data: await mediaBytes(parsed.audio),
           });
-          if (!path) return; // cancelled
-          await writeFile(path, await mediaBytes(parsed.audio));
           return;
         }
       }
@@ -100,12 +98,11 @@ export default function ArtifactView({
         setExportError("Nothing to download — this output has no readable content.");
         return;
       }
-      const path = await save({
-        defaultPath: exportName(artifact.title, "md"),
+      await platform.saveFile({
+        defaultName: exportName(artifact.title, "md"),
         filters: [{ name: "Markdown", extensions: ["md"] }],
+        data: text,
       });
-      if (!path) return; // cancelled
-      await writeTextFile(path, text);
     } catch (e) {
       setExportError(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
     }

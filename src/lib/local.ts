@@ -7,7 +7,7 @@
  * Also owns the context budget: local models hold far less text than cloud
  * ones, so prompts are sized from the user's chosen context window.
  */
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 import { getSetting } from "./db";
 import type { Settings } from "./types";
 
@@ -68,7 +68,7 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   if (!base) return [];
   let res: Response;
   try {
-    res = await tauriFetch(`${base}/models`, {
+    res = await platform.fetch(`${base}/models`, {
       headers: localHeaders(s.key),
       connectTimeout: 4000,
     });

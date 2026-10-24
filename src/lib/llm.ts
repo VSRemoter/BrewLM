@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 import { budgetForContext, loadLocalServer, localHeaders } from "./local";
 import type { Provider } from "./types";
 
@@ -151,7 +151,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   // ("length") before writing a word. Nothing has been shown yet then, so try
   // once more with twice the room and its thinking turned down.
   for (let attempt = 0; ; attempt++) {
-    const res = await (local ? tauriFetch : fetch)(base, {
+    const res = await (local ? platform.fetch : fetch)(base, {
       method: "POST",
       headers,
       body: JSON.stringify(body),

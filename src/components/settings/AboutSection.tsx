@@ -1,8 +1,8 @@
-import { getVersion } from "@tauri-apps/api/app";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Settings } from "../../lib/types";
 import { checkForUpdate, type UpdateInfo } from "../../lib/updates";
+import { platform } from "../../platform";
 import { Card, Row, SectionTitle, Toggle } from "./controls";
 
 export default function AboutSection({
@@ -20,7 +20,7 @@ export default function AboutSection({
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    getVersion().then(setVersion).catch(() => setVersion("unknown"));
+    platform.appVersion().then(setVersion).catch(() => setVersion("unknown"));
   }, []);
 
   const check = async () => {

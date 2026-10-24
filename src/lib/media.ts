@@ -10,7 +10,7 @@
  * modality (so a text-only chat model never breaks ingestion).
  */
 
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
@@ -119,7 +119,7 @@ async function visionCall(s: Settings, p: Provider, jpeg: string): Promise<strin
   let usage: StreamUsage = {};
   let text = "";
   if (p === "anthropic") {
-    const res = await tauriFetch("https://api.anthropic.com/v1/messages", {
+    const res = await platform.fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -183,7 +183,7 @@ async function chatCompletion(
     headers["HTTP-Referer"] = "https://brewlm.app";
     headers["X-Title"] = "BrewLM";
   }
-  const res = await tauriFetch(url, {
+  const res = await platform.fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: "user", content }] }),
@@ -251,7 +251,7 @@ async function openAiTranscribe(key: string, blob: Blob, filename: string): Prom
     form.append("file", blob, filename);
     form.append("model", model);
     form.append("response_format", "json");
-    const res = await tauriFetch("https://api.openai.com/v1/audio/transcriptions", {
+    const res = await platform.fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,

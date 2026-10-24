@@ -1,6 +1,6 @@
 /** Text-to-speech for studio audio: OpenAI, ElevenLabs, or in-app system voices. */
 
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "../platform";
 import { encodeM4a } from "./audioEncode";
 import { sseLines } from "./llm";
 import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
@@ -414,7 +414,7 @@ export async function synthesizeScript(
         throwIfAborted(signal);
         onProgress?.(i, turns.length);
         const voiceId = voices[turns[i].speaker];
-        const resp = await tauriFetch(
+        const resp = await platform.fetch(
           `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
           {
             method: "POST",

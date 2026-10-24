@@ -1,5 +1,5 @@
 /**
- * Media file store (Rust side: src-tauri/src/blobs.rs).
+ * Media file store (desktop: src-tauri/src/blobs.rs; web: Cache Storage, see platform/web.ts).
  *
  * Podcast audio, images, covers and chat backgrounds are files named by their
  * SHA-256 (`<app data>/blobs/<hash>.<ext>`); rows hold a `brewblob:<hash>.<ext>`
@@ -7,12 +7,12 @@
  * the move (or kept inline because a format isn't recognised) stay data URLs,
  * so every reader accepts both:
  *
- * - `mediaSrc(v)`      — URL for <img>/<audio>/fetch (served by the `brewblob` scheme)
+ * - `mediaSrc(v)`      — URL for <img>/<audio>/fetch (the `brewblob` scheme, or the web service worker)
  * - `mediaBlob(v)`     — the bytes, for uploads to vision/transcription APIs
  * - `mediaDataUrl(v)`  — an inline data URL, where an API needs one
  * - `storeMedia(v)`    — data URL in, reference out (db.ts calls it on every write)
  */
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { platform } from "../platform";
 
 export const BLOB_PREFIX = "brewblob:";
 const REF_RE = /brewblob:[0-9a-f]{64}\.[a-z0-9]{1,5}/g;
@@ -86,7 +86,7 @@ export function markArrived(name: string): void {
 export function mediaSrc(v: string): string {
   if (!isBlobRef(v)) return v;
   const name = v.slice(BLOB_PREFIX.length);
-  const url = convertFileSrc(name, "brewblob");
+  const url = platform.blobs.url(name);
   return arrived.has(name) ? `${url}?arrived` : url;
 }
 
@@ -113,7 +113,7 @@ export async function mediaDataUrl(v: string): Promise<string> {
 
 /** Write bytes to the store; returns their reference. */
 export async function putBlob(bytes: Uint8Array, ext: string): Promise<string> {
-  return invoke<string>("blob_put", bytes, { headers: { "x-blob-ext": ext } });
+  return platform.blobs.put(bytes, ext);
 }
 
 /**
@@ -150,5 +150,5 @@ export async function storeArtifactMedia(data: string): Promise<string> {
 
 /** Delete files no row references (grace period covers in-flight writes). */
 export async function gcBlobs(keep: string[], graceMs = 10 * 60_000): Promise<{ removed: number; freed_bytes: number }> {
-  return invoke("blob_gc", { keep, graceMs });
+  return platform.blobs.gc(keep, graceMs);
 }

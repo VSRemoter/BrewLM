@@ -3,11 +3,10 @@
  * diagrams and working math by hand — e.g. while an Audio Overview plays in
  * the mini player. Saves as you draw; drawings are never sent to the AI.
  */
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
 import { Download, PenLine, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getArtifact, renameArtifact, updateArtifact } from "../lib/db";
+import { platform } from "../platform";
 import type { Artifact } from "../lib/types";
 import type { DrawingApi } from "./DrawingCanvas";
 
@@ -94,9 +93,11 @@ export default function DrawingView({
         mimeType: "image/png",
       });
       const base = (title.replace(/[/\\?%*:|"<>]/g, "").trim() || "drawing").slice(0, 60);
-      const path = await save({ defaultPath: `${base}.png`, filters: [{ name: "PNG image", extensions: ["png"] }] });
-      if (!path) return; // cancelled
-      await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+      await platform.saveFile({
+        defaultName: `${base}.png`,
+        filters: [{ name: "PNG image", extensions: ["png"] }],
+        data: new Uint8Array(await blob.arrayBuffer()),
+      });
     } catch (e) {
       setExportError(`Couldn't export: ${e instanceof Error ? e.message : String(e)}`);
     }
