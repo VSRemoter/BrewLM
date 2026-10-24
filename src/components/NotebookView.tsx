@@ -86,6 +86,23 @@ export default function NotebookView({
   const phone = useMediaQuery(NARROW);
   const [tab, setTab] = useState<"sources" | "chat" | "studio">("chat");
   const [chatsOpen, setChatsOpen] = useState(false);
+  /** Touch screens: the on-screen keyboard is up (a text field has focus); the tab bar steps aside. */
+  const [typing, setTyping] = useState(false);
+  useEffect(() => {
+    if (!phone || !window.matchMedia("(pointer: coarse)").matches) return;
+    const isField = (el: EventTarget | Element | null) =>
+      el instanceof HTMLElement && el.matches("input:not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true]");
+    const onFocus = (e: FocusEvent) => setTyping(isField(e.target));
+    // Focus may be moving to another field: check where it landed.
+    const onBlur = () => setTimeout(() => setTyping(isField(document.activeElement)), 0);
+    document.addEventListener("focusin", onFocus);
+    document.addEventListener("focusout", onBlur);
+    return () => {
+      document.removeEventListener("focusin", onFocus);
+      document.removeEventListener("focusout", onBlur);
+      setTyping(false);
+    };
+  }, [phone]);
   const studioRef = useRef<StudioPanelHandle>(null);
 
   // persist layout preferences
@@ -462,7 +479,10 @@ export default function NotebookView({
           <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{chatPanel}</div>
           <div className={`absolute inset-0 flex flex-col ${tab === "studio" ? "" : "hidden"}`}>{studioPanel}</div>
         </div>
-        <nav className="safe-bottom flex shrink-0 border-t border-edge-soft bg-panel" aria-label="Notebook sections">
+        <nav
+          className={`safe-bottom shrink-0 border-t border-edge-soft bg-panel ${typing ? "hidden" : "flex"}`}
+          aria-label="Notebook sections"
+        >
           {tabs.map((t) => (
             <button
               key={t.id}

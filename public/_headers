@@ -1,0 +1,16 @@
+# Response headers for the web app at app.brewlm.com (Cloudflare static
+# assets; web/wrangler.jsonc). The desktop app ignores this file.
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# Checked on every launch so a new version is picked up straight away.
+/sw.js
+  Cache-Control: no-cache
+
+# Named by their contents: they never change.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

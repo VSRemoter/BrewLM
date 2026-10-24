@@ -109,6 +109,9 @@ export function applyTheme(id: string): void {
   }
   themeApplied = true;
   root.dataset.theme = id;
+  // Phones colour the status bar from this (web app); headers use the panel colour.
+  const panel = THEMES.find((t) => t.id === id)?.swatch.panel;
+  if (panel) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", panel);
 }
 
 /** Applies the theme *and* persists it to the settings table. */

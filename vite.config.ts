@@ -14,7 +14,7 @@ const appVersion: string = JSON.parse(
 // https://vite.dev/config/
 // `--mode web` builds the browser app (the phone app): `npm run dev:web`,
 // `npm run build:web` → dist-web/. Anything else is the Tauri desktop app.
-export default defineConfig(async ({ mode }) => {
+export default defineConfig(async ({ mode, command }) => {
   const web = mode === "web";
   return {
     plugins: [react(), tailwindcss()],
@@ -23,7 +23,20 @@ export default defineConfig(async ({ mode }) => {
         "@platform-impl": fileURLToPath(new URL(`./src/platform/${web ? "web" : "desktop"}.ts`, import.meta.url)),
       },
     },
-    define: { __APP_VERSION__: JSON.stringify(appVersion) },
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+      // Names this build's offline cache (public/sw.js).
+      __BUILD_ID__: JSON.stringify(`${appVersion}-${Date.now().toString(36)}`),
+      // A built web app always syncs with sync.brewlm.com: the dev settings in
+      // .env.web.local (a local server, the dev token) never reach a deployed build.
+      ...(command === "build"
+        ? {
+            "import.meta.env.VITE_SYNC_URL": "undefined",
+            "import.meta.env.VITE_SYNC_TOKEN": "undefined",
+            "import.meta.env.VITE_SYNC_VAULT": "undefined",
+          }
+        : {}),
+    },
 
     ...(web
       ? {

@@ -1,0 +1,15 @@
+// The web app (BrewLM on phones) at https://app.brewlm.com: the files from
+// `npm run build:web` (dist-web/), served by Cloudflare as a static site.
+// Deploy with `npm run deploy:web` from the repo root.
+{
+  "$schema": "../sync-server/node_modules/wrangler/config-schema.json",
+  "name": "brewlm-app",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "../dist-web",
+    // Every path is the same single-page app.
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [{ "pattern": "app.brewlm.com", "custom_domain": true }],
+  "workers_dev": false
+}

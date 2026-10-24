@@ -8,6 +8,7 @@
     "dev:web": "vite --mode web",
     "build": "tsc && vite build",
     "build:web": "tsc && vite build --mode web",
+    "deploy:web": "npm run build:web && sync-server/node_modules/.bin/wrangler deploy --config web/wrangler.jsonc",
     "preview": "vite preview",
     "tauri": "tauri",
     "postinstall": "node scripts/copy-excalidraw-fonts.mjs",

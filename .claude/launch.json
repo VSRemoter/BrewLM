@@ -1,7 +1,48 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "vite", "runtimeExecutable": "npx", "runtimeArgs": ["vite"], "port": 1420 },
-    { "name": "web", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:web"], "port": 1430 }
+    {
+      "name": "vite",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite"
+      ],
+      "port": 1420
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:web"
+      ],
+      "port": 1430
+    },
+    {
+      "name": "web-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "preview",
+        "--mode",
+        "web",
+        "--port",
+        "1430",
+        "--strictPort"
+      ],
+      "port": 1430
+    },
+    {
+      "name": "website",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "1440",
+        "--directory",
+        "../openmindFrontEnd"
+      ],
+      "port": 1440
+    }
   ]
 }

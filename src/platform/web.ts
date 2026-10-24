@@ -166,7 +166,9 @@ async function ready(): Promise<void> {
   void navigator.storage?.persist?.().catch(() => {});
   if (!("serviceWorker" in navigator)) throw new Error("This browser can't run BrewLM (no service workers).");
   answerMediaRequests();
-  await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  // Each build registers its own version, which saves that build's files for offline use.
+  const version = import.meta.env.DEV ? "dev" : __BUILD_ID__;
+  await navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(version)}`, { scope: "/" });
   await navigator.serviceWorker.ready;
   if (navigator.serviceWorker.controller) return;
   // First visit: the worker claims the page as it activates.
