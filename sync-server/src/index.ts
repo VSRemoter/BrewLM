@@ -11,6 +11,7 @@
  *   POST   /v1/billing/portal        → { url }
  *   GET    /v1/billing/done          "return to BrewLM" page
  *   POST   /v1/webhooks/polar        subscription updates from Polar
+ *   POST   /v1/fetch                 { url, method?, headers?, body? } → the page   (fetch.ts; web app)
  *
  * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
@@ -37,6 +38,7 @@
  */
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
 import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
+import { fetchFail, pageFetch } from "./fetch";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
 export { Vault };
@@ -85,6 +87,16 @@ async function vaultCaller(req: Request, env: Env, vault: string): Promise<Calle
   if (user.id !== vault) return fail(403, "not your vault");
   const ent = await entitlement(env, user);
   return { canWrite: ent.canSync, limitBytes: ent.limitBytes };
+}
+
+/** The web app's page fetches count against an account with an active trial or plan. */
+async function fetchCaller(req: Request, env: Env): Promise<string | Response> {
+  if (isDevToken(req, env)) return "dev";
+  const user = await userForSession(env, bearer(req));
+  if (!user) return fetchFail(401, "Signed out — sign in again in Settings → Sync.");
+  if (!(await entitlement(env, user)).canSync)
+    return fetchFail(402, "Your free trial has ended. Choose a plan to add web pages from this device.");
+  return user.id;
 }
 
 const NO_PLAN = "Your free trial has ended. Choose a plan to keep syncing; your library can still be downloaded.";
@@ -158,6 +170,7 @@ export default {
     if (!origin) return res;
     const out = new Response(res.body, res);
     out.headers.set("access-control-allow-origin", origin);
+    out.headers.set("access-control-expose-headers", "x-final-url, x-brewlm-fetch");
     out.headers.append("vary", "Origin");
     return out;
   },
@@ -167,6 +180,11 @@ async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const account = await accountRoutes(req, env, url.pathname);
   if (account) return account;
+  if (url.pathname === "/v1/fetch") {
+    if (req.method !== "POST") return fetchFail(405, "method not allowed");
+    const who = await fetchCaller(req, env);
+    return typeof who === "string" ? pageFetch(req, env, who) : who;
+  }
 
   const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
   if (!m) return fail(404, "not found");

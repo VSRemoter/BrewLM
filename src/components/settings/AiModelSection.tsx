@@ -18,6 +18,7 @@ import {
 import type { Provider, Settings } from "../../lib/types";
 import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
+import { platform } from "../../platform";
 
 const KEY_FIELD: Record<Provider, keyof Settings> = {
   openrouter: "openrouterKey",
@@ -264,26 +265,33 @@ export default function AiModelSection({
       {/* Provider + key + model */}
       <Card>
         <Row label="Provider">
-          <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
-            {(Object.keys(PROVIDER_LABELS) as Provider[]).map((p) => (
-              <button
-                key={p}
-                onClick={() =>
-                  // Reset to the provider default — model ids are
-                  // provider-namespaced, so another provider's id is invalid.
-                  patch(
-                    p === "local"
-                      ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
-                      : { provider: p, model: defaultModelFor(p) }
-                  )
-                }
-                className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                  provider === p ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-                }`}
-              >
-                {PROVIDER_LABELS[p]}
-              </button>
-            ))}
+          <div
+            className={`grid gap-1 rounded-lg border border-edge bg-canvas p-1 ${
+              platform.kind === "desktop" ? "grid-cols-4" : "grid-cols-3"
+            }`}
+          >
+            {(Object.keys(PROVIDER_LABELS) as Provider[])
+              // Local models run on the computer: the web app can't reach them.
+              .filter((p) => p !== "local" || platform.kind === "desktop")
+              .map((p) => (
+                <button
+                  key={p}
+                  onClick={() =>
+                    // Reset to the provider default — model ids are
+                    // provider-namespaced, so another provider's id is invalid.
+                    patch(
+                      p === "local"
+                        ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
+                        : { provider: p, model: defaultModelFor(p) }
+                    )
+                  }
+                  className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
+                    provider === p ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+                  }`}
+                >
+                  {PROVIDER_LABELS[p]}
+                </button>
+              ))}
           </div>
         </Row>
         {isLocal ? (

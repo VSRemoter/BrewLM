@@ -796,6 +796,30 @@ async function accountApi<T>(path: string, method: string, body?: unknown, sessi
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
+/**
+ * Web app: fetch a page on the open web through the sync server, which reads
+ * it on the phone's behalf (browsers can't read most sites from another
+ * site's page). Needs a signed-in account (or the dev token); see webFetch.ts.
+ */
+export async function fetchThroughServer(
+  url: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string }
+): Promise<Response> {
+  const s = server ?? (await platform.sync.config());
+  if (!s || !cfg?.token)
+    throw new Error("Adding web pages and videos on this device needs BrewLM Sync: sign in under Settings → Sync.");
+  const res = await platform.fetch(`${s.url.replace(/\/$/, "")}/v1/fetch`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ url, method: init.method ?? "GET", headers: init.headers, body: init.body }),
+  });
+  if (res.headers.get("x-brewlm-fetch") === "error") {
+    const detail = await res.json().then((j: { error?: string }) => j.error, () => undefined);
+    throw new Error(detail || `The sync server couldn't fetch that page (HTTP ${res.status}).`);
+  }
+  return res;
+}
+
 /** Plan, trial and storage use for Settings; also decides whether this device uploads. */
 export async function refreshAccount(): Promise<void> {
   if (!account) return;

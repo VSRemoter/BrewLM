@@ -8,7 +8,7 @@
  * along so the model knows what the video is even when captions are missing.
  */
 
-import { platform } from "../platform";
+import { fetchWebPage } from "./webFetch";
 
 /** Placeholder content for a YouTube link whose transcript hasn't been fetched yet (phone adds). */
 export const YOUTUBE_PENDING =
@@ -112,10 +112,9 @@ function extractJsonAfter(html: string, marker: string): unknown {
 
 async function fetchWatchPage(id: string): Promise<{ apiKey: string; player: PlayerResponse | null }> {
   try {
-    const res = await platform.fetch(`https://www.youtube.com/watch?v=${id}&hl=en`, {
+    const res = await fetchWebPage(`https://www.youtube.com/watch?v=${id}&hl=en`, {
       method: "GET",
       headers: { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" },
-      connectTimeout: 20000,
     });
     if (!res.ok) return { apiKey: FALLBACK_INNERTUBE_KEY, player: null };
     const html = await res.text();
@@ -129,14 +128,13 @@ async function fetchWatchPage(id: string): Promise<{ apiKey: string; player: Pla
 
 async function fetchPlayer(id: string, apiKey: string): Promise<PlayerResponse | null> {
   try {
-    const res = await platform.fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}&prettyPrint=false`, {
+    const res = await fetchWebPage(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}&prettyPrint=false`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "User-Agent": `com.google.android.youtube/${ANDROID_CLIENT.clientVersion} (Linux; U; Android 14) gzip`,
       },
       body: JSON.stringify({ context: { client: ANDROID_CLIENT }, videoId: id }),
-      connectTimeout: 20000,
     });
     return res.ok ? ((await res.json()) as PlayerResponse) : null;
   } catch {
@@ -161,10 +159,9 @@ function pickTrack(tracks: CaptionTrack[]): CaptionTrack | null {
 async function fetchTrackText(track: CaptionTrack): Promise<string> {
   const url = new URL(track.baseUrl);
   url.searchParams.delete("fmt");
-  const res = await platform.fetch(url.toString(), {
+  const res = await fetchWebPage(url.toString(), {
     method: "GET",
     headers: { "User-Agent": BROWSER_UA },
-    connectTimeout: 20000,
   });
   if (!res.ok) return "";
   const xml = await res.text();

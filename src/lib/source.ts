@@ -1,4 +1,4 @@
-import { platform } from "../platform";
+import { fetchWebPage } from "./webFetch";
 // WKWebView (and older Safari) may lack ES2024 APIs the modern pdf.js build
 // uses (Promise.withResolvers, async helpers) — the legacy build is transpiled
 // for exactly these environments.
@@ -137,7 +137,7 @@ export function fileToCoverDataUrl(file: File, maxWidth = 560, quality = 0.82): 
   });
 }
 
-/** Fetches a URL through the Tauri HTTP plugin (no CORS) and extracts readable text. */
+/** Fetches a URL (see webFetch.ts: direct on desktop, via the sync server on the web) and extracts readable text. */
 export async function fetchLinkContent(url: string): Promise<{ title: string; text: string }> {
   let parsed: URL;
   try {
@@ -148,14 +148,13 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
   // Video pages are player boilerplate as HTML; read the transcript instead.
   if (isYouTubeUrl(parsed.toString())) return fetchYouTubeTranscript(parsed.toString());
 
-  const res = await platform.fetch(parsed.toString(), {
+  const res = await fetchWebPage(parsed.toString(), {
     method: "GET",
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
       Accept: "text/html,application/xhtml+xml,text/plain,application/pdf;q=0.9,*/*;q=0.5",
     },
-    connectTimeout: 20000,
   });
   if (!res.ok) throw new Error(`Couldn't fetch that page (HTTP ${res.status}).`);
 

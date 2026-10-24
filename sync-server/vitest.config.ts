@@ -1,6 +1,32 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
+/** A stand-in website for the page fetcher's tests (src/fetch.ts). */
+async function fakeSite(req: Request, url: URL): Promise<Response> {
+  switch (url.pathname) {
+    case "/hello":
+      return new Response("<html><title>Hello</title><p>Hi there</p></html>", { headers: { "content-type": "text/html" } });
+    case "/moved":
+      return new Response(null, { status: 302, headers: { location: "/hello" } });
+    case "/to-local":
+      return new Response(null, { status: 302, headers: { location: "http://localhost/admin" } });
+    case "/loop":
+      return new Response(null, { status: 302, headers: { location: "/loop" } });
+    case "/huge":
+      return new Response("x", { headers: { "content-length": String(30 * 1024 * 1024) } });
+    case "/echo":
+      return Response.json({
+        method: req.method,
+        body: req.method === "POST" ? await req.text() : null,
+        headers: Object.fromEntries(req.headers),
+      });
+    case "/teapot":
+      return new Response("short and stout", { status: 418 });
+    default:
+      return new Response("not found", { status: 404 });
+  }
+}
+
 export default defineConfig(async () => ({
   test: { setupFiles: ["./test/setup.ts"] },
   plugins: [
@@ -26,6 +52,7 @@ export default defineConfig(async () => ({
         // A stand-in for Polar's API: echoes what was asked for into the URL it returns.
         outboundService: async (req: Request) => {
           const url = new URL(req.url);
+          if (url.host === "page.test") return fakeSite(req, url);
           if (url.host !== "polar.test") return new Response("no network in tests", { status: 503 });
           const body = (await req.json()) as Record<string, unknown>;
           if (url.pathname === "/v1/checkouts/")

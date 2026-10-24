@@ -106,5 +106,7 @@ storage limits, and the production setup above. Release builds of the app
 sync with https://sync.brewlm.com: uploads go out within seconds, other
 devices' changes are fetched every 30 s and when the window regains focus.
 The web app (milestone 3b) uses the same API from the browser: CORS allows
-https://app.brewlm.com. Still to come: live updates (WebSocket) and cleaning
+https://app.brewlm.com. Since 3d it also asks `POST /v1/fetch` to read web
+pages and YouTube transcripts it can't read itself (src/fetch.ts: public
+http(s) addresses only, 25 MB, 120 an hour per account). Still to come: live updates (WebSocket) and cleaning
 up server files nothing points to any more.

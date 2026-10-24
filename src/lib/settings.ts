@@ -1,3 +1,4 @@
+import { platform } from "../platform";
 import { getSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
@@ -284,7 +285,7 @@ export async function loadSettings(): Promise<Settings> {
   const safeRetention = [0, 7, 30, 90].includes(parsedRetention)
     ? parsedRetention
     : DEFAULT_BEHAVIOR.trashRetentionDays;
-  return {
+  return cloudProviderOnWeb({
     provider,
     openrouterKey,
     openaiKey,
@@ -320,7 +321,19 @@ export async function loadSettings(): Promise<Settings> {
     updateCheckOnLaunch: updateCheckOnLaunch !== "0",
     smoothScroll: smoothScroll !== "0",
     showDetails: showDetails !== "0",
-  };
+  });
+}
+
+/**
+ * Local models (Ollama, LM Studio…) run on the computer, out of the web app's
+ * reach. When the synced choice is "local", the web app uses the first cloud
+ * provider it has a key for, with that provider's default model, without
+ * changing the stored choice: the computer keeps its local model.
+ */
+function cloudProviderOnWeb(s: Settings): Settings {
+  if (platform.kind !== "web" || s.provider !== "local") return s;
+  const provider = (["openrouter", "openai", "anthropic"] as const).find((p) => activeKey({ ...s, provider: p })) ?? "openrouter";
+  return { ...s, provider, model: defaultModelFor(provider) };
 }
 
 /** Stored JSON {provider: id} → only string entries for known providers. */
@@ -351,6 +364,11 @@ export async function saveSettings(s: Settings): Promise<void> {
  * in the patch instead of dumping the whole object.
  */
 export async function patchSettings(patch: Partial<Settings>): Promise<void> {
+  // A model picked on the web while the stored provider is "local" (see
+  // cloudProviderOnWeb) travels with the provider it belongs to; otherwise the
+  // computer would get a cloud model id for its local server.
+  if (platform.kind === "web" && patch.model !== undefined && patch.provider === undefined && (await getSetting("provider")) === "local")
+    patch = { ...patch, provider: (await loadSettings()).provider };
   const writes: Promise<void>[] = [];
   for (const key of Object.keys(patch) as (keyof Settings)[]) {
     const value = patch[key];
