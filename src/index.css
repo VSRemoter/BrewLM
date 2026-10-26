@@ -662,6 +662,11 @@ body {
 .anim-fade-up {
   animation: om-fade-up 0.24s var(--ease-out) backwards;
 }
+/* A streaming reply's newly reached block (its delay keeps the clock running
+   while the block is re-rendered as it grows). */
+.stream-in {
+  animation: om-fade 0.45s var(--ease-out) backwards;
+}
 
 @keyframes om-rise {
   from {
