@@ -1,6 +1,7 @@
 /** The browser build's platform — the phone app (see types.ts). */
 import type { FileFilter, Platform, SqlDb, SqlResult } from "./types";
 import type { DbRequest } from "./webDbWorker";
+import { bootStep } from "../lib/boot";
 
 /* -------------------------------- database ------------------------------- */
 
@@ -17,12 +18,27 @@ function call<T>(req: DbRequest): Promise<T> {
       if (e.data.error !== undefined) w?.reject(new Error(e.data.error));
       else w?.resolve(e.data.result);
     };
+    // A worker that can't load or start reports only here; without this, every
+    // call (and so startup) would wait forever.
+    worker.onerror = (e) => {
+      e.preventDefault();
+      failAll(`The database worker couldn't start${e.message ? `: ${e.message}` : "."}`);
+    };
+    worker.onmessageerror = () => failAll("The database worker sent a message that couldn't be read.");
   }
   const id = nextId++;
   return new Promise<T>((resolve, reject) => {
     waiting.set(id, { resolve: resolve as (v: unknown) => void, reject });
     worker!.postMessage({ id, req });
   });
+}
+
+/** Rejects every pending call and drops the worker, so the next call starts a fresh one. */
+function failAll(message: string): void {
+  worker?.terminate();
+  worker = null;
+  for (const w of waiting.values()) w.reject(new Error(message));
+  waiting.clear();
 }
 
 async function openDb(): Promise<SqlDb> {
@@ -168,10 +184,13 @@ async function ready(): Promise<void> {
   answerMediaRequests();
   // Each build registers its own version, which saves that build's files for offline use.
   const version = import.meta.env.DEV ? "dev" : __BUILD_ID__;
+  bootStep("Registering the service worker");
   await navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(version)}`, { scope: "/" });
+  bootStep("Waiting for the service worker to start");
   await navigator.serviceWorker.ready;
   if (navigator.serviceWorker.controller) return;
   // First visit: the worker claims the page as it activates.
+  bootStep("Waiting for the service worker to take over");
   await new Promise<void>((resolve) => {
     navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true });
     setTimeout(resolve, 3000);

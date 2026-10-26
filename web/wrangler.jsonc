@@ -7,8 +7,10 @@
   "compatibility_date": "2026-10-01",
   "assets": {
     "directory": "../dist-web",
-    // Every path is the same single-page app.
-    "not_found_handling": "single-page-application"
+    // The app lives at "/" only. A missing file must be a real 404: answering
+    // with the page (200, text/html) let browsers and the service worker keep
+    // HTML under an old build's script/stylesheet names, breaking the app.
+    "not_found_handling": "none"
   },
   "routes": [{ "pattern": "app.brewlm.com", "custom_domain": true }],
   "workers_dev": false

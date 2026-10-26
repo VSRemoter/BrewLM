@@ -35,6 +35,7 @@ import { platform } from "./platform";
 import type { Folder, Notebook, Settings } from "./lib/types";
 import { AudioPlayerProvider } from "./components/AudioPlayer";
 import { confirmAction, ConfirmHost } from "./components/ConfirmDialog";
+import { bootDone, bootStep } from "./lib/boot";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -85,17 +86,22 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
+        bootStep("Opening your library");
         await getDb();
         startJobRunner(); // drains phone-queued chat/generate jobs
+        bootStep("Loading settings");
         const s = await loadSettings();
         // Trash auto-empty (retention 0 = disabled).
+        bootStep("Emptying old trash");
         const purged = await purgeExpiredTrash(s.trashRetentionDays);
         if (purged > 0) console.info(`trash: auto-emptied ${purged} notebook(s)`);
         applyTheme(s.theme);
         applyFont(s.font);
         setSettings(s);
+        bootStep("Loading your notebooks");
         await refresh();
         setReady(true);
+        bootDone();
         // Background maintenance: repair garbage file sources left by old
         // versions, then move inline media into files (one-time; resumes if
         // interrupted) — its compaction also reclaims the repaired rows' space.
@@ -115,6 +121,7 @@ export default function App() {
         }
       } catch (e) {
         setFatal(e instanceof Error ? e.message : String(e));
+        bootDone();
       }
     })();
   }, [refresh, reloadSettings]);

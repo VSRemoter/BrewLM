@@ -18,6 +18,145 @@
 
   <body>
     <div id="root"></div>
+    <!--
+      Startup watcher (plain script, so it runs even if the app's own script
+      can't load). Startup reports its steps through window.brewlmBoot
+      (src/lib/boot.ts); if it hasn't finished after a few seconds, this shows
+      which step it's stuck on and any load errors, with a Repair button that
+      resets the saved app copy (service worker + its cache) but never the
+      library or media. A script or stylesheet that fails to load triggers one
+      automatic repair; if that doesn't help, the panel stays up even after
+      the app starts (an unstyled app is no use).
+    -->
+    <script>
+      (function () {
+        var step = "Loading the app";
+        var errors = [];
+        var finished = false;
+        var broken = false;
+        var reported = {};
+        var panel = null;
+        var started = Date.now();
+
+        function esc(s) {
+          return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        }
+        function appFile() {
+          var s = document.querySelector('script[type="module"][src]');
+          return s ? s.getAttribute("src") : "none";
+        }
+        function render() {
+          if ((finished && !broken) || document.getElementById("fatal-overlay")) return;
+          if (!panel) {
+            panel = document.createElement("div");
+            panel.id = "boot-watcher";
+            panel.style.cssText =
+              "position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:32px;background:var(--color-canvas,#fff8f3);font-family:var(--font-sans,-apple-system,system-ui,sans-serif);";
+            document.body.appendChild(panel);
+          }
+          var secs = Math.round((Date.now() - started) / 1000);
+          panel.innerHTML =
+            '<div style="max-width:440px;width:100%;text-align:center;">' +
+            (broken
+              ? '<p style="font-size:16px;font-weight:600;color:#2b1709;margin:0 0 14px;">BrewLM couldn\'t load all of its files</p>'
+              : '<p style="font-size:16px;font-weight:600;color:var(--color-ink,#2b1709);margin:0 0 6px;">BrewLM is taking a while to start</p>' +
+                '<p style="font-size:13px;color:var(--color-ink-3,#8a7a70);margin:0 0 14px;">Stuck on: <b>' + esc(step) + "</b> (" + secs + "s)</p>") +
+            (errors.length
+              ? '<pre style="font-size:11px;text-align:left;white-space:pre-wrap;word-break:break-word;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px;margin:0 0 14px;">' +
+                esc(errors.slice(-5).join("\n")) + "</pre>"
+              : "") +
+            '<div style="display:flex;gap:8px;justify-content:center;">' +
+            '<button id="boot-reload" style="font:inherit;font-size:13px;padding:8px 14px;border-radius:10px;border:1px solid #e5d9cf;background:#fff;color:#2b1709;">Reload</button>' +
+            '<button id="boot-repair" style="font:inherit;font-size:13px;padding:8px 14px;border-radius:10px;border:0;background:#f2541b;color:#fff;">Repair &amp; reload</button>' +
+            "</div>" +
+            '<p style="font-size:11px;color:var(--color-ink-3,#8a7a70);margin:14px 0 0;">Repair resets the saved copy of the app. Your notebooks stay on this device.<br/>App file: ' + esc(appFile()) + "</p>" +
+            "</div>";
+          document.getElementById("boot-reload").onclick = function () {
+            location.reload();
+          };
+          document.getElementById("boot-repair").onclick = repair;
+        }
+        function repair() {
+          var jobs = [];
+          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations)
+            jobs.push(
+              navigator.serviceWorker.getRegistrations().then(function (rs) {
+                return Promise.all(rs.map(function (r) { return r.unregister(); }));
+              })
+            );
+          if (window.caches)
+            jobs.push(
+              caches.keys().then(function (ks) {
+                return Promise.all(
+                  ks.filter(function (k) { return k.indexOf("brewlm-shell-") === 0; })
+                    .map(function (k) { return caches.delete(k); })
+                );
+              })
+            );
+          Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+        }
+
+        /** One automatic repair per session; after that, explain on screen. */
+        function assetFailed(url) {
+          if (reported[url]) return;
+          reported[url] = true;
+          errors.push("Couldn't load " + url);
+          broken = true;
+          var key = "brewlm:auto-repaired";
+          try {
+            if (!sessionStorage.getItem(key)) {
+              sessionStorage.setItem(key, "1");
+              repair();
+              return;
+            }
+          } catch (err) {}
+          render();
+        }
+
+        // Capture phase also sees scripts and stylesheets that fail to load.
+        window.addEventListener(
+          "error",
+          function (e) {
+            var t = e.target;
+            if (t && t !== window && (t.src || t.href)) return assetFailed(t.src || t.href);
+            if (e.message) errors.push(e.message);
+            if (panel) render();
+          },
+          true
+        );
+        // A stylesheet can also "load" yet hold nothing (e.g. a page served in
+        // its place and refused): check the app's own sheets once loaded.
+        window.addEventListener("load", function () {
+          var links = document.querySelectorAll('link[rel="stylesheet"][href*="/assets/"]');
+          for (var i = 0; i < links.length; i++) {
+            var ok = false;
+            try {
+              ok = !!(links[i].sheet && links[i].sheet.cssRules.length);
+            } catch (err) {
+              ok = true; // unreadable means it did load
+            }
+            if (!ok) assetFailed(links[i].href);
+          }
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          errors.push(e.reason && e.reason.message ? e.reason.message : String(e.reason));
+          if (panel) render();
+        });
+
+        window.brewlmBoot = {
+          step: function (name) {
+            step = name;
+            if (panel) render();
+          },
+          done: function () {
+            finished = true;
+            clearTimeout(timer);
+            if (panel && !broken) panel.remove();
+          },
+        };
+        var timer = setTimeout(render, 8000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

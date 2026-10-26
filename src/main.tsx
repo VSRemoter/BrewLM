@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { applyZoom, getZoom, setZoom } from "./lib/zoom";
 import { platform } from "./platform";
+import { bootStep } from "./lib/boot";
 import "./index.css";
 
 /** Last-resort error surface so a startup failure never shows a blank window. */
@@ -50,11 +51,13 @@ window.addEventListener("keydown", (e) => {
 
 // The web build serves media through a service worker, which must control the page first.
 platform.ready().then(
-  () =>
+  () => {
+    bootStep("Starting the app");
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
         <App />
       </React.StrictMode>
-    ),
+    );
+  },
   (e) => showFatal(e instanceof Error ? e.message : String(e))
 );

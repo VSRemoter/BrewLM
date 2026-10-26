@@ -56,9 +56,10 @@ self.addEventListener("fetch", (e) => {
 /** The app's page: the network's copy (saved for later), or the saved one when offline. */
 async function servePage(request) {
   const cache = await caches.open(SHELL_CACHE);
-  const network = fetch(request).then((res) => {
-    // Every route is the same single-page app: keep it as "/".
-    if (res.ok) void cache.put("/", res.clone());
+  const network = fetch(request).then(async (res) => {
+    // The app lives at "/": any other path (a 404 from the server) gets it too.
+    if (res.status === 404) res = await fetch("/");
+    if (res.ok && isHtml(res)) void cache.put("/", res.clone());
     return res;
   });
   const quick = await Promise.race([
@@ -74,10 +75,18 @@ async function servePage(request) {
 async function serveKept(request) {
   const cache = await caches.open(SHELL_CACHE);
   const saved = await cache.match(request);
-  if (saved) return saved;
-  const res = await fetch(request);
+  if (saved && !isHtml(saved)) return saved;
+  let res = await fetch(request);
+  // An HTML page under a file's name is the old server's "not found" answer,
+  // possibly kept by the browser's own cache: ask the server again, past it.
+  if (isHtml(res)) res = await fetch(request, { cache: "reload" });
+  if (isHtml(res)) return new Response("not found", { status: 404 });
   if (res.ok) await cache.put(request, res.clone());
   return res;
+}
+
+function isHtml(res) {
+  return (res.headers.get("content-type") || "").includes("text/html");
 }
 
 /** How long a page may take to download a missing file (large audio, slow network). */
