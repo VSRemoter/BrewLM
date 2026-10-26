@@ -16,6 +16,7 @@ import {
   Image,
   ImagePlus,
   Info,
+  Landmark,
   Layers,
   Link,
   ListPlus,
@@ -44,6 +45,7 @@ import {
   listFolders,
   moveNotebookToFolder,
   renameChat,
+  setNotebookConstitutionOn,
   setNotebookGrounded,
   setNotebookStarred,
   setSetting,
@@ -351,6 +353,13 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: false,
   },
   {
+    cmd: "/constitution",
+    usage: "/constitution [on|off]",
+    desc: "Turn this notebook's constitution on or off (keeps the text)",
+    icon: Landmark,
+    takesArgs: false,
+  },
+  {
     cmd: "/search",
     usage: "/search <query>",
     desc: "One-shot web answer with cited sources (provider search)",
@@ -504,7 +513,7 @@ One key powers everything: chat, Studio tools, and web research.
 
 ## 3. Add sources (left panel)
 Use **+** in the Sources panel to upload **PDFs, text, markdown, CSV, images or audio**, **paste text**, or add a **web link** (the page is fetched and cleaned automatically). PDF text is extracted locally, on your machine.
-The **constitution** button adds a persona document (Professor, Tutor, Critic…). Edit that source — it changes how the AI behaves inside this notebook.
+The **constitution** button adds a persona document — pick a template (Professor, Tutor, Critic…) and edit its text before adding, or choose **Custom** to paste your own. Edit that source anytime — it changes how the AI behaves inside this notebook — and use \`/constitution off\` to pause it without deleting it.
 
 ## 4. Chat
 - Ask anything. Answers are grounded in your sources and **cite them by title**.
@@ -542,6 +551,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
+- \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = replies (and Studio) ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
 - \`/clone "<title>" [yes|no]\` — makes an exact, independent copy of this whole notebook (sources, chats, studio work). **The title must be in quotes.** \`/clone "My copy"\` or \`/clone "My copy" no\` keeps you here; \`/clone "My copy" yes\` takes you there. Because the title is quoted, a *yes* or *no* inside it can't be confused for the flag — \`/clone "Project yes" no\` clones "Project yes" and stays put. For a sources-only starter copy, use **Use as template** on the homepage cards.
 - \`/remove <sources|chats|studios> [type]\` — bulk delete. \`/remove sources\` wipes every source; \`/remove chats\` deletes all chat threads and starts fresh; \`/remove studios\` clears the Studio. Narrow it with a type, e.g. \`/remove sources links\` (text, links, pdf, images, audio, files) or \`/remove studios audios\` (flashcards, quizzes, mindmaps, audios, reports, research, drawings).
@@ -586,13 +596,14 @@ export function buildSystemPrompt(
   sources: Source[],
   mentioned: MentionItem[] = [],
   retrieved?: RetrievedChunk[],
-  opts: { grounded?: boolean; budget?: ContextBudget } = {}
+  opts: { grounded?: boolean; constitution?: boolean; budget?: ContextBudget } = {}
 ): string {
   const grounded = opts.grounded !== false;
   const budgetCaps = opts.budget ?? CLOUD_BUDGET;
-  const constitutions = sources.filter(
-    (s) => s.type === "context" && s.content.trim()
-  );
+  // /constitution off: the source stays in the notebook, but no prompt sees it.
+  const constitutions = opts.constitution === false
+    ? []
+    : sources.filter((s) => s.type === "context" && s.content.trim());
   // Mentioned sources move into the priority section — don't include twice.
   const mentionedSourceIds = new Set(
     mentioned.filter((m) => m.group === "source").map((m) => m.id)
@@ -787,6 +798,7 @@ export default function ChatPanel({
   onRemove,
   notebookStarred,
   notebookGrounded,
+  notebookConstitutionOn,
   chatBg,
   chatBgDim,
   onChatBgChange,
@@ -829,6 +841,8 @@ export default function ChatPanel({
   notebookStarred: boolean;
   /** Live grounding flag (SQLite boolean, default 1) so /ground can toggle it. */
   notebookGrounded?: number;
+  /** Live /constitution flag (SQLite boolean, default 1); 0 = constitution kept but ignored. */
+  notebookConstitutionOn?: number;
   /** Data-URL image behind the chat area ("" = none). */
   chatBg: string;
   /** Readability scrim over chatBg: 0–80 (percent). */
@@ -1906,6 +1920,33 @@ export default function ChatPanel({
       return;
     }
 
+    // /constitution [on|off] — use or ignore this notebook's constitution (it stays put).
+    if (/^\/constitution(\s|$)/i.test(text)) {
+      const arg = text.replace(/^\/constitution\s*/i, "").trim().toLowerCase();
+      const isOn = (notebookConstitutionOn ?? 1) !== 0;
+      const hasConstitution = sources.some((s) => s.type === "context");
+      const next = arg === "on" ? true : arg === "off" ? false : !isOn;
+      let reply: string;
+      if (!hasConstitution) {
+        reply = "This notebook has no constitution, so there's nothing to turn on or off. Add one from the **+** menu in the Sources panel → **Add constitution**.";
+      } else if (arg && arg !== "on" && arg !== "off") {
+        reply = `Use \`/constitution on\` or \`/constitution off\` — or just \`/constitution\` to flip it. It's currently **${isOn ? "on" : "off"}**.`;
+      } else {
+        if (next !== isOn) {
+          await setNotebookConstitutionOn(notebookId, next);
+          onNotebookMoved();
+        }
+        reply = next
+          ? `🏛️ Constitution **on** — replies follow this notebook's constitution again. (\`/constitution\` toggles this.)`
+          : `Constitution **off** — replies ignore it until you turn it back on. Your constitution is still in the Sources panel, untouched. (\`/constitution\` toggles this.)`;
+      }
+      const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
+      setMsgs((prev) => [...prev, replyMsg]);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
     // Image API turns, each carrying ONLY the prompt (no sources, no history):
     // /image draws fresh; /edit and /remix add the single picture being
     // changed as a reference; /more reruns a picture's stored prompt. Every
@@ -2112,7 +2153,7 @@ export default function ChatPanel({
         const { text: answer, hits } = await webAnswer({
           query,
           settings,
-          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow, budget: contextBudget(settings) }),
+          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings) }),
           signal: ctrl.signal,
         });
         if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -2246,7 +2287,7 @@ export default function ChatPanel({
     }
 
     const llmMessages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow, budget: contextBudget(settings) }) },
+      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings) }) },
       ...selectChatHistory(history, contextBudget(settings).history).map((m, i, arr) => ({
         role: m.role,
         // Image embeds in past turns stay on screen but leave the context
@@ -3142,6 +3183,9 @@ export default function ChatPanel({
             {model} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
+            )}
+            {(notebookConstitutionOn ?? 1) === 0 && sources.some((s) => s.type === "context") && (
+              <span className="text-warn"> · constitution off</span>
             )}
           </p>
         </div>

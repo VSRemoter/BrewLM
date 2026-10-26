@@ -16,6 +16,8 @@ export interface Notebook {
   trashed_at: number;
   /** SQLite boolean: 1 = chat answers grounded in sources (default); 0 = free-form. */
   grounded: number;
+  /** SQLite boolean: 1 = the constitution shapes replies (default); 0 = kept but ignored (/constitution off). */
+  constitution_on: number;
   created_at: number;
   updated_at: number;
 }

@@ -38,10 +38,13 @@ const TYPE_ICON = {
 export default function SourcesPanel({
   notebookId,
   sources,
+  constitutionOn = true,
   onChanged,
 }: {
   notebookId: string;
   sources: Source[];
+  /** /constitution flag — off means the constitution is kept but ignored. */
+  constitutionOn?: boolean;
   onChanged: () => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -255,7 +258,9 @@ export default function SourcesPanel({
                   </span>
                   <span className="mt-0.5 line-clamp-1 block text-[11px] text-ink-3">
                     {isConstitution
-                      ? "Governs AI behavior in this notebook"
+                      ? constitutionOn
+                        ? "Governs AI behavior in this notebook"
+                        : "Off — ignored until /constitution on"
                       : isImage || (s.type === "audio" && isMediaValue(s.content))
                         ? s.mime ?? s.type
                         : sourcePreview(s.content)}
@@ -338,8 +343,8 @@ export default function SourcesPanel({
       {constitutionOpen && (
         <ConstitutionPickerModal
           onClose={() => setConstitutionOpen(false)}
-          onPick={async (template) => {
-            await addSource(notebookId, "context", CONSTITUTION_TITLE, template.body);
+          onPick={async (body) => {
+            await addSource(notebookId, "context", CONSTITUTION_TITLE, body);
             setConstitutionOpen(false);
             onChanged();
           }}

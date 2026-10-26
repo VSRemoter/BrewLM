@@ -11,6 +11,7 @@ import {
   addSource,
   createChat,
   getDb,
+  getNotebookConstitutionOn,
   getNotebookGrounded,
   listMessages,
   listSources,
@@ -48,6 +49,7 @@ import {
 import { writeAudioScript } from "./audioScript";
 import { synthesizeScript } from "./tts";
 import { recordUsage } from "./usage";
+import type { Source } from "./types";
 
 const POLL_MS = 3000;
 
@@ -143,10 +145,11 @@ async function runChatJob(p: {
   }
 
   await addMessage(chatId, p.notebook_id, "user", p.content);
-  const [history, sources] = await Promise.all([
+  const [history, allSources] = await Promise.all([
     listMessages(chatId),
     listSources(p.notebook_id),
   ]);
+  const sources = await withoutConstitutionIfOff(p.notebook_id, allSources);
   const grounded = (await getNotebookGrounded(p.notebook_id)) !== 0;
   let retrieved: Awaited<ReturnType<typeof rankChunks>> = [];
   if (grounded) {
@@ -215,7 +218,7 @@ async function runGenerateJob(p: {
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key in Settings on the desktop first.");
 
-  const sources = await listSources(p.notebook_id);
+  const sources = await withoutConstitutionIfOff(p.notebook_id, await listSources(p.notebook_id));
   const grounding = sources.filter((s) => s.type === "context" || isTextSource(s));
   const o = p.options;
 
@@ -378,6 +381,12 @@ async function runGenerateJob(p: {
 }
 
 /* -------------------------------- helpers --------------------------------- */
+
+/** /constitution off: the constitution source stays, but no prompt sees it. */
+async function withoutConstitutionIfOff(notebookId: string, sources: Source[]): Promise<Source[]> {
+  if ((await getNotebookConstitutionOn(notebookId)) !== 0) return sources;
+  return sources.filter((s) => s.type !== "context");
+}
 
 async function setJobProgress(progress: string): Promise<void> {
   // Current running job = the one this runner is mid-flight on.

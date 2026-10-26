@@ -6,7 +6,7 @@ import {
   Smartphone,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import {
   addMessage,
   addSource,
@@ -377,7 +377,20 @@ export default function NotebookView({
     </header>
   );
 
-  const sourcesPanel = <SourcesPanel notebookId={notebook.id} sources={sources} onChanged={refreshSources} />;
+  const constitutionOn = (notebook.constitution_on ?? 1) !== 0;
+  const sourcesPanel = (
+    <SourcesPanel
+      notebookId={notebook.id}
+      sources={sources}
+      constitutionOn={constitutionOn}
+      onChanged={refreshSources}
+    />
+  );
+  // With the constitution off, Studio never sees it (the source itself stays).
+  const studioSources = useMemo(
+    () => (constitutionOn ? sources : sources.filter((s) => s.type !== "context")),
+    [sources, constitutionOn]
+  );
 
   const chatsPanel = (
     <ChatsPanel
@@ -431,6 +444,7 @@ export default function NotebookView({
       onRemove={handleRemove}
       notebookStarred={notebook.starred === 1}
       notebookGrounded={notebook.grounded ?? 1}
+      notebookConstitutionOn={notebook.constitution_on ?? 1}
       chatBg={notebook.chat_bg}
       chatBgDim={notebook.chat_bg_dim}
       onChatBgChange={async (bg, dim) => {
@@ -448,7 +462,7 @@ export default function NotebookView({
       notebookId={notebook.id}
       width={phone ? "100%" : studioW}
       onReadingChange={setStudioReading}
-      sources={sources}
+      sources={studioSources}
       artifacts={artifacts}
       settings={settings}
       onArtifactsChanged={refreshArtifacts}

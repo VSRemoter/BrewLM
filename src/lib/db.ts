@@ -186,6 +186,9 @@ async function initDb(): Promise<SqlDb> {
   // notebooks gain grounded (/ground toggle: 1 = answers grounded in sources).
   if (!nbCols.some((c) => c.name === "grounded"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN grounded INTEGER NOT NULL DEFAULT 1");
+  // notebooks gain constitution_on (/constitution toggle: 0 = keep it but ignore it).
+  if (!nbCols.some((c) => c.name === "constitution_on"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN constitution_on INTEGER NOT NULL DEFAULT 1");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -354,6 +357,7 @@ export async function createNotebook(
     folder_id: folderId,
     trashed_at: 0,
     grounded: 1,
+    constitution_on: 1,
     created_at: now,
     updated_at: now,
   };
@@ -400,12 +404,13 @@ export async function cloneNotebook(
     folder_id: src.folder_id,
     trashed_at: 0,
     grounded: src.grounded ?? 1,
+    constitution_on: src.constitution_on ?? 1,
     created_at: now,
     updated_at: now,
   };
   await d.execute(
-    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, constitution_on, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.constitution_on, nb.created_at, nb.updated_at]
   );
 
   for (const s of await listSources(srcId)) {
@@ -480,6 +485,21 @@ export async function getNotebookGrounded(id: string): Promise<number> {
     [id]
   );
   return rows[0]?.grounded ?? 1;
+}
+
+export async function setNotebookConstitutionOn(id: string, on: boolean): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET constitution_on = $1 WHERE id = $2", [on ? 1 : 0, id]);
+}
+
+/** /constitution flag (default 1 for legacy rows); used by the mobile job runner. */
+export async function getNotebookConstitutionOn(id: string): Promise<number> {
+  const d = await getDb();
+  const rows = await d.select<{ constitution_on: number }[]>(
+    "SELECT constitution_on FROM notebooks WHERE id = $1",
+    [id]
+  );
+  return rows[0]?.constitution_on ?? 1;
 }
 
 /** Cover images are cosmetic — like starring, they must not bump updated_at. */
