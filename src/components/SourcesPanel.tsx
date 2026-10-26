@@ -1,5 +1,6 @@
 import {
   Check,
+  CircleAlert,
   FileText,
   File as FileIcon,
   Image as ImageIcon,
@@ -20,6 +21,7 @@ import { CONSTITUTION_TITLE } from "../lib/constitution";
 import { ConstitutionPickerModal } from "./ConstitutionPicker";
 import { addSource, deleteSource, setSourcePinned, updateSource } from "../lib/db";
 import { ingestFiles } from "../lib/ingest";
+import { parseLinkList } from "../lib/linkList";
 import { ACCEPT_STRING, fetchLinkContent, sourcePreview } from "../lib/source";
 import type { Source } from "../lib/types";
 import { confirmAction } from "./ConfirmDialog";
@@ -141,7 +143,7 @@ export default function SourcesPanel({
                 {[
                   { icon: Upload, label: "Upload files", act: () => fileInput.current?.click() },
                   { icon: Type, label: "Paste text", act: () => { setMenuOpen(false); setPasteOpen(true); } },
-                  { icon: Link2, label: "Add link", act: () => { setMenuOpen(false); setLinkOpen(true); } },
+                  { icon: Link2, label: "Add links", act: () => { setMenuOpen(false); setLinkOpen(true); } },
                   ...(!hasConstitution
                     ? [
                         {
@@ -364,7 +366,6 @@ export default function SourcesPanel({
           onAdd={async (url) => {
             const { title, text } = await fetchLinkContent(url);
             await addSource(notebookId, "link", title, text, url);
-            setLinkOpen(false);
             onChanged();
           }}
         />
@@ -420,50 +421,124 @@ function PasteTextModal({
   );
 }
 
+/** Links fetched at once — enough to be quick without hammering anything. */
+const LINK_CONCURRENCY = 3;
+
+type LinkStatus = { url: string; state: "waiting" | "fetching" | "added" | "failed"; error?: string };
+
+/** Add one link or a whole list (one per line); each becomes its own source. */
 function LinkModal({
   onClose,
   onAdd,
 }: {
   onClose: () => void;
+  /** Fetch and save one link; throws with a readable message on failure. */
   onAdd: (url: string) => Promise<void>;
 }) {
-  const [url, setUrl] = useState("");
+  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<LinkStatus[]>([]);
+  const urls = parseLinkList(draft);
 
   const submit = async () => {
-    if (!url.trim()) return;
+    if (urls.length === 0 || busy) return;
     setBusy(true);
-    setError(null);
-    try {
-      await onAdd(url.trim());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
+    const list: LinkStatus[] = urls.map((url) => ({ url, state: "waiting" }));
+    setStatuses(list);
+    const set = (i: number, patch: Partial<LinkStatus>) =>
+      setStatuses((cur) => cur.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const i = next++;
+        set(i, { state: "fetching" });
+        try {
+          await onAdd(list[i].url);
+          list[i] = { ...list[i], state: "added" };
+          set(i, { state: "added" });
+        } catch (e) {
+          const error = e instanceof Error ? e.message : String(e);
+          list[i] = { ...list[i], state: "failed", error };
+          set(i, { state: "failed", error });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(LINK_CONCURRENCY, list.length) }, worker));
+
+    const failed = list.filter((s) => s.state === "failed");
+    setBusy(false);
+    if (failed.length === 0) return onClose();
+    // keep only what failed in the box, ready to fix or retry
+    setDraft(failed.map((s) => s.url).join("\n"));
   };
 
+  const added = statuses.filter((s) => s.state === "added").length;
+  const failedCount = statuses.filter((s) => s.state === "failed").length;
+
   return (
-    <Modal title="Add link" onClose={onClose}>
+    <Modal title="Add links" onClose={onClose}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          void submit();
         }}
-        className="flex flex-col gap-3.5"
+        className="flex flex-col gap-3"
       >
-        <input
+        <textarea
           autoFocus
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com/article"
-          className="w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // a single link still submits with Enter; ⌘/Ctrl+Enter always does
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey || (!e.shiftKey && !draft.includes("\n") && urls.length === 1 && !busy))) {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+          disabled={busy}
+          rows={5}
+          placeholder={"Paste one or more links, one per line\nhttps://example.com/article\nhttps://www.youtube.com/watch?v=…"}
+          aria-label="Links to add"
+          className="w-full resize-y rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3 disabled:opacity-60"
         />
-        {error && <p className="text-[12px] leading-snug text-danger">{error}</p>}
+        {statuses.length > 0 && (
+          <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+            {statuses.map((s) => (
+              <li key={s.url} className="flex items-start gap-2 text-[12px] leading-snug">
+                <span className="mt-px shrink-0">
+                  {s.state === "added" ? (
+                    <Check size={13} strokeWidth={2.4} className="text-ok" />
+                  ) : s.state === "failed" ? (
+                    <CircleAlert size={13} className="text-danger" />
+                  ) : s.state === "fetching" ? (
+                    <Loader2 size={13} className="animate-spin text-ink-3" />
+                  ) : (
+                    <span className="block h-[13px] w-[13px] rounded-full border border-edge" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-ink-2" title={s.url}>
+                    {s.url}
+                  </span>
+                  {s.error && <span className="block text-danger">{s.error}</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="flex items-center justify-end gap-2">
-          {busy && <Loader2 size={14} className="animate-spin text-ink-3" />}
-          <PrimaryButton type="submit" disabled={!url.trim() || busy}>
-            {busy ? "Fetching…" : "Fetch & add"}
+          <span className="mr-auto text-[11.5px] text-ink-3">
+            {busy
+              ? `${added + failedCount} of ${statuses.length} done…`
+              : failedCount > 0
+                ? `Added ${added}, ${failedCount} failed — fix or remove ${failedCount === 1 ? "it" : "them"} and try again.`
+                : urls.length > 1
+                  ? `${urls.length} links · ⌘Enter to add`
+                  : "One link per line"}
+          </span>
+          <PrimaryButton type="submit" disabled={urls.length === 0 || busy}>
+            {busy ? "Fetching…" : urls.length > 1 ? `Fetch & add ${urls.length} links` : "Fetch & add"}
           </PrimaryButton>
         </div>
       </form>
