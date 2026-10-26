@@ -276,6 +276,15 @@ async function ensureSyncTracking(db: SqlDb): Promise<void> {
       value TEXT NOT NULL
     )`);
   await db.execute("INSERT OR IGNORE INTO sync_state (key, value) VALUES ('device_id', $1)", [uid()]);
+  // Rows too big for the change log are uploaded as a file of their own: which
+  // file each one's current server record uses, so a storage sweep keeps it.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_record_blobs (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      blob TEXT NOT NULL,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
 
   const quiet = "NOT EXISTS (SELECT 1 FROM sync_state WHERE key = 'applying' AND value = '1')";
   for (const [table, pk] of Object.entries(SYNCED_TABLES)) {
@@ -1006,6 +1015,12 @@ export async function deleteArtifact(id: string): Promise<void> {
   await d.execute("DELETE FROM artifacts WHERE id = $1", [id]);
 }
 
+/** Remove a generated image from the library (its chat message then shows it as removed). */
+export async function deleteImage(id: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM images WHERE id = $1", [id]);
+}
+
 export async function setArtifactPinned(id: string, pinned: boolean): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE artifacts SET pinned = $1 WHERE id = $2", [pinned ? 1 : 0, id]);
@@ -1116,6 +1131,7 @@ export async function clearAllData(): Promise<void> {
     "sync_meta",
     "sync_outbox",
     "sync_state",
+    "sync_record_blobs",
   ]) {
     await d.execute(`DELETE FROM ${t}`);
   }

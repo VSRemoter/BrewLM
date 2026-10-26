@@ -350,20 +350,26 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       changes: { key: string; hlc: string; payload: string }[];
       cursor: number;
       more: boolean;
+      epoch?: number;
     }>(cfg, `pull?since=${cursor}&limit=500`);
+    await noteSweeps(res.epoch);
     const batch: { tbl: string; row_id: string; hlc: string; deleted: boolean; row?: Record<string, unknown> }[] = [];
     for (const c of res.changes) {
       clock.observe(c.hlc);
       let p: Payload;
+      let pointer: string | null = null;
       try {
         p = JSON.parse(await decryptRecord(keys, c.key, c.payload));
         if (p.blob) {
+          pointer = p.blob;
           const sealed = await getRemoteBlob(cfg, p.blob);
           if (!sealed) throw new Error(`record blob is missing`);
           p = JSON.parse(new TextDecoder().decode(await decryptBlob(keys, p.blob, sealed)));
         }
         // The record must be the one its (hidden) key names.
         if ((await hiddenId(keys, `${p.tbl}:${p.id}`)) !== c.key) throw new SyntaxError("key mismatch");
+        // This is the server's current record for the row, whether or not it wins here.
+        await setRecordBlob(p.tbl, p.id, pointer);
       } catch (e) {
         if (!(e instanceof Error) || e.message.startsWith("sync server")) throw e; // network: retry the page
         if (!unreadable.has(c.key)) log(`skipped a record that doesn't decrypt (${e.message})`, true);
@@ -426,6 +432,8 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
     }
 
     const changes: { key: string; hlc: string; payload: string }[] = [];
+    /** Each record's own file (rows too big for the change log), by key. */
+    const pointers = new Map<string, string | null>();
     const sent: { tbl: string; row_id: string; changed_at: number; hlc: string | null }[] = [];
     const sentByKey = new Map<string, (typeof sent)[number]>();
     for (const e of entries) {
@@ -442,11 +450,12 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
         continue;
       }
       for (const ref of blobRefsIn(json)) media.toUpload.add(ref.slice(BLOB_PREFIX.length));
+      let pointer: string | null = null;
       if (json.length > MAX_INLINE) {
         const bytes = new TextEncoder().encode(json);
-        const id = await hiddenId(keys, `rec:${await sha256Hex(bytes)}`);
-        await putRemoteBlob(cfg, id, await encryptBlob(keys, id, bytes));
-        json = JSON.stringify({ v: 1, blob: id });
+        pointer = await hiddenId(keys, `rec:${await sha256Hex(bytes)}`);
+        await putRemoteBlob(cfg, pointer, await encryptBlob(keys, pointer, bytes));
+        json = JSON.stringify({ v: 1, blob: pointer });
       }
       const key = await hiddenId(keys, label);
       const hlc = clock.next(e.changed_at);
@@ -454,6 +463,7 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       const s = { ...e, hlc };
       sent.push(s);
       sentByKey.set(key, s);
+      pointers.set(key, pointer);
     }
 
     // Files first, so a device that pulls these rows can fetch what they point at.
@@ -466,6 +476,8 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
         const s = sentByKey.get(k);
         if (s) s.hlc = null;
       }
+      // Accepted records are now the server's current ones.
+      for (const [k, s] of sentByKey) if (s.hlc !== null) await setRecordBlob(s.tbl, s.row_id, pointers.get(k) ?? null);
     }
     await platform.sync.markPushed(sent);
     await setState("hlc_last", clock.toString());
@@ -613,6 +625,136 @@ function fetchFileNow(name: string): Promise<boolean> {
   return p;
 }
 
+/* --------------------------- unused files (sweep) -------------------------- */
+
+/**
+ * The server can't read which files the library uses, so an up-to-date device
+ * tells it (sync-server/src/vault.ts, `sweep`): every media file rows point at,
+ * plus each big row's own record file. Files left out (deleted media, old
+ * copies of edited big rows, failed uploads) are deleted from the server and
+ * stop counting against the plan. Runs every few hours, and soon after the
+ * storage manager deletes something (`requestStorageSweep`).
+ */
+const SWEEP_EVERY_MS = 6 * 60 * 60 * 1000;
+let sweepWanted = false;
+
+/** Which file a row's current server record uses (null: the record holds the row itself). */
+async function setRecordBlob(tbl: string, rowId: string, blob: string | null): Promise<void> {
+  const d = await getDb();
+  if (blob)
+    await d.execute(
+      "INSERT INTO sync_record_blobs (tbl, row_id, blob) VALUES ($1, $2, $3) ON CONFLICT (tbl, row_id) DO UPDATE SET blob = $3",
+      [tbl, rowId, blob]
+    );
+  else await d.execute("DELETE FROM sync_record_blobs WHERE tbl = $1 AND row_id = $2", [tbl, rowId]);
+}
+
+/**
+ * Devices from before record files were tracked don't know them yet: pull the
+ * whole vault once (nothing is re-sent, so nothing can be overwritten) and
+ * note each one. Until then this device doesn't sweep.
+ */
+async function startRecordBlobFill(c: SyncConfig): Promise<void> {
+  const state = await getState("record_blobs");
+  if (state === c.vault || state === `filling:${c.vault}`) return;
+  await (await getDb()).execute("DELETE FROM sync_record_blobs");
+  await setState("cursor", "0");
+  await setState("record_blobs", `filling:${c.vault}`);
+}
+
+async function finishRecordBlobFill(c: SyncConfig): Promise<void> {
+  if ((await getState("record_blobs")) === `filling:${c.vault}`) await setState("record_blobs", c.vault);
+}
+
+/** A sweep elsewhere deleted files: check again that the server has every file this device uses. */
+async function noteSweeps(epoch: number | undefined): Promise<void> {
+  if (epoch === undefined || String(epoch) === (await getState("sweep_epoch"))) return;
+  media.onServer.clear();
+  media.scanned = false;
+  await setState("sweep_epoch", String(epoch));
+}
+
+/** Free synced storage soon: the storage manager just deleted something. */
+export function requestStorageSweep(): void {
+  sweepWanted = true;
+  wakeSoon = true;
+}
+
+async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
+  if (!sweepWanted && Date.now() - Number((await getState("swept_at")) || 0) < SWEEP_EVERY_MS) return;
+  // Only from a complete, current view: every record read, nothing waiting to go up.
+  if ((await getState("record_blobs")) !== cfg.vault || unreadable.size > 0 || media.toUpload.size > 0) return;
+  const pending = await (await getDb()).select<{ k: string }[]>("SELECT tbl || ':' || row_id AS k FROM sync_outbox");
+  if (pending.some((r) => !oversized.has(r.k))) return;
+
+  const d = await getDb();
+  const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
+  const recordFiles = (await d.select<{ blob: string }[]>("SELECT blob FROM sync_record_blobs")).map((r) => r.blob);
+  const live = [...(await Promise.all(names.map((n) => fileId(keys, n)))), ...recordFiles];
+  let res: { removed: number; freed: number };
+  try {
+    res = await api(cfg, "blobs/sweep", { cursor: Number((await getState("cursor")) || "0"), live });
+  } catch (e) {
+    // Something changed since this device last pulled (often its own push): next cycle.
+    if (e instanceof Error && e.message.includes("HTTP 409")) {
+      if (sweepWanted) wakeSoon = true;
+      return;
+    }
+    throw e;
+  }
+  sweepWanted = false;
+  await setState("swept_at", String(Date.now()));
+  if (res.removed > 0) {
+    const freed = res.freed >= 1e6 ? `${(res.freed / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(res.freed / 1e3))} KB`;
+    log(`freed ${freed} on the server (${res.removed} unused file${res.removed === 1 ? "" : "s"})`);
+    if (account) await refreshAccount().catch(() => {});
+  }
+}
+
+/**
+ * What the server counts for these media files and rows (storage manager):
+ * file sizes by name, and each row's record (plus its own file, for big
+ * rows) by `tbl:id`. Null when this device isn't syncing.
+ */
+export async function syncedSizes(
+  names: string[],
+  labels: string[]
+): Promise<{ files: Map<string, number>; rows: Map<string, number> } | null> {
+  if (!cfg || !vault) return null;
+  const c = cfg;
+  const keys = vault.keys;
+  const files = new Map<string, number>();
+  const rows = new Map<string, number>();
+  const recordFiles = new Map(
+    (await (await getDb()).select<{ k: string; blob: string }[]>("SELECT tbl || ':' || row_id AS k, blob FROM sync_record_blobs")).map(
+      (r) => [r.k, r.blob]
+    )
+  );
+  const fileIds = await Promise.all(names.map((n) => fileId(keys, n)));
+  const rowKeys = await Promise.all(labels.map((l) => hiddenId(keys, l)));
+  const extra = labels.map((l) => recordFiles.get(l)).filter((b): b is string => !!b);
+  const blobIds = [...fileIds, ...extra];
+  const blobSizes: Record<string, number> = {};
+  const keySizes: Record<string, number> = {};
+  for (let i = 0; i < Math.max(blobIds.length, rowKeys.length); i += 5000) {
+    const res = await api<{ blobs: Record<string, number>; keys: Record<string, number> }>(c, "sizes", {
+      blobs: blobIds.slice(i, i + 5000),
+      keys: rowKeys.slice(i, i + 5000),
+    });
+    Object.assign(blobSizes, res.blobs);
+    Object.assign(keySizes, res.keys);
+  }
+  names.forEach((n, i) => {
+    if (blobSizes[fileIds[i]] !== undefined) files.set(n, blobSizes[fileIds[i]]);
+  });
+  labels.forEach((l, i) => {
+    const own = recordFiles.get(l);
+    const size = (keySizes[rowKeys[i]] ?? 0) + (own ? (blobSizes[own] ?? 0) : 0);
+    if (size > 0) rows.set(l, size);
+  });
+  return { files, rows };
+}
+
 /* ------------------------------ status & loop ----------------------------- */
 
 const changeListeners = new Set<(c: RemoteChanges) => void>();
@@ -703,7 +845,9 @@ function loop(): void {
         accountCheckedAt = Date.now();
         await refreshAccount();
       }
+      await startRecordBlobFill(c);
       await pull(c, keys, device, clk, changed);
+      await finishRecordBlobFill(c);
       if (!media.scanned) await scanMedia();
       const landed = await downloadMedia(c, keys);
       if (landed > 0) for (const t of MEDIA_TABLES) changed.tables.add(t);
@@ -712,6 +856,7 @@ function loop(): void {
       const canUpload = status.account?.canSync !== false;
       const sent = canUpload ? await push(c, keys, device, clk) : 0;
       if (canUpload) await uploadMedia(c, keys); // files from the first scan, or left over from a failed cycle
+      await maybeSweep(c, keys); // works without a plan too: it only frees space
       const uploaded = media.uploaded - before;
       if (changed.tables.size > 0 || sent > 0 || uploaded > 0)
         log(

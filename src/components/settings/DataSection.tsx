@@ -12,6 +12,7 @@ import type { Settings } from "../../lib/types";
 import { platform } from "../../platform";
 import { GhostButton, Modal, Segmented } from "../ui";
 import { Card, Footnote, Row, SectionTitle } from "./controls";
+import LargestItems from "./LargestItems";
 
 export default function DataSection({
   settings,
@@ -68,6 +69,8 @@ export default function DataSection({
   return (
     <div>
       <SectionTitle title="Data & Storage" />
+
+      <LargestItems />
 
       {desktop && (
         <>

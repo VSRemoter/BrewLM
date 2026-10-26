@@ -14,6 +14,13 @@
  * Storage: the vault keeps running totals of record and blob bytes and
  * refuses writes that would take it past the caller's plan limit (writes that
  * shrink it, like deletes, always go through).
+ *
+ * Unused files: the server can't read which files the library still uses, so
+ * an up-to-date device sends the list (`sweep`) and the rest are deleted. The
+ * list counts only if no change has arrived since the device's cursor, and a
+ * file younger than SWEEP_GRACE_MS is kept (a device may be about to use it).
+ * Each sweep that deletes something bumps `epoch`, sent with every pull, so
+ * devices re-check that the files they use are still here.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -28,6 +35,8 @@ export const MAX_ENVELOPE = 16 * 1024;
 /** A device link waits this long for the new device, then is gone. */
 export const LINK_TTL_MS = 10 * 60 * 1000;
 const MAX_LINKS = 5;
+/** A file this young is never swept: its record may still be on its way. */
+export const SWEEP_GRACE_MS = 10 * 60 * 1000;
 
 // Type aliases (not interfaces) so they satisfy SqlStorage's row constraint.
 export type Change = {
@@ -68,6 +77,12 @@ export class Vault extends DurableObject<Env> {
     // code carries, waiting (briefly) for the new device to take it.
     this.sql.exec("CREATE TABLE IF NOT EXISTS usage (k TEXT PRIMARY KEY, v INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, size INTEGER NOT NULL)");
+    // When each file was (last) written, for the sweep's grace period. Files
+    // from before this column count as old.
+    const blobCols = this.sql.exec<{ name: string }>("PRAGMA table_info(blobs)").toArray();
+    if (!blobCols.some((c) => c.name === "created_at"))
+      this.sql.exec("ALTER TABLE blobs ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+    this.sql.exec("INSERT OR IGNORE INTO usage (k, v) VALUES ('epoch', 0)");
     // Vaults from before storage tracking: count what they already hold, once.
     this.sql.exec(
       "INSERT OR IGNORE INTO usage (k, v) SELECT 'records', coalesce(sum(length(payload)), 0) FROM changes"
@@ -145,13 +160,65 @@ export class Vault extends DurableObject<Env> {
 
   /**
    * Make room for a blob about to be written to R2 (a rewrite of the same id
-   * replaces its old size). False if it would go past `limit`.
+   * replaces its old size). Not ok if it would go past `limit`. `prev` is the
+   * size it had before (null = new), for `releaseBlob` if the write fails.
    */
-  reserveBlob(id: string, size: number, limit: number): boolean {
-    const old = this.sql.exec<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id).toArray()[0]?.size ?? 0;
-    if (size > old && this.usage().total - old + size > limit) return false;
-    this.sql.exec("INSERT INTO blobs (id, size) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET size = excluded.size", id, size);
-    return true;
+  reserveBlob(id: string, size: number, limit: number): { ok: boolean; prev: number | null } {
+    const prev = this.sql.exec<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id).toArray()[0]?.size ?? null;
+    if (size > (prev ?? 0) && this.usage().total - (prev ?? 0) + size > limit) return { ok: false, prev };
+    this.sql.exec(
+      `INSERT INTO blobs (id, size, created_at) VALUES (?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET size = excluded.size, created_at = excluded.created_at`,
+      id,
+      size,
+      Date.now()
+    );
+    return { ok: true, prev };
+  }
+
+  /** Undo `reserveBlob` after the write to R2 failed, so it isn't counted. */
+  releaseBlob(id: string, prev: number | null): void {
+    if (prev === null) this.sql.exec("DELETE FROM blobs WHERE id = ?", id);
+    else this.sql.exec("UPDATE blobs SET size = ? WHERE id = ?", prev, id);
+  }
+
+  /**
+   * Forget every file not in `live` (and older than the grace period), if the
+   * vault hasn't changed since `cursor`: the caller's view is current. The
+   * caller deletes the returned ids from R2.
+   */
+  sweep(cursor: number, live: string[], now = Date.now()): { ok: false } | { ok: true; removed: string[]; freed: number } {
+    if (cursor !== this.cursor()) return { ok: false };
+    const keep = new Set(live);
+    const old = this.sql
+      .exec<{ id: string; size: number }>("SELECT id, size FROM blobs WHERE created_at < ?", now - SWEEP_GRACE_MS)
+      .toArray()
+      .filter((b) => !keep.has(b.id));
+    if (old.length === 0) return { ok: true, removed: [], freed: 0 };
+    this.ctx.storage.transactionSync(() => {
+      for (const b of old) this.sql.exec("DELETE FROM blobs WHERE id = ?", b.id);
+      this.sql.exec("UPDATE usage SET v = v + 1 WHERE k = 'epoch'");
+    });
+    return { ok: true, removed: old.map((b) => b.id), freed: old.reduce((n, b) => n + b.size, 0) };
+  }
+
+  /** Counted sizes of the given files and records (absent ones are left out). */
+  sizes(blobIds: string[], keys: string[]): { blobs: Record<string, number>; keys: Record<string, number> } {
+    const blobs: Record<string, number> = {};
+    const out: Record<string, number> = {};
+    for (const id of blobIds) {
+      const row = this.sql.exec<{ size: number }>("SELECT size FROM blobs WHERE id = ?", id).toArray()[0];
+      if (row) blobs[id] = row.size;
+    }
+    for (const k of keys) {
+      const row = this.sql.exec<{ len: number }>("SELECT length(payload) AS len FROM changes WHERE key = ?", k).toArray()[0];
+      if (row) out[k] = row.len;
+    }
+    return { blobs, keys: out };
+  }
+
+  private epoch(): number {
+    return this.sql.exec<{ v: number }>("SELECT v FROM usage WHERE k = 'epoch'").one().v;
   }
 
   private cursor(): number {
@@ -206,8 +273,8 @@ export class Vault extends DurableObject<Env> {
     return { accepted, stale, cursor: this.cursor() };
   }
 
-  /** Changes after `since`, oldest first. */
-  pull(since: number, limit: number): { changes: StoredChange[]; cursor: number; more: boolean } {
+  /** Changes after `since`, oldest first; `epoch` counts sweeps that deleted files. */
+  pull(since: number, limit: number): { changes: StoredChange[]; cursor: number; more: boolean; epoch: number } {
     const rows = this.sql
       .exec<StoredChange>(
         "SELECT key, seq, hlc, device, payload FROM changes WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -217,6 +284,6 @@ export class Vault extends DurableObject<Env> {
       .toArray();
     const more = rows.length > limit;
     const changes = more ? rows.slice(0, limit) : rows;
-    return { changes, cursor: changes.length ? changes[changes.length - 1].seq : since, more };
+    return { changes, cursor: changes.length ? changes[changes.length - 1].seq : since, more, epoch: this.epoch() };
   }
 }

@@ -23,6 +23,8 @@
  *   GET  /v1/vaults/:vault/links/:id/status → { pending }
  *   DELETE /v1/vaults/:vault/links/:id
  *   POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
+ *   POST /v1/vaults/:vault/blobs/sweep     { cursor, live } → { removed, freed }  (409 if the vault changed)
+ *   POST /v1/vaults/:vault/sizes           { blobs, keys } → { blobs, keys }  (counted bytes)
  *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
  *   GET  /v1/vaults/:vault/blobs/:id
  *
@@ -48,6 +50,9 @@ const BLOB_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** Workers accept request bodies up to 100 MB. */
 const MAX_BLOB = 100 * 1024 * 1024;
 const MAX_MISSING = 1000;
+/** A sweep's list of files in use; a library of 200k files is far beyond any real one. */
+const MAX_LIVE = 200_000;
+const MAX_SIZES = 5000;
 const UUID_RE = /^[0-9a-f-]{36}$/;
 
 function json(body: unknown, status = 200): Response {
@@ -186,13 +191,37 @@ async function route(req: Request, env: Env): Promise<Response> {
     return typeof who === "string" ? pageFetch(req, env, who) : who;
   }
 
-  const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/([^/]+))$/.exec(url.pathname);
+  const m = /^\/v1\/vaults\/([^/]+)\/(push|pull|keys|sizes|links\/([0-9a-f]{64})(\/status)?|blobs\/missing|blobs\/sweep|blobs\/([^/]+))$/.exec(url.pathname);
   if (!m) return fail(404, "not found");
   const [, vault, op, linkId, linkStatus, blobId] = m;
   if (!VAULT_RE.test(vault)) return fail(400, "bad vault id");
   const caller = await vaultCaller(req, env, vault);
   if (caller instanceof Response) return caller;
   const stub = env.VAULT.get(env.VAULT.idFromName(vault));
+
+  if (op === "blobs/sweep") {
+    // Allowed without a plan too: it only ever frees space.
+    if (req.method !== "POST") return fail(405, "method not allowed");
+    const body = await req.json<{ cursor?: unknown; live?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+    const { cursor, live } = body as { cursor?: unknown; live?: unknown };
+    if (!Number.isSafeInteger(cursor) || (cursor as number) < 0) return fail(400, "bad cursor");
+    if (!Array.isArray(live) || live.length > MAX_LIVE || !live.every((id) => typeof id === "string" && BLOB_RE.test(id)))
+      return fail(400, "bad live list");
+    const res = await stub.sweep(cursor as number, live as string[]);
+    if (!res.ok) return json({ error: "the vault changed; sync and try again" }, 409);
+    for (let i = 0; i < res.removed.length; i += 1000)
+      await env.BLOBS.delete(res.removed.slice(i, i + 1000).map((id) => `${vault}/${id}`));
+    return json({ removed: res.removed.length, freed: res.freed });
+  }
+  if (op === "sizes") {
+    if (req.method !== "POST") return fail(405, "method not allowed");
+    const body = await req.json<{ blobs?: unknown; keys?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+    const { blobs, keys } = body as { blobs?: unknown; keys?: unknown };
+    const ok = (v: unknown, re: RegExp | null) =>
+      Array.isArray(v) && v.length <= MAX_SIZES && v.every((x) => typeof x === "string" && (re ? re.test(x) : x.length <= MAX_KEY));
+    if (!ok(blobs, BLOB_RE) || !ok(keys, null)) return fail(400, "bad lists");
+    return json(await stub.sizes(blobs as string[], keys as string[]));
+  }
 
   if (op === "blobs/missing") {
     if (req.method !== "POST") return fail(405, "method not allowed");
@@ -218,8 +247,15 @@ async function route(req: Request, env: Env): Promise<Response> {
       const size = Number(req.headers.get("content-length") ?? "-1");
       if (!Number.isSafeInteger(size) || size < 0) return fail(411, "content-length required");
       if (size > MAX_BLOB) return fail(413, "blob too large");
-      if (!(await stub.reserveBlob(blobId, size, caller.limitBytes))) return fail(413, "storage full");
-      await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
+      const reserved = await stub.reserveBlob(blobId, size, caller.limitBytes);
+      if (!reserved.ok) return fail(413, "storage full");
+      try {
+        await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
+      } catch {
+        // Nothing (or not all of it) arrived: don't count it.
+        await stub.releaseBlob(blobId, reserved.prev);
+        return fail(502, "upload didn't complete");
+      }
       return new Response(null, { status: 204 });
     }
     return fail(405, "method not allowed");
