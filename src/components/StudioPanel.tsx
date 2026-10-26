@@ -38,6 +38,7 @@ import {
   REPORT_TYPE_LABELS,
   buildFlashcardsPrompt,
   buildMindmapPrompt,
+  MINDMAP_FORMAT,
   buildQuizPrompt,
   buildReportPrompt,
   type AudioOptions,
@@ -88,10 +89,9 @@ Return ONLY a JSON array, no commentary, shaped exactly like:
   {
     kind: "mindmap",
     name: "Mind map",
-    desc: "Hierarchical outline",
+    desc: "Interactive map of the key ideas",
     icon: Network,
-    prompt: `Create a mind map of the key ideas in my sources as a nested markdown bullet outline.
-Rules: use "-" bullets, indent nested levels by exactly two spaces, keep each node under 8 words, 3-6 top-level branches, 2-4 levels deep. Return ONLY the outline, no commentary.`,
+    prompt: buildMindmapPrompt(""),
   },
 ];
 
@@ -532,8 +532,7 @@ const StudioPanel = forwardRef<
       'Return ONLY the revised flashcards as a JSON array shaped exactly like: [{"front": "question or term", "back": "concise answer"}]',
     quiz:
       'Return ONLY the revised quiz as a JSON array shaped exactly like: [{"question": "...", "options": ["A", "B", "C", "D"], "answerIndex": 0, "explanation": "why the answer is correct"}]',
-    mindmap:
-      'Return ONLY the revised outline as markdown: "-" bullets, two-space indentation per nested level, each node under 8 words, 3-6 top-level branches, 2-4 levels deep.',
+    mindmap: `Return ONLY the revised outline. ${MINDMAP_FORMAT}`,
     notes:
       "Return ONLY the revised markdown notes — no preface, no commentary.",
     report:
@@ -788,6 +787,7 @@ const StudioPanel = forwardRef<
           artifact={artifacts.find((x) => x.id === viewing.id) ?? viewing}
           onClose={() => setViewing(null)}
           onSourcesChanged={onSourcesChanged}
+          onArtifactChanged={onArtifactsChanged}
           running={jobs.length}
         />
       ) : (

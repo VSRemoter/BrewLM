@@ -164,11 +164,17 @@ Return ONLY a JSON array, no commentary, shaped exactly like:
 [{"question": "...", "options": ["A", "B", "C", "D"], "answerIndex": 0, "explanation": "why the answer is correct"}]`;
 }
 
+/** Outline contract for mind maps (generation and revision) — see lib/mindmap.ts. */
+export const MINDMAP_FORMAT = `Format: a nested markdown bullet outline. Use "-" bullets and indent each nested level by exactly two spaces.
+- Exactly one top-level bullet: the central topic. Under it, 3-6 main branches, going 2-4 levels deeper where the sources support it.
+- Write every node as "Label: definition" — a short label (6 words max), a colon, then a one-line definition or explanation from the sources (20 words max).`;
+
 export function buildMindmapPrompt(description: string): string {
-  return `Create a mind map of the key ideas in my sources as a nested markdown bullet outline.${
+  return `Create a mind map of the key ideas in my sources.${
     description ? `\nFocus the map especially on: ${description}.` : ""
   }
-Rules: use "-" bullets, indent nested levels by exactly two spaces, keep each node under 8 words, 3-6 top-level branches, 2-4 levels deep. Return ONLY the outline, no commentary.`;
+${MINDMAP_FORMAT}
+Return ONLY the outline, no commentary.`;
 }
 
 /* ------------------------------ audio builder ------------------------------ */

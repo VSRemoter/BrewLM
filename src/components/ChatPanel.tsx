@@ -1,6 +1,7 @@
 import {
   AlignLeft,
   Anchor,
+  ArrowDown,
   ArrowUp,
   ArrowLeftRight,
   ArrowUpFromLine,
@@ -37,7 +38,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addMessage,
   findFolderByName,
@@ -529,7 +530,7 @@ One click turns your sources into study materials. Every result is saved as an *
 | --- | --- |
 | Flashcards | Active-recall deck — 8/12/24 cards, difficulty & focus |
 | Quiz | Multiple-choice questions with explanations — 4/8/15 |
-| Mind map | Hierarchical outline of the key ideas |
+| Mind map | Interactive map of the key ideas, with definitions — zoom, expand and edit it |
 | Report | Summary, Study guide, FAQ, Timeline, Briefing doc, or your own prompt |
 | Audio overview | Two hosts (Host & Co-Host) discuss your sources — Deep dive / Brief / Debate / Critique, then voiced via OpenAI, OpenRouter or ElevenLabs |
 | Deep research | Plans search queries, browses the web, writes a cited report |
@@ -566,7 +567,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/summarize\` — a well-structured summary of the whole notebook, right here in chat.
 - \`/flashcards [8|12|24] [easy|medium|hard] [focus]\` — e.g. \`/flashcards 24 hard photosynthesis\`.
 - \`/quiz [4|8|15] [easy|medium|hard] [focus]\` — e.g. \`/quiz 15 easy\`.
-- \`/mindmap [focus]\` — hierarchical outline of the key ideas.
+- \`/mindmap [focus]\` — interactive map of the key ideas.
 - \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`. Short ≈ 5 minutes, Standard ≈ 10, Long ≈ 20; longer episodes are planned first and written part by part, so they take a little longer to make.
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
@@ -861,7 +862,6 @@ export default function ChatPanel({
     if (imageTarget && !/^\/(edit|remix)(\s|$)/i.test(draft)) setImageTarget(null);
   }, [draft, imageTarget]);
   const [streaming, setStreaming] = useState<string | null>(null);
-  const streamingHtml = useMemo(() => (streaming ? renderMarkdown(streaming) : ""), [streaming]);
   const [error, setError] = useState<string | null>(null);
   /** Provider-reported token usage per assistant message (this session only). */
   const [usageByMsg, setUsageByMsg] = useState<Record<string, ReplyUsage>>({});
@@ -1654,28 +1654,106 @@ export default function ChatPanel({
     setQueue([]);
   }, [chatId]);
 
+  /* ------------------------------ scroll follow ------------------------------ */
+
+  /** Follow new output only while the reader sits at the bottom; any scroll up lets go. */
+  const stickRef = useRef(true);
+  const lastTopRef = useRef(0);
+  /** The thread's content box: its size changes drive the follow. */
+  const threadRef = useRef<HTMLDivElement>(null);
+  const [showJump, setShowJump] = useState(false);
+  const hasThread = messages.length > 0 || streaming !== null;
+  /** Replies that were streamed in: they replace the live text without an entrance fade. */
+  const streamedIdsRef = useRef(new Set<string>());
+
+  const scrollToBottom = (smooth = false) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    else el.scrollTop = el.scrollHeight;
+  };
+
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming]);
+    if (!el) return;
+    const gap = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    const onScroll = () => {
+      const g = gap();
+      const top = el.scrollTop;
+      // Moving up lets go; reaching (or heading down into) the bottom re-pins.
+      if (g < 2) stickRef.current = true;
+      else if (top < lastTopRef.current - 1) stickRef.current = false;
+      else if (g < 24) stickRef.current = true;
+      lastTopRef.current = top;
+      setShowJump(g > 240);
+    };
+    // Intent arrives before the scroll lands — let go now, or the next token's
+    // follow would undo it (the "locked" feeling while a reply streams).
+    const release = () => {
+      stickRef.current = false;
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) release();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") release();
+    };
+    // A press on the scroller itself is its scrollbar.
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target === el) release();
+    };
+    const onPointerUp = () => {
+      if (gap() < 2) stickRef.current = true;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", release, { passive: true });
+    el.addEventListener("keydown", onKey);
+    el.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", release);
+      el.removeEventListener("keydown", onKey);
+      el.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, []);
+
+  // Streaming text, images loading, mermaid hydrating, the composer growing:
+  // whatever changes the layout, stay at the bottom if that's where the reader is.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const thread = threadRef.current;
+    if (!el || !thread) return;
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) {
+        el.scrollTop = el.scrollHeight;
+        lastTopRef.current = el.scrollTop;
+      }
+      setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 240);
+    });
+    ro.observe(thread);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasThread]);
+
+  // Sending (or opening another chat) jumps to the latest, even from far up.
+  const seenRef = useRef<{ chatId: string | null; count: number }>({ chatId: null, count: 0 });
+  useLayoutEffect(() => {
+    const seen = seenRef.current;
+    const added = messages.length > seen.count && messages[messages.length - 1]?.role === "user";
+    if (seen.chatId !== chatId || added) scrollToBottom();
+    seenRef.current = { chatId, count: messages.length };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, chatId]);
 
   // Render ```mermaid diagrams once streaming settles (mid-stream they stay code).
   useEffect(() => {
     if (streaming === null) void hydrateMermaid(scrollRef.current);
   }, [streaming, messages]);
-
-  // Images finish loading after layout; keep the view pinned to the bottom if
-  // it was there (load doesn't bubble, so listen in the capture phase).
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onLoad = (e: Event) => {
-      if ((e.target as HTMLElement).tagName !== "IMG") return;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) el.scrollTop = el.scrollHeight;
-    };
-    el.addEventListener("load", onLoad, true);
-    return () => el.removeEventListener("load", onLoad, true);
-  }, []);
 
   const keyed = activeKey(settings);
 
@@ -2326,6 +2404,7 @@ export default function ChatPanel({
         ? await storeGeneratedImages(acc, { notebookId, chatId, prompt: text, model: settings.model })
         : acc;
       const assistantMsg = await addMessage(chatId, notebookId, "assistant", savedText || "(no response)");
+      streamedIdsRef.current.add(assistantMsg.id);
       if (usage) {
         const u: StreamUsage = usage;
         const cost = replyCostUsd(settings.provider, settings.model, u);
@@ -2340,6 +2419,7 @@ export default function ChatPanel({
         setError(e instanceof Error ? e.message : String(e));
         if (acc) {
           const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc);
+          streamedIdsRef.current.add(assistantMsg.id);
           setMsgs((prev) => [...prev, assistantMsg]);
         }
       }
@@ -2591,8 +2671,10 @@ export default function ChatPanel({
       </div>
 
       {/* messages */}
-      <div ref={scrollRef} className="@container relative z-10 flex-1 overflow-y-auto">
-        {messages.length === 0 && streaming === null ? (
+      {/* No container query on the scroller: WebKit resets its scroll to the top
+          when an outside style flips (the composer's placeholder / send button). */}
+      <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto">
+        {!hasThread ? (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
             <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-accent">
               <BrewIcon size={18} strokeWidth={1.8} className="text-accent-ink" />
@@ -2605,10 +2687,11 @@ export default function ChatPanel({
             </p>
           </div>
         ) : (
-          <div className="mx-auto max-w-2xl px-5 py-6">
+          <div ref={threadRef} className="mx-auto max-w-2xl px-5 py-6">
             {messages.map((m) => (
               <Bubble
                 key={m.id}
+                animate={!streamedIdsRef.current.has(m.id)}
                 role={m.role}
                 content={m.content}
                 items={catalog}
@@ -2623,21 +2706,8 @@ export default function ChatPanel({
               />
             ))}
             {streaming !== null && (
-              <div
-                className={`anim-fade-up mb-5 flex justify-start ${streamingHtml.includes("<table") ? WIDE_REPLY : ""}`}
-              >
-                <div
-                  className={`${streamingHtml.includes("<table") ? "w-full" : "max-w-[85%]"} min-w-0 rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed`}
-                >
-                  {streaming ? (
-                    <div
-                      className="md"
-                      dangerouslySetInnerHTML={{ __html: streamingHtml }}
-                    />
-                  ) : (
-                    <BrewingStatus />
-                  )}
-                </div>
+              <div className="anim-fade-up mb-5 w-full min-w-0 text-[13.5px] leading-relaxed">
+                {streaming ? <StreamingReply text={streaming} /> : <BrewingStatus />}
               </div>
             )}
           </div>
@@ -2652,6 +2722,19 @@ export default function ChatPanel({
 
       {/* input */}
       <div className="relative z-10 shrink-0 px-5 pb-5 pt-2">
+        {/* jump to the latest, shown once the reader has scrolled well up */}
+        {showJump && hasThread && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-full mb-1 flex justify-center">
+            <button
+              onClick={() => scrollToBottom(true)}
+              className="anim-pop pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-edge bg-panel text-ink-2 shadow-md transition-colors hover:bg-hover hover:text-ink"
+              aria-label="Scroll to latest message"
+              title="Scroll to bottom"
+            >
+              <ArrowDown size={15} strokeWidth={2} />
+            </button>
+          </div>
+        )}
         {/* queue bar (in flow, above the composer; autocomplete popups layer above it) */}
         {queue.length > 0 && (
           <div className="mx-auto mb-2 max-w-2xl overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
@@ -3203,11 +3286,72 @@ function fmtTokens(n: number | undefined): string | null {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 }
 
+/** How long a newly reached block of a streaming reply takes to fade in. */
+const STREAM_FADE_MS = 450;
+
 /**
- * A reply holding a table is centred on the chat column but may grow past it,
- * up to 60rem or the panel's width (minus its side padding), whichever is less.
+ * The reply as it streams in. Chunks arrive in bursts; this reveals them a few
+ * characters per frame (faster the further behind it is, so it never lags far)
+ * and patches only the blocks that changed — earlier paragraphs stay put
+ * (selectable mid-stream) and each new block fades in.
  */
-const WIDE_REPLY = "relative left-1/2 w-[min(60rem,calc(100cqw-2.5rem))] -translate-x-1/2";
+function StreamingReply({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const targetRef = useRef(text);
+  targetRef.current = text;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const instant = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let shown = 0;
+    let keys: string[] = []; // markup of each top-level node, to spot what changed
+    let starts: number[] = []; // when each block first appeared (its fade clock)
+    let raf = 0;
+
+    const patch = (html: string) => {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = html;
+      const next = Array.from(tpl.content.childNodes);
+      const nextKeys = next.map((n) => (n instanceof Element ? n.outerHTML : (n.textContent ?? "")));
+      let same = 0;
+      while (same < keys.length && same < nextKeys.length && keys[same] === nextKeys[same]) same++;
+      while (el.childNodes.length > same) el.lastChild!.remove();
+      const now = performance.now();
+      const nextStarts = starts.slice(0, same);
+      for (let i = same; i < next.length; i++) {
+        // A block that grew keeps its fade clock, so the fade runs once, unbroken.
+        const start = starts[i] ?? now;
+        nextStarts.push(start);
+        const node = next[i];
+        if (!instant && node instanceof HTMLElement && now - start < STREAM_FADE_MS) {
+          node.classList.add("stream-in");
+          node.style.animationDelay = `${start - now}ms`;
+        }
+        el.appendChild(node);
+      }
+      keys = nextKeys;
+      starts = nextStarts;
+    };
+
+    const tick = () => {
+      const target = targetRef.current;
+      const backlog = target.length - shown;
+      if (backlog > 0) {
+        shown += instant ? backlog : Math.max(2, Math.ceil(backlog / 10));
+        // Never split a surrogate pair (emoji) across frames.
+        const c = target.charCodeAt(shown - 1);
+        if (c >= 0xd800 && c <= 0xdbff && shown < target.length) shown++;
+        patch(renderMarkdown(target.slice(0, shown)));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return <div ref={ref} className="md" />;
+}
 
 /** Source title for a saved reply: its first heading or line, markdown stripped. */
 function replySourceTitle(content: string): string {
@@ -3225,6 +3369,7 @@ function replySourceTitle(content: string): string {
 }
 
 function Bubble({
+  animate = true,
   role,
   content,
   items,
@@ -3233,6 +3378,8 @@ function Bubble({
   savedToSources,
   onSaveToSources,
 }: {
+  /** Entrance fade; off for a reply that just finished streaming in place. */
+  animate?: boolean;
   role: "user" | "assistant";
   content: string;
   items: MentionItem[];
@@ -3285,7 +3432,6 @@ function Bubble({
       </div>
     );
   }
-  const hasTable = html.includes("<table");
   const save = async () => {
     if (!onSaveToSources || savedToSources || saveState === "saving") return;
     setSaveState("saving");
@@ -3297,11 +3443,10 @@ function Bubble({
     }
   };
   return (
-    <div className={`anim-fade-up group mb-5 flex flex-col items-start ${hasTable ? WIDE_REPLY : ""}`}>
-      {/* Tables spread past the chat column; other replies keep the 85% bubble. */}
-      <div
-        className={`${hasTable ? "w-full" : "max-w-[85%]"} min-w-0 rounded-2xl rounded-tl-md border border-edge-soft bg-panel px-4 py-3 text-[13.5px] leading-relaxed`}
-      >
+    <div className={`${animate ? "anim-fade-up " : ""}group mb-5 flex flex-col items-start`}>
+      {/* Replies sit on the page, no bubble, always the full column width
+          (wide tables and code scroll sideways inside it). */}
+      <div className="w-full min-w-0 text-[13.5px] leading-relaxed">
         <div
           className={`md${onImageAction ? "" : " img-actions-off"}`}
           dangerouslySetInnerHTML={{ __html: html }}
@@ -3338,7 +3483,7 @@ function Bubble({
                 : "Save this reply to Sources"
           }
           aria-label={savedToSources ? "Saved to Sources" : "Save to Sources"}
-          className={`mt-1 ml-1 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-all ${
+          className={`mt-1 -ml-1.5 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-all ${
             savedToSources
               ? "text-ok"
               : saveState === "error"

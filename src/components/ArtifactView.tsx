@@ -8,6 +8,7 @@ import { hydrateMermaid } from "../lib/mermaid";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
+import MindmapView from "./MindmapView";
 import { platform } from "../platform";
 import { GhostButton, IconButton } from "./ui";
 
@@ -25,12 +26,15 @@ export default function ArtifactView({
   artifact,
   onClose,
   onSourcesChanged,
+  onArtifactChanged,
   running = 0,
 }: {
   artifact: Artifact;
   /** Minimize: back to the Studio tools and saved outputs. */
   onClose: () => void;
   onSourcesChanged?: () => void;
+  /** The output was edited in place (mind map edits). */
+  onArtifactChanged?: () => void;
   /** Studio generations still in progress (shown so they aren't forgotten). */
   running?: number;
 }) {
@@ -145,22 +149,32 @@ export default function ArtifactView({
           {exportError}
         </p>
       )}
-      <div ref={rootRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
-        {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
-        {artifact.kind === "mindmap" && <MindmapView data={artifact.data} />}
-        {artifact.kind === "notes" && (
-          <pre className="whitespace-pre-wrap text-[13px] leading-relaxed">{artifact.data}</pre>
-        )}
-        {artifact.kind === "report" && (
-          <div
-            className="md text-[13.5px] leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(artifact.data) }}
+      {artifact.kind === "mindmap" ? (
+        <div className="min-h-0 flex-1">
+          <MindmapView
+            artifactId={artifact.id}
+            title={artifact.title}
+            data={artifact.data}
+            onSaved={onArtifactChanged}
           />
-        )}
-        {artifact.kind === "research" && <ResearchView data={artifact.data} />}
-        {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
-      </div>
+        </div>
+      ) : (
+        <div ref={rootRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
+          {artifact.kind === "quiz" && <QuizView data={artifact.data} />}
+          {artifact.kind === "notes" && (
+            <pre className="whitespace-pre-wrap text-[13px] leading-relaxed">{artifact.data}</pre>
+          )}
+          {artifact.kind === "report" && (
+            <div
+              className="md text-[13.5px] leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(artifact.data) }}
+            />
+          )}
+          {artifact.kind === "research" && <ResearchView data={artifact.data} />}
+          {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -339,81 +353,6 @@ function QuizView({ data }: { data: string }) {
               {clampedIdx + 1 >= questions.length ? "See results" : "Next question"}
             </GhostButton>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* -------------------------------- Mind map ------------------------------- */
-
-interface TreeNode {
-  text: string;
-  children: TreeNode[];
-}
-
-function parseOutline(data: string): TreeNode[] {
-  const root: TreeNode[] = [];
-  const stack: { node: TreeNode; depth: number }[] = [];
-  for (const raw of data.split("\n")) {
-    const m = raw.match(/^(\s*)[-*+]\s+(.*)$/);
-    if (!m) continue;
-    const depth = Math.floor(m[1].length / 2);
-    const node: TreeNode = { text: m[2].trim(), children: [] };
-    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
-    if (stack.length === 0) root.push(node);
-    else stack[stack.length - 1].node.children.push(node);
-    stack.push({ node, depth });
-  }
-  return root;
-}
-
-function MindmapView({ data }: { data: string }) {
-  const roots = useMemo(() => parseOutline(data), [data]);
-  if (roots.length === 0) return <ParseError />;
-  return (
-    <div className="flex flex-col gap-2.5">
-      {roots.map((n, i) => (
-        <Branch key={i} node={n} />
-      ))}
-    </div>
-  );
-}
-
-function Branch({ node }: { node: TreeNode }) {
-  const [open, setOpen] = useState(true);
-  return (
-    <div>
-      <div className="flex items-center gap-2">
-        {node.children.length > 0 && (
-          <button
-            onClick={() => setOpen((o) => !o)}
-            className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover"
-            aria-label={open ? "Collapse" : "Expand"}
-          >
-            <ChevronRight
-              size={11}
-              strokeWidth={2.2}
-              style={{
-                transform: open ? "rotate(90deg)" : "none",
-                transition: "transform 120ms",
-              }}
-            />
-          </button>
-        )}
-        <span
-          className={`rounded-lg border border-edge bg-panel px-3 py-1.5 text-[12.5px] font-medium ${
-            node.children.length === 0 ? "ml-6" : ""
-          }`}
-        >
-          {node.text}
-        </span>
-      </div>
-      {open && node.children.length > 0 && (
-        <div className="ml-[7px] mt-1.5 flex flex-col gap-1.5 border-l border-edge pl-5">
-          {node.children.map((c, i) => (
-            <Branch key={i} node={c} />
-          ))}
         </div>
       )}
     </div>
