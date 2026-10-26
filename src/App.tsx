@@ -34,6 +34,7 @@ import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import { platform } from "./platform";
 import type { Folder, Notebook, Settings } from "./lib/types";
 import { AudioPlayerProvider } from "./components/AudioPlayer";
+import { confirmAction, ConfirmHost } from "./components/ConfirmDialog";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -240,6 +241,13 @@ export default function App() {
               await refresh();
             }}
             onDeleteFolder={async (id) => {
+              const name = folders.find((f) => f.id === id)?.name ?? "this folder";
+              const ok = await confirmAction({
+                title: "Delete folder?",
+                message: `“${name}” will be deleted. The notebooks inside it aren't — they move back to the Brewery.`,
+                confirmLabel: "Delete folder",
+              });
+              if (!ok) return;
               await deleteFolder(id);
               await refresh();
             }}
@@ -265,6 +273,7 @@ export default function App() {
           />
         )}
       </div>
+      <ConfirmHost />
     </AudioPlayerProvider>
   );
 }

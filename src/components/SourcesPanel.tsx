@@ -22,6 +22,7 @@ import { addSource, deleteSource, setSourcePinned, updateSource } from "../lib/d
 import { ingestFiles } from "../lib/ingest";
 import { ACCEPT_STRING, fetchLinkContent, sourcePreview } from "../lib/source";
 import type { Source } from "../lib/types";
+import { confirmAction } from "./ConfirmDialog";
 import SourceViewModal from "./SourceViewModal";
 import { IconButton, Modal, PrimaryButton } from "./ui";
 
@@ -297,6 +298,12 @@ export default function SourcesPanel({
               )}
               <button
                 onClick={async () => {
+                  const ok = await confirmAction({
+                    title: "Remove source?",
+                    message: `“${s.title}” will be removed from this notebook. This can't be undone.`,
+                    confirmLabel: "Remove",
+                  });
+                  if (!ok) return;
                   await deleteSource(s.id);
                   onChanged();
                 }}

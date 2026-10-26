@@ -49,6 +49,7 @@ import { writeAudioScript } from "../lib/audioScript";
 import { parseScript, scriptLine, synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
+import { confirmAction } from "./ConfirmDialog";
 import DrawingView from "./DrawingView";
 import { isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
@@ -1002,6 +1003,11 @@ const StudioPanel = forwardRef<
                       )}
                       <button
                         onClick={async () => {
+                          const ok = await confirmAction({
+                            title: "Delete studio output?",
+                            message: `“${a.title}” will be deleted. This can't be undone.`,
+                          });
+                          if (!ok) return;
                           await deleteArtifact(a.id);
                           onArtifactsChanged();
                         }}

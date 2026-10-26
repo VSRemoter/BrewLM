@@ -32,6 +32,7 @@ import { fetchLinkContent } from "../lib/source";
 import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
+import { confirmAction } from "./ConfirmDialog";
 import PairPhonePanel from "./PairPhonePanel";
 import SourcesPanel from "./SourcesPanel";
 import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
@@ -248,6 +249,13 @@ export default function NotebookView({
     what: string,
     filter?: string
   ): Promise<{ reply: string; chatReplaced?: boolean }> => {
+    const CANCELLED = { reply: "Cancelled — nothing was removed." };
+    const confirmRemove = (what: string) =>
+      confirmAction({
+        title: "Remove from this notebook?",
+        message: `This deletes ${what}. This can't be undone.`,
+        confirmLabel: "Remove",
+      });
     const SOURCE_TYPES: Record<string, SourceType> = {
       text: "text", texts: "text",
       link: "link", links: "link",
@@ -273,6 +281,8 @@ export default function NotebookView({
       if (filter && !t) {
         return { reply: `I don't know a source type "${filter}" — try text, links, pdf, images, audio, files, or context.` };
       }
+      const count = sources.filter((s) => !t || s.type === t).length;
+      if (count > 0 && !(await confirmRemove(`${count} ${t ? t + " " : ""}source${count === 1 ? "" : "s"}`))) return CANCELLED;
       const n = await deleteSources(notebook.id, t);
       refreshSources();
       return {
@@ -283,6 +293,7 @@ export default function NotebookView({
     }
 
     if (what === "chats") {
+      if (!(await confirmRemove(`all ${chats.length} chat${chats.length === 1 ? "" : "s"}, including this one`))) return CANCELLED;
       await deleteAllChats(notebook.id);
       const fresh = await createChat(notebook.id);
       await refreshChats();
@@ -299,6 +310,8 @@ export default function NotebookView({
       if (filter && !k) {
         return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, drawings, or notes.` };
       }
+      const count = artifacts.filter((a) => !k || a.kind === k).length;
+      if (count > 0 && !(await confirmRemove(`${count} ${k ? k + " " : ""}studio output${count === 1 ? "" : "s"}`))) return CANCELLED;
       const n = await deleteArtifacts(notebook.id, k);
       refreshArtifacts();
       return {
