@@ -884,11 +884,30 @@ export default function ChatPanel({
   useEffect(() => {
     if (imageTarget && !/^\/(edit|remix)(\s|$)/i.test(draft)) setImageTarget(null);
   }, [draft, imageTarget]);
-  const [streaming, setStreaming] = useState<string | null>(null);
+  /** The chat on screen now; closures from an earlier render compare their own chatId to it. */
+  const chatIdRef = useRef(chatId);
+  chatIdRef.current = chatId;
+  /** Live reply text per chat: a reply keeps streaming into its own thread after the user switches away. */
+  const [streams, setStreams] = useState<Record<string, string>>({});
+  const streaming = chatId ? (streams[chatId] ?? null) : null;
+  /** Bound to this render's chat, so a send started in one thread never shows up in another. */
+  const setStreaming = (text: string | null) => {
+    if (!chatId) return;
+    const id = chatId;
+    setStreams((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return text === null ? rest : { ...rest, [id]: text };
+    });
+  };
+  const anyStreaming = Object.keys(streams).length > 0;
   // The tab strip's busy dot; a closed tab stops counting.
-  useEffect(() => setChatStreaming(notebookId, streaming !== null), [notebookId, streaming]);
+  useEffect(() => setChatStreaming(notebookId, anyStreaming), [notebookId, anyStreaming]);
   useEffect(() => () => setChatStreaming(notebookId, false), [notebookId]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
+  /** Errors from a send in another chat stay out of the open one. */
+  const setError = (e: string | null) => {
+    if (chatId === chatIdRef.current) setErrorState(e);
+  };
   /** Provider-reported token usage per assistant message (this session only). */
   const [usageByMsg, setUsageByMsg] = useState<Record<string, ReplyUsage>>({});
   // Mirror of settings.showDetails so /details flips the usage lines instantly.
@@ -1692,18 +1711,24 @@ export default function ChatPanel({
   /** FIFO of queued prompts/commands. Ref mirrors state for drain loops. */
   const queueRef = useRef<string[]>([]);
   const [queue, setQueue] = useState<string[]>([]);
-  /** Mirrors `streaming` state synchronously so chained sends aren't blocked by a stale closure. */
-  const streamingRef = useRef(false);
-  const drainingRef = useRef(false);
-  /** Controller for the in-flight LLM stream; the stop button aborts it. */
-  const abortRef = useRef<AbortController | null>(null);
+  /** Chats with a reply in flight — mirrors `streams` synchronously so chained sends aren't blocked by a stale closure. */
+  const streamingRef = useRef(new Set<string>());
+  /** Chats whose queue is draining. */
+  const drainingRef = useRef(new Set<string>());
+  /** Controllers for in-flight LLM streams, by chat; the stop button aborts the open chat's. */
+  const abortRef = useRef(new Map<string, AbortController>());
   /** Latest messages — drainQueue needs fresh history, not the stale render closure. */
   const messagesRef = useRef<ChatMessage[]>([]);
 
-  /** Update messages state AND the ref atomically (value or updater form). */
+  /**
+   * Update messages state AND the ref atomically (value or updater form).
+   * A reply landing after the user switched chats is dropped here: it's
+   * already saved, and its thread loads it from the database on return.
+   */
   const setMsgs = (
     next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])
   ) => {
+    if (chatId !== chatIdRef.current) return;
     messagesRef.current =
       typeof next === "function" ? next(messagesRef.current) : next;
     setMessages(messagesRef.current);
@@ -1842,7 +1867,7 @@ export default function ChatPanel({
    * synchronously so a chained runSend never hits a stale-closure block.
    */
   const runSend = async (text: string, opts?: { imageId?: string }): Promise<void> => {
-    if (!text || streamingRef.current || !chatId) return;
+    if (!text || !chatId || streamingRef.current.has(chatId)) return;
     setError(null);
     // First "real" user message = first that isn't a /queue command — lets a
     // queued payload (not the "/queue …" wrapper) auto-title a fresh chat.
@@ -2199,10 +2224,10 @@ export default function ChatPanel({
             }.`
           );
         } else {
-          streamingRef.current = true;
+          streamingRef.current.add(chatId);
           setStreaming("");
           const ctrl = new AbortController();
-          abortRef.current = ctrl;
+          abortRef.current.set(chatId, ctrl);
           try {
             // The one picture sent as a reference: the target for edit/remix;
             // for "more", whatever the original itself was made from.
@@ -2270,8 +2295,8 @@ export default function ChatPanel({
               setError(e instanceof Error ? e.message : String(e));
             }
           } finally {
-            abortRef.current = null;
-            streamingRef.current = false;
+            abortRef.current.delete(chatId);
+            streamingRef.current.delete(chatId);
             setStreaming(null);
           }
         }
@@ -2297,10 +2322,10 @@ export default function ChatPanel({
         textareaRef.current?.focus();
         return;
       }
-      streamingRef.current = true;
+      streamingRef.current.add(chatId);
       setStreaming("");
       const ctrl = new AbortController();
-      abortRef.current = ctrl;
+      abortRef.current.set(chatId, ctrl);
       try {
         const groundedNow = (notebookGrounded ?? 1) !== 0;
         const mentionedNow = resolveMentions(query, catalog);
@@ -2336,8 +2361,8 @@ export default function ChatPanel({
         }
         // aborted → nothing saved (user pressed stop)
       } finally {
-        abortRef.current = null;
-        streamingRef.current = false;
+        abortRef.current.delete(chatId);
+        streamingRef.current.delete(chatId);
         setStreaming(null);
         textareaRef.current?.focus();
       }
@@ -2353,7 +2378,7 @@ export default function ChatPanel({
 
     // /return — exit to the homepage; the chat stays saved in the Chats panel.
     if (/^\/return(\s|$)/i.test(text)) {
-      abortRef.current?.abort(); // stop any in-flight generation on the way out
+      for (const c of abortRef.current.values()) c.abort(); // stop any in-flight generation on the way out
       onReturnHome();
       return;
     }
@@ -2416,10 +2441,10 @@ export default function ChatPanel({
     // /summarize — LLM call, but with a dedicated notebook-wide prompt.
     const isSummarize = /^\/summarize(\s|$)/i.test(text);
 
-    streamingRef.current = true;
+    streamingRef.current.add(chatId);
     setStreaming("");
     const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    abortRef.current.set(chatId, ctrl);
 
     // Mentions from recent user turns keep their priority across follow-ups.
     const mentioned = resolveMentions(
@@ -2514,8 +2539,8 @@ export default function ChatPanel({
       }
       // aborted → discard the partial answer entirely (user pressed stop)
     } finally {
-      abortRef.current = null;
-      streamingRef.current = false;
+      abortRef.current.delete(chatId);
+      streamingRef.current.delete(chatId);
       setStreaming(null);
       textareaRef.current?.focus();
     }
@@ -2524,10 +2549,11 @@ export default function ChatPanel({
 
   /** Drain the FIFO queue — one payload at a time, continuing after LLM streams. */
   const drainQueue = async () => {
-    if (drainingRef.current) return;
-    drainingRef.current = true;
+    if (!chatId || drainingRef.current.has(chatId)) return;
+    drainingRef.current.add(chatId);
     try {
-      while (queueRef.current.length > 0 && !streamingRef.current) {
+      // The queue belongs to the open chat; a drain from a chat left behind stops.
+      while (chatIdRef.current === chatId && queueRef.current.length > 0 && !streamingRef.current.has(chatId)) {
         const next = queueRef.current.shift()!;
         setQueue([...queueRef.current]);
         // runSend resets streamingRef synchronously when an LLM stream starts,
@@ -2535,13 +2561,13 @@ export default function ChatPanel({
         await runSend(next);
       }
     } finally {
-      drainingRef.current = false;
+      drainingRef.current.delete(chatId);
     }
   };
 
-  /** Stop the in-flight LLM generation; the partial answer is discarded. */
+  /** Stop the open chat's in-flight LLM generation; the partial answer is discarded. */
   const stopGenerating = () => {
-    abortRef.current?.abort();
+    if (chatId) abortRef.current.get(chatId)?.abort();
   };
 
   /** Composer entry: /queue enqueues while busy, everything else sends (then drains). */
@@ -2576,7 +2602,7 @@ export default function ChatPanel({
         chatId,
         notebookId,
         "assistant",
-        `Queued **${payload.length > 60 ? payload.slice(0, 60).trimEnd() + "…" : payload}** (position ${pos}).${streamingRef.current ? " I'll run it when the current task finishes." : ""}`
+        `Queued **${payload.length > 60 ? payload.slice(0, 60).trimEnd() + "…" : payload}** (position ${pos}).${streamingRef.current.has(chatId) ? " I'll run it when the current task finishes." : ""}`
       );
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, messagesRef.current.length === 0 ? "Queued work" : undefined);
@@ -2603,7 +2629,7 @@ export default function ChatPanel({
   /** Hover actions on a generated picture in a bubble. */
   const onImageAction = (action: string, id: string, alt: string) => {
     if (action === "more") {
-      if (streamingRef.current) return;
+      if (chatId && streamingRef.current.has(chatId)) return;
       void runSend("/more", { imageId: id }).then(() => drainQueue());
       return;
     }
