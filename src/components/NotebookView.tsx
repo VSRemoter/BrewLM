@@ -54,6 +54,7 @@ const STUDIO_READING_W = 460;
 export default function NotebookView({
   notebook,
   settings,
+  tabbed,
   onBack,
   onOpenSettings,
   onRenamed,
@@ -63,6 +64,8 @@ export default function NotebookView({
 }: {
   notebook: Notebook;
   settings: Settings;
+  /** Desktop: App's tab strip is the top bar, so this view draws no header. */
+  tabbed?: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
   onRenamed: () => void;
@@ -543,7 +546,7 @@ export default function NotebookView({
 
   return (
     <div className="flex h-full flex-col">
-      {header}
+      {!tabbed && header}
       {pairModal}
 
       {/* three panels */}

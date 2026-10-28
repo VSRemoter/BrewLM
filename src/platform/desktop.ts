@@ -1,6 +1,7 @@
 /** The Tauri desktop app's platform (see types.ts). */
 import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
@@ -64,5 +65,10 @@ export const platform: Platform = {
     markPushed: (pushed) => invoke("sync_mark_pushed", { pushed }),
     config: () => invoke<SyncServerConfig | null>("sync_config"),
     log: (line) => void invoke("sync_log", { line }).catch(() => {}),
+  },
+
+  onMenu(handler) {
+    const off = listen<string>("menu", (e) => handler(e.payload));
+    return () => void off.then((f) => f());
   },
 };

@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { Settings as SettingsIcon, Smartphone } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
+import PairPhonePanel from "./components/PairPhonePanel";
+import QuickSwitcher from "./components/QuickSwitcher";
+import TabStrip from "./components/TabStrip";
+import { IconButton, Modal } from "./components/ui";
+import { useBusyNotebooks } from "./lib/busy";
+import { closeTab, cycleTab, getTabs, openTab, pruneTabs, showTab, useTabs } from "./lib/tabs";
+import { NARROW, useMediaQuery } from "./lib/usePhone";
 import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
 import { migrateMedia } from "./lib/mediaMigration";
@@ -12,6 +20,7 @@ import {
   deleteFolder,
   deleteNotebook,
   getDb,
+  renameNotebook,
   listFolders,
   listNotebooks,
   listTrashedNotebooks,
@@ -43,10 +52,64 @@ export default function App() {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [trashedNotebooks, setTrashedNotebooks] = useState<Notebook[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
-  const [openId, setOpenId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const tabs = useTabs();
+  const busy = useBusyNotebooks();
+  /** Phones and upright tablets: no tab strip, one notebook loaded at a time. */
+  const narrow = useMediaQuery(NARROW);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [pairOpen, setPairOpen] = useState(false);
+  const byId = useMemo(() => new Map(notebooks.map((n) => [n.id, n])), [notebooks]);
+
+  // Close tabs whose notebook was trashed or deleted (here or on another device).
+  useEffect(() => {
+    if (ready) pruneTabs((id) => byId.has(id));
+  }, [ready, byId]);
+
+  // ⌘K everywhere; ⌘1–9, ⌃Tab and ⌘W only in the desktop app (browsers keep those keys).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSwitcherOpen((o) => !o);
+        return;
+      }
+      if (platform.kind !== "desktop") return;
+      const { ids, active } = getTabs();
+      if (mod && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+        // ⌘9 is always the last tab, as in browsers.
+        const id = e.key === "9" ? ids[ids.length - 1] : ids[Number(e.key) - 1];
+        if (id) {
+          e.preventDefault();
+          showTab(id);
+        }
+      } else if (e.ctrlKey && e.key === "Tab") {
+        e.preventDefault();
+        cycleTab(e.shiftKey ? -1 : 1);
+      } else if (e.metaKey && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+        e.preventDefault();
+        cycleTab(e.code === "BracketRight" ? 1 : -1);
+      } else if (mod && !e.shiftKey && e.key.toLowerCase() === "w" && active) {
+        // Windows/Linux; on macOS the menu's Close Tab item sends this instead.
+        e.preventDefault();
+        closeTab(active);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(
+    () =>
+      platform.onMenu?.((command) => {
+        const { active } = getTabs();
+        if (command === "close-tab" && active) closeTab(active);
+      }),
+    []
+  );
 
   const refresh = useCallback(async () => {
     const [nbs, trash, fds] = await Promise.all([
@@ -154,27 +217,74 @@ export default function App() {
     );
   }
 
-  const open = notebooks.find((n) => n.id === openId) ?? null;
+  const active = tabs.active ? byId.get(tabs.active) ?? null : null;
+  // Desktop keeps every shown tab loaded (hidden when not active) so replies and
+  // scroll positions survive a switch; narrow screens load only the open one.
+  const mounted = narrow ? (active ? [active.id] : []) : tabs.loaded;
+  const showStrip = !narrow && (tabs.ids.length > 0 || active !== null);
+
+  const createAndOpen = async (title: string, description = "", folderId = "", cover = "") => {
+    const nb = await createNotebook(title, description, folderId);
+    if (cover) await setNotebookCover(nb.id, cover);
+    await refresh();
+    openTab(nb.id);
+  };
 
   return (
     <AudioPlayerProvider>
-      <div className="h-full overflow-hidden bg-canvas text-ink">
-        {open ? (
-          <NotebookView
-            notebook={open}
-            settings={settings}
-            onBack={() => setOpenId(null)}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onRenamed={refresh}
-            onNotebookMoved={refresh}
-            onSettingsChanged={reloadSettings}
-            onOpenNotebook={async (id) => {
-              // Refresh first so `open` resolves before the id changes.
+      <div className="flex h-full flex-col overflow-hidden bg-canvas text-ink">
+        {showStrip && (
+          <TabStrip
+            tabs={tabs}
+            notebooks={byId}
+            busy={busy}
+            onNew={() => setSwitcherOpen(true)}
+            onRename={async (id, title) => {
+              await renameNotebook(id, title);
               await refresh();
-              setOpenId(id);
             }}
+            actions={
+              active && (
+                <>
+                  {platform.kind === "desktop" && (
+                    <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
+                      <Smartphone size={15} strokeWidth={1.8} />
+                    </IconButton>
+                  )}
+                  <IconButton onClick={() => setSettingsOpen(true)} label="Settings">
+                    <SettingsIcon size={15} strokeWidth={1.8} />
+                  </IconButton>
+                </>
+              )
+            }
           />
-        ) : (
+        )}
+        <div className="relative min-h-0 flex-1">
+        {mounted.map((id) => {
+          const nb = byId.get(id);
+          if (!nb) return null;
+          const shown = id === tabs.active;
+          return (
+            <div key={id} inert={!shown} className={`absolute inset-0 ${shown ? "" : "invisible"}`}>
+              <NotebookView
+                notebook={nb}
+                settings={settings}
+                tabbed={!narrow}
+                onBack={() => showTab(null)}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onRenamed={refresh}
+                onNotebookMoved={refresh}
+                onSettingsChanged={reloadSettings}
+                onOpenNotebook={async (id) => {
+                  // Refresh first so the new tab's notebook resolves.
+                  await refresh();
+                  openTab(id);
+                }}
+              />
+            </div>
+          );
+        })}
+        <div inert={active !== null} className={`absolute inset-0 ${active ? "invisible" : ""}`}>
           <Home
             notebooks={notebooks}
             trashedNotebooks={trashedNotebooks}
@@ -182,14 +292,9 @@ export default function App() {
             updateInfo={updateInfo}
             onDismissUpdate={() => setUpdateInfo(null)}
             trashRetentionDays={settings.trashRetentionDays}
-            onOpen={setOpenId}
+            onOpen={(id, background) => openTab(id, background)}
             onSettings={() => setSettingsOpen(true)}
-            onCreate={async (title, description, folderId, cover) => {
-              const nb = await createNotebook(title, description, folderId);
-              if (cover) await setNotebookCover(nb.id, cover);
-              await refresh();
-              setOpenId(nb.id);
-            }}
+            onCreate={createAndOpen}
             onTrash={async (id) => {
               await trashNotebook(id);
               await refresh();
@@ -268,6 +373,23 @@ export default function App() {
               await refresh();
             }}
           />
+        </div>
+        </div>
+
+        {switcherOpen && (
+          <QuickSwitcher
+            notebooks={notebooks}
+            folders={folders}
+            openIds={tabs.ids}
+            onOpen={(id, background) => openTab(id, background)}
+            onCreate={(title) => void createAndOpen(title)}
+            onClose={() => setSwitcherOpen(false)}
+          />
+        )}
+        {pairOpen && (
+          <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
+            <PairPhonePanel />
+          </Modal>
         )}
 
         {settingsOpen && (

@@ -3,7 +3,7 @@ mod server;
 mod sync;
 
 use server::SharingState;
-use tauri::{Manager, menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+use tauri::{Emitter, Manager, menu::{Menu, MenuItem}, tray::TrayIconBuilder};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -17,6 +17,63 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// macOS menu bar: Tauri's default, except ⌘W closes the notebook tab (the
+/// webview gets a "menu" event) and closing the window moves to ⇧⌘W.
+#[cfg(target_os = "macos")]
+fn app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    use tauri::menu::{PredefinedMenuItem, Submenu};
+    let name = app.package_info().name.clone();
+    let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
+    let close_window =
+        MenuItem::with_id(app, "close-window", "Close Window", true, Some("CmdOrCtrl+Shift+W"))?;
+    Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                &name,
+                true,
+                &[
+                    &PredefinedMenuItem::about(app, None, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::show_all(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "File", true, &[&close_tab, &close_window])?,
+            &Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+            &Submenu::with_items(
+                app,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(app, None)?,
+                    &PredefinedMenuItem::maximize(app, None)?,
+                ],
+            )?,
+        ],
+    )
 }
 
 fn cleanup_sharing(app: &tauri::AppHandle) {
@@ -44,7 +101,21 @@ pub fn run() {
     if let Some(p) = &profile {
         context.config_mut().identifier = format!("com.brewlm.app.{p}");
     }
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(app_menu).on_menu_event(|app, event| match event.id().as_ref() {
+        "close-tab" => {
+            let _ = app.emit("menu", "close-tab");
+        }
+        // Same as the red button: hide; sharing keeps running.
+        "close-window" => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.hide();
+            }
+        }
+        _ => {}
+    });
+    let app = builder
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_http::init())

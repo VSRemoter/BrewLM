@@ -54,6 +54,7 @@ import {
 } from "../lib/db";
 import { mediaSrc } from "../lib/blobs";
 import { onRemoteChanges } from "../lib/sync";
+import { setChatStreaming } from "../lib/busy";
 import type { IngestResult } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
 import { hydrateMermaid } from "../lib/mermaid";
@@ -862,6 +863,9 @@ export default function ChatPanel({
     if (imageTarget && !/^\/(edit|remix)(\s|$)/i.test(draft)) setImageTarget(null);
   }, [draft, imageTarget]);
   const [streaming, setStreaming] = useState<string | null>(null);
+  // The tab strip's busy dot; a closed tab stops counting.
+  useEffect(() => setChatStreaming(notebookId, streaming !== null), [notebookId, streaming]);
+  useEffect(() => () => setChatStreaming(notebookId, false), [notebookId]);
   const [error, setError] = useState<string | null>(null);
   /** Provider-reported token usage per assistant message (this session only). */
   const [usageByMsg, setUsageByMsg] = useState<Record<string, ReplyUsage>>({});

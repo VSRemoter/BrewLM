@@ -73,8 +73,17 @@ const subscribe = (l: () => void) => {
   return () => listeners.delete(l);
 };
 
+/** Every running job, all notebooks, newest first. */
+export function useAllStudioJobs(): StudioJob[] {
+  return useSyncExternalStore(subscribe, () => jobs);
+}
+
 /** The notebook's running jobs, newest first. */
 export function useStudioJobs(notebookId: string): StudioJob[] {
-  const all = useSyncExternalStore(subscribe, () => jobs);
+  const all = useAllStudioJobs();
   return useMemo(() => all.filter((j) => j.notebookId === notebookId), [all, notebookId]);
+}
+
+export function hasStudioJobs(notebookId: string): boolean {
+  return jobs.some((j) => j.notebookId === notebookId);
 }

@@ -97,7 +97,8 @@ export default function Home({
   notebooks: Notebook[];
   trashedNotebooks: Notebook[];
   folders: Folder[];
-  onOpen: (id: string) => void;
+  /** `background`: ⌘/Ctrl- or middle-click — open in a tab without switching to it. */
+  onOpen: (id: string, background?: boolean) => void;
   onCreate: (title: string, description: string, folderId: string, cover: string) => void;
   /** Move to Trash (soft delete — restorable). */
   onTrash: (id: string) => void;
@@ -233,9 +234,14 @@ export default function Home({
   };
 
   /** Clicking a card in Select mode toggles it instead of opening. */
-  const handleCardClick = (id: string) => {
+  const handleCardClick = (id: string, e: React.MouseEvent) => {
     if (selecting) toggleSelect(id);
-    else onOpen(id);
+    else onOpen(id, e.metaKey || e.ctrlKey);
+  };
+
+  /** Middle-click opens in a background tab. */
+  const handleCardAuxClick = (id: string, e: React.MouseEvent) => {
+    if (e.button === 1 && !selecting) onOpen(id, true);
   };
 
   /* ------------------------------ actions ------------------------------ */
@@ -452,7 +458,8 @@ export default function Home({
     return (
     <div
       key={nb.id}
-      onClick={() => handleCardClick(nb.id)}
+      onClick={(e) => handleCardClick(nb.id, e)}
+      onAuxClick={(e) => handleCardAuxClick(nb.id, e)}
       draggable={!selecting}
       onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}
@@ -531,7 +538,8 @@ export default function Home({
     return (
     <div
       key={nb.id}
-      onClick={() => handleCardClick(nb.id)}
+      onClick={(e) => handleCardClick(nb.id, e)}
+      onAuxClick={(e) => handleCardAuxClick(nb.id, e)}
       draggable={!selecting}
       onDragStart={(e) => !selecting && nbDragStart(e, nb.id)}
       onDragEnd={nbDragEnd}

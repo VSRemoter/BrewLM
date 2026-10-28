@@ -105,4 +105,7 @@ export interface Platform {
     config(): Promise<SyncServerConfig | null>;
     log(line: string): void;
   };
+
+  /** Desktop only: commands from the app's menu bar (e.g. "close-tab"). Returns an unsubscribe. */
+  onMenu?(handler: (command: string) => void): () => void;
 }
