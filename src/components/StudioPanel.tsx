@@ -32,7 +32,15 @@ import { cancelStudioJob, startStudioJob, throwIfCancelled, useStudioJobs } from
 import { deepResearch } from "../lib/research";
 import { activeKey } from "../lib/settings";
 import { contextBudget } from "../lib/local";
-import { recordUsage } from "../lib/usage";
+import {
+  addOutputUsage,
+  meterTotal,
+  meterUsage,
+  newUsageMeter,
+  parseOutputUsage,
+  recordUsage,
+  type UsageMeter,
+} from "../lib/usage";
 import { formatTime } from "../lib/source";
 import {
   REPORT_FORMATS,
@@ -283,17 +291,11 @@ const StudioPanel = forwardRef<
     }
     const title = opts?.title?.trim() || tool.name;
     const job = startStudioJob(notebookId, tool.kind, title, "Generating…");
+    const meter = newUsageMeter();
     try {
       const prompt = opts?.prompt ?? tool.prompt;
       const raw = await complete({
-        provider: settings.provider,
-        apiKey: activeKey(settings),
-        model: settings.model,
-        thinking: settings.thinking,
-        maxOutput: settings.maxOutput,
-        temperature: settings.temperature ?? undefined,
-        signal: job.signal,
-        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+        ...llmRequest(job.signal, meter),
         messages: [
           { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true, onPhase: job.setPhase }) },
           { role: "user", content: prompt },
@@ -319,7 +321,7 @@ const StudioPanel = forwardRef<
       }
 
       throwIfCancelled(job.signal);
-      await addArtifact(notebookId, tool.kind, title, data);
+      await addArtifact(notebookId, tool.kind, title, data, meterTotal(meter));
       return tool.kind === "flashcards"
         ? `Saved ${count} flashcards to Studio as “${title}”.`
         : tool.kind === "quiz"
@@ -367,6 +369,7 @@ const StudioPanel = forwardRef<
       return msg;
     }
     const job = startStudioJob(notebookId, "report", label, `Writing ${label.toLowerCase()}…`);
+    const meter = newUsageMeter();
     try {
       const scoped = scopedSources(sourceIds);
       // Bigger than a context window: groundedSystem runs the cached
@@ -374,14 +377,7 @@ const StudioPanel = forwardRef<
       const system = await groundedSystem(scoped, prompt, { exhaustive: true, onPhase: job.setPhase });
       job.setPhase(`Writing ${label.toLowerCase()}…`);
       const raw = await complete({
-        provider: settings.provider,
-        apiKey: activeKey(settings),
-        model: settings.model,
-        thinking: settings.thinking,
-        maxOutput: settings.maxOutput,
-        temperature: settings.temperature ?? undefined,
-        signal: job.signal,
-        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+        ...llmRequest(job.signal, meter),
         messages: [
           { role: "system", content: system },
           { role: "user", content: prompt },
@@ -390,7 +386,7 @@ const StudioPanel = forwardRef<
       const doc = raw.trim();
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
       throwIfCancelled(job.signal);
-      await addArtifact(notebookId, "report", label, doc);
+      await addArtifact(notebookId, "report", label, doc, meterTotal(meter));
       return `Saved report “${label}” to Studio.`;
     } catch (e) {
       return failMsg(e, "Report", job.signal);
@@ -399,8 +395,11 @@ const StudioPanel = forwardRef<
     }
   };
 
-  /** The chosen model and its Settings → AI Model tuning, for one Studio request. */
-  const llmRequest = (signal: AbortSignal) => ({
+  /**
+   * The chosen model and its Settings → AI Model tuning, for one Studio request.
+   * Usage goes to the ledger and to `meter`, the output's own running total.
+   */
+  const llmRequest = (signal: AbortSignal, meter: UsageMeter) => ({
     provider: settings.provider,
     apiKey: activeKey(settings),
     model: settings.model,
@@ -408,7 +407,10 @@ const StudioPanel = forwardRef<
     maxOutput: settings.maxOutput,
     temperature: settings.temperature ?? undefined,
     signal,
-    onUsage: (u: StreamUsage) => void recordUsage("studio", settings.provider, settings.model, u),
+    onUsage: (u: StreamUsage) => {
+      void recordUsage("studio", settings.provider, settings.model, u);
+      meterUsage(meter, settings.provider, settings.model, u);
+    },
   });
 
   /** Progress for a page build, e.g. "Building the page… 14 KB written". */
@@ -433,6 +435,7 @@ const StudioPanel = forwardRef<
     }
     const title = opts.title?.trim() || "Interactive";
     const job = startStudioJob(notebookId, "interactive", title, "Planning the storyboard…");
+    const meter = newUsageMeter();
     try {
       const prompt = buildStoryboardPrompt(opts);
       const system = await groundedSystem(scopedSources(opts.sourceIds), opts.topic || prompt, {
@@ -442,7 +445,7 @@ const StudioPanel = forwardRef<
       job.setPhase("Planning the storyboard…");
       const storyboard = (
         await complete({
-          ...llmRequest(job.signal),
+          ...llmRequest(job.signal, meter),
           messages: [
             { role: "system", content: system },
             { role: "user", content: prompt },
@@ -452,7 +455,7 @@ const StudioPanel = forwardRef<
       if (storyboard.length < 100) throw new Error("The storyboard came back empty — try again.");
       job.setPhase("Building the page…");
       const html = await writePage({
-        ...llmRequest(job.signal),
+        ...llmRequest(job.signal, meter),
         messages: [
           { role: "system", content: buildPageSystem(opts.style) },
           { role: "user", content: buildPagePrompt(storyboard) },
@@ -460,7 +463,13 @@ const StudioPanel = forwardRef<
         onProgress: pageProgress("Building the page", job.setPhase),
       });
       throwIfCancelled(job.signal);
-      await addArtifact(notebookId, "interactive", title, JSON.stringify({ html, storyboard, style: opts.style }));
+      await addArtifact(
+        notebookId,
+        "interactive",
+        title,
+        JSON.stringify({ html, storyboard, style: opts.style }),
+        meterTotal(meter)
+      );
       return `Saved interactive “${title}” to Studio.`;
     } catch (e) {
       return failMsg(e, "Interactive", job.signal);
@@ -478,9 +487,10 @@ const StudioPanel = forwardRef<
       return "Add an API key in Settings first.";
     }
     const job = startStudioJob(notebookId, "interactive", a.title, "Fixing the page…");
+    const meter = newUsageMeter();
     try {
       const html = await writePage({
-        ...llmRequest(job.signal),
+        ...llmRequest(job.signal, meter),
         messages: [
           { role: "system", content: buildPageSystem(page.style) },
           {
@@ -491,7 +501,11 @@ const StudioPanel = forwardRef<
         onProgress: pageProgress("Fixing the page", job.setPhase),
       });
       throwIfCancelled(job.signal);
-      await updateArtifact(a.id, JSON.stringify({ ...page, html }));
+      await updateArtifact(
+        a.id,
+        JSON.stringify({ ...page, html }),
+        addOutputUsage(parseOutputUsage(a.usage), meterTotal(meter))
+      );
       return null;
     } catch (e) {
       return failMsg(e, "Fix", job.signal);
@@ -517,6 +531,7 @@ const StudioPanel = forwardRef<
     }
     const title = saveTitle?.trim() || opts?.title?.trim() || "Audio overview";
     const job = startStudioJob(notebookId, "audio", title, "Writing script…");
+    const meter = newUsageMeter();
     try {
       const o = opts ?? oneClickAudio();
       const scoped = scopedSources(o.sourceIds);
@@ -524,14 +539,7 @@ const StudioPanel = forwardRef<
         o,
         async (prompt, focus) =>
           complete({
-            provider: settings.provider,
-            apiKey: activeKey(settings),
-            model: settings.model,
-            thinking: settings.thinking,
-            maxOutput: settings.maxOutput,
-            temperature: settings.temperature ?? undefined,
-            signal: job.signal,
-            onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+            ...llmRequest(job.signal, meter),
             messages: [
               { role: "system", content: await groundedSystem(scoped, focus, { exhaustive: true, onPhase: job.setPhase }) },
               { role: "user", content: prompt },
@@ -561,7 +569,8 @@ const StudioPanel = forwardRef<
         notebookId,
         "audio",
         title,
-        JSON.stringify({ audio, script: turns, note })
+        JSON.stringify({ audio, script: turns, note }),
+        meterTotal(meter)
       );
       return `Saved an audio overview to Studio as “${title}” — ${turns.length} turns${audio ? " · mp3 ready" : ""}${note ? ` · ${note}` : ""}.`;
     } catch (e) {
@@ -584,6 +593,7 @@ const StudioPanel = forwardRef<
       return "Add an API key in Settings first — I opened it for you.";
     }
     const job = startStudioJob(notebookId, "research", title, "Planning searches…");
+    const meter = newUsageMeter();
     try {
       const outcome = await deepResearch({
         settings,
@@ -591,6 +601,7 @@ const StudioPanel = forwardRef<
         description,
         signal: job.signal,
         onPhase: job.setPhase,
+        onUsage: (provider, model, u) => meterUsage(meter, provider, model, u),
       });
 
       throwIfCancelled(job.signal);
@@ -603,7 +614,8 @@ const StudioPanel = forwardRef<
           sources: (outcome.pages.length > 0 ? outcome.pages : outcome.hits.slice(0, 12)).map(
             (s) => ({ title: s.title, url: s.url })
           ),
-        })
+        }),
+        meterTotal(meter)
       );
 
       // ground future chats: import the read pages as link sources
@@ -693,10 +705,11 @@ const StudioPanel = forwardRef<
   ) => {
     setReviseBusy(replace ? "replace" : "new");
     const ctrl = new AbortController();
+    const meter = newUsageMeter();
     try {
       const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`;
       const request = {
-        ...llmRequest(ctrl.signal),
+        ...llmRequest(ctrl.signal, meter),
         messages: [
           { role: "system" as const, content: await groundedSystem(sources, note) },
           { role: "user" as const, content: revisePrompt },
@@ -764,9 +777,9 @@ const StudioPanel = forwardRef<
 
       const title = replace ? a.title : `${a.title} (revised)`;
       if (replace) {
-        await updateArtifact(a.id, data);
+        await updateArtifact(a.id, data, addOutputUsage(parseOutputUsage(a.usage), meterTotal(meter)));
       } else {
-        await addArtifact(notebookId, a.kind, title, data);
+        await addArtifact(notebookId, a.kind, title, data, meterTotal(meter));
       }
       onArtifactsChanged();
       setRevising(null);
@@ -910,6 +923,7 @@ const StudioPanel = forwardRef<
           onArtifactChanged={onArtifactsChanged}
           running={jobs.length}
           dark={isDarkTheme(settings.theme)}
+          showDetails={settings.showDetails}
           onFixInteractive={(problem) => fixInteractive(artifacts.find((x) => x.id === viewing.id) ?? viewing, problem)}
         />
       ) : (

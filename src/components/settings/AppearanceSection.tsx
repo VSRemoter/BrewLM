@@ -70,7 +70,7 @@ export default function AppearanceSection({
         </Row>
         <Row
           label="Response details"
-          desc="Token counts and cost under each AI reply. /details in chat toggles this too."
+          desc="Token counts and cost under each AI reply and at the foot of each Studio output. /details in chat toggles this too."
         >
           <Toggle
             label="Response details"

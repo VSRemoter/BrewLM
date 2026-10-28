@@ -20,7 +20,7 @@ import {
   touchChat,
   touchNotebook,
 } from "./db";
-import { complete, extractJson } from "./llm";
+import { complete, extractJson, type StreamUsage } from "./llm";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -48,7 +48,7 @@ import {
 } from "./studio";
 import { writeAudioScript } from "./audioScript";
 import { synthesizeScript } from "./tts";
-import { recordUsage } from "./usage";
+import { meterTotal, meterUsage, newUsageMeter, recordUsage } from "./usage";
 import type { Source } from "./types";
 
 const POLL_MS = 3000;
@@ -223,6 +223,8 @@ async function runGenerateJob(p: {
   const sources = await withoutConstitutionIfOff(p.notebook_id, await listSources(p.notebook_id));
   const grounding = sources.filter((s) => s.type === "context" || isTextSource(s));
   const o = p.options;
+  /** What this output cost to make, saved with it. */
+  const meter = newUsageMeter();
 
   if (p.kind === "research") {
     const outcome = await deepResearch({
@@ -230,6 +232,7 @@ async function runGenerateJob(p: {
       title: o.topic,
       description: "",
       onPhase: (phase) => void setJobProgress(phase),
+      onUsage: (provider, model, u) => meterUsage(meter, provider, model, u),
     });
     for (const page of outcome.pages) {
       const src = await addSource(p.notebook_id, "link", page.title, page.text, page.url);
@@ -244,7 +247,8 @@ async function runGenerateJob(p: {
         sources: (outcome.pages.length > 0 ? outcome.pages : outcome.hits.slice(0, 12)).map(
           (s) => ({ title: s.title, url: s.url })
         ),
-      })
+      }),
+      meterTotal(meter)
     );
     await touchNotebook(p.notebook_id);
     return `Saved research “${o.topic}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
@@ -258,6 +262,10 @@ async function runGenerateJob(p: {
   const totalSourceChars = grounding
     .filter(isRetrievable)
     .reduce((sum, s) => sum + sourceText(s).length, 0);
+  const tally = (u: StreamUsage) => {
+    void recordUsage("studio", settings.provider, settings.model, u);
+    meterUsage(meter, settings.provider, settings.model, u);
+  };
   /** `query` = what to retrieve from the sources (defaults to the prompt itself). */
   const ask = async (prompt: string, opts: { exhaustive?: boolean; query?: string } = {}) => {
     // Huge notebooks: cached whole-notebook condensation so every tool covers
@@ -273,7 +281,7 @@ async function runGenerateJob(p: {
         thinking: settings.thinking,
         maxOutput: settings.maxOutput,
         temperature: settings.temperature ?? undefined,
-        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+        onUsage: tally,
         messages: [
           { role: "system", content: condensedSystemPrompt(notes) },
           { role: "user", content: prompt },
@@ -288,7 +296,7 @@ async function runGenerateJob(p: {
       thinking: settings.thinking,
       maxOutput: settings.maxOutput,
       temperature: settings.temperature ?? undefined,
-      onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+      onUsage: tally,
       messages: [
         {
           role: "system",
@@ -379,7 +387,7 @@ async function runGenerateJob(p: {
     default:
       throw new Error(`Unknown generation kind: ${p.kind}`);
   }
-  await addArtifact(p.notebook_id, p.kind as never, title, data);
+  await addArtifact(p.notebook_id, p.kind as never, title, data, meterTotal(meter));
   await touchNotebook(p.notebook_id);
   return done;
 }

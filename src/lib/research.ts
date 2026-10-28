@@ -2,7 +2,7 @@ import { complete, extractJson, type StreamUsage } from "./llm";
 import { activeKey, researchModelFor } from "./settings";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
-import { recordUsage } from "./usage";
+import { recordUsage, type UsageSink } from "./usage";
 
 /** Parse token usage out of a non-streaming provider response, when present. */
 function usageFromJson(provider: Provider, json: unknown): StreamUsage {
@@ -22,6 +22,12 @@ function usageFromJson(provider: Provider, json: unknown): StreamUsage {
     cachedRead: (u.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens ?? u.cache_read_input_tokens,
     costUsd: typeof u.cost === "number" ? u.cost : undefined,
   };
+}
+
+/** Ledger entry for one research call, also handed to the caller's per-output total. */
+function noteUsage(provider: Provider, model: string, u: StreamUsage, sink?: UsageSink) {
+  void recordUsage("research", provider, model, u);
+  sink?.(provider, model, u);
 }
 
 /** Throws a recognisable AbortError so the caller can tell cancel from failure. */
@@ -64,7 +70,8 @@ async function searchOpenRouter(
   query: string,
   apiKey: string,
   model: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: UsageSink
 ): Promise<WebHit[]> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -88,12 +95,17 @@ async function searchOpenRouter(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
-  void recordUsage("research", "openrouter", model, usageFromJson("openrouter", json));
+  noteUsage("openrouter", model, usageFromJson("openrouter", json), onUsage);
   return collectCitations(json.choices?.[0]?.message?.annotations);
 }
 
 /** OpenAI: search-preview model emits url_citation annotations. */
-async function searchOpenAI(query: string, apiKey: string, signal?: AbortSignal): Promise<WebHit[]> {
+async function searchOpenAI(
+  query: string,
+  apiKey: string,
+  signal?: AbortSignal,
+  onUsage?: UsageSink
+): Promise<WebHit[]> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -113,7 +125,7 @@ async function searchOpenAI(query: string, apiKey: string, signal?: AbortSignal)
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
-  void recordUsage("research", "openai", "gpt-4o-mini-search-preview", usageFromJson("openai", json));
+  noteUsage("openai", "gpt-4o-mini-search-preview", usageFromJson("openai", json), onUsage);
   return collectCitations(json.choices?.[0]?.message?.annotations);
 }
 
@@ -134,7 +146,8 @@ async function searchAnthropic(
   query: string,
   apiKey: string,
   model: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: UsageSink
 ): Promise<WebHit[]> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -154,7 +167,7 @@ async function searchAnthropic(
   });
   if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
   const json = await res.json();
-  void recordUsage("research", "anthropic", model, usageFromJson("anthropic", json));
+  noteUsage("anthropic", model, usageFromJson("anthropic", json), onUsage);
   const out: WebHit[] = [];
   for (const block of json.content ?? []) {
     // results of the tool calls
@@ -175,13 +188,18 @@ async function searchAnthropic(
   return out;
 }
 
-async function searchWeb(query: string, settings: Settings, signal?: AbortSignal): Promise<WebHit[]> {
+async function searchWeb(
+  query: string,
+  settings: Settings,
+  signal?: AbortSignal,
+  onUsage?: UsageSink
+): Promise<WebHit[]> {
   if (settings.provider === "anthropic" && settings.anthropicKey)
-    return searchAnthropic(query, settings.anthropicKey, researchModelFor(settings), signal);
+    return searchAnthropic(query, settings.anthropicKey, researchModelFor(settings), signal, onUsage);
   if (settings.provider === "openai" && settings.openaiKey)
-    return searchOpenAI(query, settings.openaiKey, signal);
+    return searchOpenAI(query, settings.openaiKey, signal, onUsage);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return searchOpenRouter(query, settings.openrouterKey, researchModelFor(settings), signal);
+    return searchOpenRouter(query, settings.openrouterKey, researchModelFor(settings), signal, onUsage);
   return [];
 }
 
@@ -368,8 +386,10 @@ export async function deepResearch(opts: {
   onPhase?: (phase: string) => void;
   /** Cancel mid-pipeline — an AbortError propagates to the caller. */
   signal?: AbortSignal;
+  /** Every model call's usage, for the report's own cost total. */
+  onUsage?: UsageSink;
 }): Promise<ResearchOutcome> {
-  const { settings, title, description, signal, onPhase = () => {} } = opts;
+  const { settings, title, description, signal, onPhase = () => {}, onUsage } = opts;
   const key = activeKey(settings);
   if (settings.provider === "local")
     throw new Error("Deep research needs web search, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to run it.");
@@ -385,7 +405,7 @@ export async function deepResearch(opts: {
       maxOutput: settings.maxOutput,
       temperature: settings.temperature ?? undefined,
       signal,
-      onUsage: (u) => void recordUsage("research", settings.provider, model, u),
+      onUsage: (u) => noteUsage(settings.provider, model, u, onUsage),
       messages: [
         ...(system ? [{ role: "system" as const, content: system }] : []),
         { role: "user" as const, content: prompt },
@@ -424,7 +444,7 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
     throwIfAborted(signal);
     onPhase(`Searching ${i + 1}/${queries.length}: ${queries[i]}`);
     try {
-      for (const h of await searchWeb(queries[i], settings, signal)) {
+      for (const h of await searchWeb(queries[i], settings, signal, onUsage)) {
         const u = normalizeUrl(h.url);
         if (!u || seen.has(u)) continue;
         seen.add(u);

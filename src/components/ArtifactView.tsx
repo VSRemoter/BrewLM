@@ -22,6 +22,7 @@ import { hydrateMermaid } from "../lib/mermaid";
 import { INTERACTIVE_ERROR_MESSAGE, parseInteractive, sandboxDoc } from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
+import { fmtUsageLine, parseOutputUsage } from "../lib/usage";
 import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
 import MindmapView from "./MindmapView";
 import { platform } from "../platform";
@@ -44,6 +45,7 @@ export default function ArtifactView({
   onArtifactChanged,
   running = 0,
   dark = false,
+  showDetails = false,
   onFixInteractive,
 }: {
   artifact: Artifact;
@@ -56,6 +58,8 @@ export default function ArtifactView({
   running?: number;
   /** The app theme is dark — interactive pages are told so they match. */
   dark?: boolean;
+  /** Response details setting: show what the output cost to make. */
+  showDetails?: boolean;
   /** Repair an interactive page that failed at runtime; resolves to an error message, or null. */
   onFixInteractive?: (problem: string) => Promise<string | null>;
 }) {
@@ -65,6 +69,7 @@ export default function ArtifactView({
   const [exportError, setExportError] = useState<string | null>(null);
   /** Interactive pages: shown over the whole window instead of in the panel. */
   const [expanded, setExpanded] = useState(false);
+  const usage = useMemo(() => (showDetails ? parseOutputUsage(artifact.usage) : null), [showDetails, artifact.usage]);
 
   /** Copy the output as plain text / markdown. */
   const copy = async () => {
@@ -221,6 +226,14 @@ export default function ArtifactView({
           )}
           {artifact.kind === "research" && <ResearchView data={artifact.data} />}
           {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
+        </div>
+      )}
+      {usage && (
+        <div
+          className="shrink-0 border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3"
+          title="Tokens and cost to generate this output, revisions included"
+        >
+          {fmtUsageLine(usage)}
         </div>
       )}
     </div>

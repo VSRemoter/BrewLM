@@ -105,6 +105,8 @@ export interface Artifact {
   data: string;
   /** 1 = pinned to the top of the Studio list. */
   pinned: number;
+  /** What it cost to make (OutputUsage JSON); null for older outputs and drawings. */
+  usage?: string | null;
   created_at: number;
 }
 

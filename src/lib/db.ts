@@ -2,6 +2,7 @@ import { platform, type SqlDb } from "../platform";
 import { SYNCED_TABLES } from "./syncTables";
 import { blobRefsIn, gcBlobs, isBlobRef, isMediaValue, storeArtifactMedia, storeMedia } from "./blobs";
 import type { Artifact, ArtifactKind, Chat, ChatMessage, Folder, Notebook, Source, SourceChunk, SourceType } from "./types";
+import type { OutputUsage } from "./usage";
 
 export function uid(): string {
   return crypto.randomUUID();
@@ -116,6 +117,10 @@ async function initDb(): Promise<SqlDb> {
   const artCols = await db.select<{ name: string }[]>("PRAGMA table_info(artifacts)");
   if (!artCols.some((c) => c.name === "pinned")) {
     await db.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  // What the output cost to make (OutputUsage JSON) — Response details in its viewer.
+  if (!artCols.some((c) => c.name === "usage")) {
+    await db.execute("ALTER TABLE artifacts ADD COLUMN usage TEXT");
   }
   await db.execute(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -434,8 +439,8 @@ export async function cloneNotebook(
       [srcId]
     )) {
       await d.execute(
-        "INSERT INTO artifacts (id, notebook_id, kind, title, data, pinned, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        [uid(), nb.id, a.kind, a.title, a.data, a.pinned ?? 0, now]
+        "INSERT INTO artifacts (id, notebook_id, kind, title, data, pinned, usage, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        [uid(), nb.id, a.kind, a.title, a.data, a.pinned ?? 0, a.usage ?? null, now]
       );
     }
   }
@@ -990,7 +995,8 @@ export async function addArtifact(
   notebookId: string,
   kind: ArtifactKind,
   title: string,
-  data: string
+  data: string,
+  usage?: OutputUsage | null
 ): Promise<Artifact> {
   const d = await getDb();
   const art: Artifact = {
@@ -1001,11 +1007,12 @@ export async function addArtifact(
     // Audio overviews: the sound file goes to the media store.
     data: await storeArtifactMedia(data),
     pinned: 0,
+    usage: usage ? JSON.stringify(usage) : null,
     created_at: Date.now(),
   };
   await d.execute(
-    "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-    [art.id, art.notebook_id, art.kind, art.title, art.data, art.created_at]
+    "INSERT INTO artifacts (id, notebook_id, kind, title, data, usage, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [art.id, art.notebook_id, art.kind, art.title, art.data, art.usage, art.created_at]
   );
   return art;
 }
@@ -1026,10 +1033,20 @@ export async function setArtifactPinned(id: string, pinned: boolean): Promise<vo
   await d.execute("UPDATE artifacts SET pinned = $1 WHERE id = $2", [pinned ? 1 : 0, id]);
 }
 
-/** Rewrite an artifact's payload in place (Studio "Revise" → Replace original). */
-export async function updateArtifact(id: string, data: string): Promise<void> {
+/**
+ * Rewrite an artifact's payload in place (Studio "Revise" → Replace original).
+ * AI rewrites pass the output's new running cost; hand edits leave it alone.
+ */
+export async function updateArtifact(id: string, data: string, usage?: OutputUsage | null): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [await storeArtifactMedia(data), id]);
+  const stored = await storeArtifactMedia(data);
+  if (usage === undefined) await d.execute("UPDATE artifacts SET data = $1 WHERE id = $2", [stored, id]);
+  else
+    await d.execute("UPDATE artifacts SET data = $1, usage = $2 WHERE id = $3", [
+      stored,
+      usage ? JSON.stringify(usage) : null,
+      id,
+    ]);
 }
 
 /** Rename an artifact in place (Studio "Revise" modal title field — saved on the fly). */

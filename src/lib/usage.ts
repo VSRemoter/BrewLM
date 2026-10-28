@@ -198,6 +198,105 @@ export function fmtReplyCost(usd: number): string {
   return `$${usd.toPrecision(2).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+/** Token counts for a usage line: 1234 → "1.2k", nothing for zero. */
+function fmtLineTokens(n: number | undefined): string | null {
+  if (!n) return null;
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+}
+
+/** "1.2k in · 340 out · 800 cache hit · ~$0.0031" — the Response details line. */
+export function fmtUsageLine(u: {
+  input?: number;
+  output?: number;
+  cachedRead?: number;
+  costUsd?: number;
+  estimated?: boolean;
+}): string {
+  return [
+    fmtLineTokens(u.input) && `${fmtLineTokens(u.input)} in`,
+    fmtLineTokens(u.output) && `${fmtLineTokens(u.output)} out`,
+    fmtLineTokens(u.cachedRead) && `${fmtLineTokens(u.cachedRead)} cache hit`,
+    u.costUsd != null && `${u.estimated ? "~" : ""}${fmtReplyCost(u.costUsd)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/* ---------------------------- Per-output totals --------------------------- */
+
+/** What one Studio output cost to make, saved with it (artifacts.usage, JSON). */
+export interface OutputUsage {
+  input: number;
+  output: number;
+  cachedRead: number;
+  /** Absent when some call's model has no known price. */
+  costUsd?: number;
+  /** The cost includes price-table estimates. */
+  estimated?: boolean;
+}
+
+/** One model call's usage, with the provider and model that actually served it. */
+export type UsageSink = (provider: Provider, model: string, u: StreamUsage) => void;
+
+/**
+ * Running total across every model call behind one output (a storyboard plus
+ * its page, each audio script section…). Each call is priced on its own model,
+ * so research's search calls and writing calls add up correctly.
+ */
+export interface UsageMeter {
+  total: OutputUsage;
+  costUsd: number;
+  priced: boolean;
+  calls: number;
+}
+
+export function newUsageMeter(): UsageMeter {
+  return { total: { input: 0, output: 0, cachedRead: 0 }, costUsd: 0, priced: true, calls: 0 };
+}
+
+export function meterUsage(m: UsageMeter, provider: Provider, model: string, u: StreamUsage): void {
+  if (!u.input && !u.output && !u.cachedRead && !u.cachedWrite && !u.costUsd) return;
+  m.calls += 1;
+  m.total.input += u.input ?? 0;
+  m.total.output += u.output ?? 0;
+  m.total.cachedRead += u.cachedRead ?? 0;
+  const cost = replyCostUsd(provider, model, u);
+  if (!cost) m.priced = false;
+  else {
+    m.costUsd += cost.usd;
+    if (cost.estimated) m.total.estimated = true;
+  }
+}
+
+/** The meter's total, or null when no call reported usage. */
+export function meterTotal(m: UsageMeter): OutputUsage | null {
+  if (m.calls === 0) return null;
+  return { ...m.total, costUsd: m.priced ? m.costUsd : undefined };
+}
+
+/** An output revised in place: what it cost before plus the revision. */
+export function addOutputUsage(a: OutputUsage | null, b: OutputUsage | null): OutputUsage | null {
+  if (!a || !b) return a ?? b;
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cachedRead: a.cachedRead + b.cachedRead,
+    costUsd: a.costUsd != null && b.costUsd != null ? a.costUsd + b.costUsd : undefined,
+    estimated: a.estimated || b.estimated || undefined,
+  };
+}
+
+/** artifacts.usage as saved; null for outputs made before it was tracked. */
+export function parseOutputUsage(raw: string | null | undefined): OutputUsage | null {
+  if (!raw) return null;
+  try {
+    const u = JSON.parse(raw) as OutputUsage;
+    return u && typeof u === "object" && typeof u.input === "number" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------ Aggregations ------------------------------ */
 
 export interface UsageSummary {

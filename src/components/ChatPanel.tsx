@@ -119,7 +119,7 @@ import {
 import { platform } from "../platform";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
-import { fmtReplyCost, recordUsage, replyCostUsd } from "../lib/usage";
+import { fmtUsageLine, recordUsage, replyCostUsd } from "../lib/usage";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import { FONTS, chooseFont } from "../lib/fonts";
@@ -345,7 +345,7 @@ const COMMANDS: ChatCommand[] = [
   {
     cmd: "/details",
     usage: "/details [on|off]",
-    desc: "Show or hide token counts and cost under AI replies",
+    desc: "Show or hide token counts and cost on AI replies and Studio outputs",
     icon: Info,
     takesArgs: false,
   },
@@ -572,7 +572,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/researchmodel <id>\` — picks the model Deep Research and \`/search\` run on, separate from your chat model (your research models autocomplete); \`/researchmodel main\` goes back to your main model. \`/researchmodel add <id>\` and \`/researchmodel remove <id>\` edit that list. Also in Settings → AI Model → Research model.
 - \`/voice\` — shows which voices the Audio overview hosts use. \`/voicehost <name>\` and \`/voicecohost <name>\` switch the Host's and Co-Host's voice, and \`/voice swap\` trades them. \`/voice add <name>\` saves a voice — on OpenRouter use the model's own voice name (e.g. \`voice_3150\` for Voxtral TTS 3), for ElevenLabs add its voice ID too, e.g. \`/voice add Rachel 21m00Tcm4TlvDq8ikWAM\` — and \`/voice remove <name>\` deletes one. Also in Settings → Audio Voices.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
-- \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
+- \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply and at the foot of each Studio output (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = replies (and Studio) ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
@@ -2049,8 +2049,8 @@ export default function ChatPanel({
         notebookId,
         "assistant",
         next
-          ? "Response details **on**: token counts and cost show under each AI reply. (`/details` toggles this.)"
-          : "Response details **off**: replies show just the answer. (`/details` toggles this.)"
+          ? "Response details **on**: token counts and cost show under each AI reply and on Studio outputs. (`/details` toggles this.)"
+          : "Response details **off**: replies and Studio outputs show just the content. (`/details` toggles this.)"
       );
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, isFirst ? text : undefined);
@@ -3386,12 +3386,6 @@ export default function ChatPanel({
 /** Usage line data: token counts plus the reply's cost (estimated = price table). */
 type ReplyUsage = StreamUsage & { estimated?: boolean };
 
-/** Token counts rendered compactly: 1234 → "1.2k". */
-function fmtTokens(n: number | undefined): string | null {
-  if (!n) return null;
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-}
-
 /** How long a newly reached block of a streaming reply takes to fade in. */
 const STREAM_FADE_MS = 450;
 
@@ -3566,14 +3560,7 @@ function Bubble({
         />
         {usage && (
           <div className="mt-2 border-t border-edge-soft pt-1.5 text-[10.5px] text-ink-3">
-            {[
-              fmtTokens(usage.input) && `${fmtTokens(usage.input)} in`,
-              fmtTokens(usage.output) && `${fmtTokens(usage.output)} out`,
-              fmtTokens(usage.cachedRead) && `${fmtTokens(usage.cachedRead)} cache hit`,
-              usage.costUsd != null && `${usage.estimated ? "~" : ""}${fmtReplyCost(usage.costUsd)}`,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
+            {fmtUsageLine(usage)}
           </div>
         )}
       </div>
