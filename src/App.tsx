@@ -42,7 +42,7 @@ import { setSmoothScroll } from "./lib/smoothScroll";
 import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import { platform } from "./platform";
 import type { Folder, Notebook, Settings } from "./lib/types";
-import { AudioPlayerProvider } from "./components/AudioPlayer";
+import { AudioPlayerProvider, MiniPlayerDock } from "./components/AudioPlayer";
 import { confirmAction, ConfirmHost } from "./components/ConfirmDialog";
 import { bootDone, bootStep } from "./lib/boot";
 
@@ -270,6 +270,7 @@ export default function App() {
                 notebook={nb}
                 settings={settings}
                 tabbed={!narrow}
+                shown={shown}
                 onBack={() => showTab(null)}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onRenamed={refresh}
@@ -375,6 +376,8 @@ export default function App() {
           />
         </div>
         </div>
+        {/* Narrow screens: the audio player docks along the bottom (an open notebook docks it above its tabs). */}
+        {narrow && <MiniPlayerDock edge />}
 
         {switcherOpen && (
           <QuickSwitcher

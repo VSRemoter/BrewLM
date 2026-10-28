@@ -668,7 +668,7 @@ function AudioView({ id, title, data }: { id: string; title: string; data: strin
         <div>
           <PlayerControls />
           <p className="mt-1.5 text-[11px] text-ink-3">
-            {audio ? "Keeps playing if you minimize or close this — controls stay in the corner." : `Read with your computer's voices${note ? ` · ${note}` : ""} — keeps playing if you minimize this.`}
+            {audio ? "Keeps playing if you minimize or close this — the player stays on screen." : `Read with your device's voices${note ? ` · ${note}` : ""} — keeps playing if you minimize this.`}
           </p>
         </div>
       ) : audio || SPEECH_OK ? (
@@ -677,7 +677,7 @@ function AudioView({ id, title, data }: { id: string; title: string; data: strin
             <Play size={11} className="mr-1.5 inline" /> {audio ? "Play" : "Play with system voices"}
           </GhostButton>
           <span className="text-[11px] text-ink-3">
-            {audio ? "Synthesized audio overview" : `Played locally with your computer's voices${note ? ` · ${note}` : ""}`}
+            {audio ? "Synthesized audio overview" : `Played locally with your device's voices${note ? ` · ${note}` : ""}`}
           </span>
         </div>
       ) : (

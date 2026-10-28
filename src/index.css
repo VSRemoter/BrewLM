@@ -899,13 +899,17 @@ html[data-drawing="full"] .mini-player {
   }
 }
 
-@media (max-width: 767px) {
-  /* iOS zooms the page into any field with text under 16px. */
+/* iOS and iPadOS zoom the page into any field with text under 16px: phones,
+   and iPads in either orientation. */
+@media (max-width: 1023px), (pointer: coarse) {
   input,
   textarea,
   select {
     font-size: max(16px, 1em) !important;
   }
+}
+
+@media (max-width: 767px) {
   /* No grey flash on tap: it should feel like an app. */
   body {
     -webkit-tap-highlight-color: transparent;

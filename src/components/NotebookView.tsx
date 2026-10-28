@@ -30,6 +30,7 @@ import {
 import { ingestFiles } from "../lib/ingest";
 import { fetchLinkContent } from "../lib/source";
 import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
+import { MiniPlayerDock } from "./AudioPlayer";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
 import { confirmAction } from "./ConfirmDialog";
@@ -55,6 +56,7 @@ export default function NotebookView({
   notebook,
   settings,
   tabbed,
+  shown = true,
   onBack,
   onOpenSettings,
   onRenamed,
@@ -66,6 +68,8 @@ export default function NotebookView({
   settings: Settings;
   /** Desktop: App's tab strip is the top bar, so this view draws no header. */
   tabbed?: boolean;
+  /** This notebook is the one on screen (App keeps other open notebooks mounted, hidden). */
+  shown?: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
   onRenamed: () => void;
@@ -508,6 +512,8 @@ export default function NotebookView({
           <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{chatPanel}</div>
           <div className={`absolute inset-0 flex flex-col ${tab === "studio" ? "" : "hidden"}`}>{studioPanel}</div>
         </div>
+        {/* The audio player docks here, above the tabs, instead of floating over them. */}
+        {shown && <div className={typing ? "hidden" : ""}><MiniPlayerDock level={1} /></div>}
         <nav
           className={`safe-bottom shrink-0 border-t border-edge-soft bg-panel ${typing ? "hidden" : "flex"}`}
           aria-label="Notebook sections"
