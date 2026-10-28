@@ -243,13 +243,13 @@ const StudioPanel = forwardRef<
     scoped.filter(isTextSource).reduce((n, s) => n + sourceText(s).length, 0);
 
   /**
-   * Sources to ground a generation on. Constitutions always pass through;
-   * when the customize modal scopes to specific sources, only those are used
-   * as knowledge material. No ids (undefined or []) = every source — one-click
-   * and slash-command runs pass [], and the modal can't submit an empty pick.
+   * Sources to ground a generation on. When the customize modal scopes to
+   * specific sources, only those are used. No ids (undefined or []) = every
+   * source — one-click and slash-command runs pass [], and the modal can't
+   * submit an empty pick.
    */
   const scopedSources = (sourceIds?: string[]): Source[] =>
-    sourceIds?.length ? sources.filter((s) => s.type === "context" || sourceIds.includes(s.id)) : sources;
+    sourceIds?.length ? sources.filter((s) => sourceIds.includes(s.id)) : sources;
 
   /** Small spinner on a tool card while any of its jobs is running. */
   const runningSpinner = (kind: ArtifactKind) =>

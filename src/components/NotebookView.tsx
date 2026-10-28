@@ -403,11 +403,9 @@ export default function NotebookView({
       onChanged={refreshSources}
     />
   );
-  // With the constitution off, Studio never sees it (the source itself stays).
-  const studioSources = useMemo(
-    () => (constitutionOn ? sources : sources.filter((s) => s.type !== "context")),
-    [sources, constitutionOn]
-  );
+  // Studio never sees the constitution — it governs chat only; Studio tools
+  // carry their own settings (customize modals).
+  const studioSources = useMemo(() => sources.filter((s) => s.type !== "context"), [sources]);
 
   const chatsPanel = (
     <ChatsPanel

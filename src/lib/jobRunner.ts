@@ -220,8 +220,8 @@ async function runGenerateJob(p: {
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key in Settings on the desktop first.");
 
-  const sources = await withoutConstitutionIfOff(p.notebook_id, await listSources(p.notebook_id));
-  const grounding = sources.filter((s) => s.type === "context" || isTextSource(s));
+  // Studio ignores the constitution — its tools carry their own settings.
+  const grounding = (await listSources(p.notebook_id)).filter(isTextSource);
   const o = p.options;
   /** What this output cost to make, saved with it. */
   const meter = newUsageMeter();
