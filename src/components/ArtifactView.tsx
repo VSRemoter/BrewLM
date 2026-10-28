@@ -1,10 +1,25 @@
-import { Check, ChevronLeft, ChevronRight, Copy, Download, FilePlus2, Loader2, Minimize2, Play, RotateCw } from "lucide-react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  FilePlus2,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Play,
+  RotateCw,
+  Wrench,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isMediaValue, mediaBytes, mediaExt, mediaSrc } from "../lib/blobs";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactText } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
+import { INTERACTIVE_ERROR_MESSAGE, parseInteractive, sandboxDoc } from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
@@ -28,6 +43,8 @@ export default function ArtifactView({
   onSourcesChanged,
   onArtifactChanged,
   running = 0,
+  dark = false,
+  onFixInteractive,
 }: {
   artifact: Artifact;
   /** Minimize: back to the Studio tools and saved outputs. */
@@ -37,11 +54,17 @@ export default function ArtifactView({
   onArtifactChanged?: () => void;
   /** Studio generations still in progress (shown so they aren't forgotten). */
   running?: number;
+  /** The app theme is dark — interactive pages are told so they match. */
+  dark?: boolean;
+  /** Repair an interactive page that failed at runtime; resolves to an error message, or null. */
+  onFixInteractive?: (problem: string) => Promise<string | null>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [added, setAdded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  /** Interactive pages: shown over the whole window instead of in the panel. */
+  const [expanded, setExpanded] = useState(false);
 
   /** Copy the output as plain text / markdown. */
   const copy = async () => {
@@ -85,6 +108,17 @@ export default function ArtifactView({
   const download = async () => {
     setExportError(null);
     try {
+      if (artifact.kind === "interactive") {
+        const page = parseInteractive(artifact.data);
+        if (page) {
+          await platform.saveFile({
+            defaultName: exportName(artifact.title, "html"),
+            filters: [{ name: "Web page", extensions: ["html"] }],
+            data: page.html,
+          });
+          return;
+        }
+      }
       if (artifact.kind === "audio") {
         const parsed = parseAudio(artifact.data);
         if (parsed?.audio) {
@@ -130,6 +164,11 @@ export default function ArtifactView({
             {running}
           </span>
         )}
+        {artifact.kind === "interactive" && (
+          <IconButton onClick={() => setExpanded(true)} label="Full screen">
+            <Maximize2 size={15} strokeWidth={1.8} />
+          </IconButton>
+        )}
         <IconButton onClick={copy} label={copied ? "Copied" : "Copy"}>
           {copied ? <Check size={15} strokeWidth={2.2} className="text-ok" /> : <Copy size={15} strokeWidth={1.8} />}
         </IconButton>
@@ -158,6 +197,15 @@ export default function ArtifactView({
             onSaved={onArtifactChanged}
           />
         </div>
+      ) : artifact.kind === "interactive" ? (
+        <InteractiveView
+          title={artifact.title}
+          data={artifact.data}
+          dark={dark}
+          expanded={expanded}
+          onExpandedChange={setExpanded}
+          onFix={onFixInteractive}
+        />
       ) : (
         <div ref={rootRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {artifact.kind === "flashcards" && <FlashcardView data={artifact.data} />}
@@ -174,6 +222,132 @@ export default function ArtifactView({
           {artifact.kind === "research" && <ResearchView data={artifact.data} />}
           {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ Interactive ------------------------------ */
+
+/**
+ * An AI-built page in a sandboxed iframe: scripts run, but with an opaque
+ * origin (no access to the app, its storage or keys) and no network (CSP
+ * injected by sandboxDoc). Full screen reuses the same iframe — it's restyled
+ * as an overlay, not remounted — so the page keeps its state.
+ */
+function InteractiveView({
+  title,
+  data,
+  dark,
+  expanded,
+  onExpandedChange,
+  onFix,
+}: {
+  title: string;
+  data: string;
+  dark: boolean;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  onFix?: (problem: string) => Promise<string | null>;
+}) {
+  const page = useMemo(() => parseInteractive(data), [data]);
+  const doc = useMemo(() => (page ? sandboxDoc(page.html, dark) : ""), [page, dark]);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  /** Bumped to restart the page from scratch. */
+  const [run, setRun] = useState(0);
+  /** First runtime error the page reported (later ones are usually knock-on effects). */
+  const [problem, setProblem] = useState<string | null>(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
+
+  // A new version of the page (fixed or revised) or a restart starts clean.
+  useEffect(() => setProblem(null), [doc, run]);
+
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== frameRef.current?.contentWindow) return;
+      const msg = e.data as { type?: unknown; message?: unknown } | null;
+      if (msg?.type === INTERACTIVE_ERROR_MESSAGE && typeof msg.message === "string")
+        setProblem((cur) => cur ?? msg.message as string);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onExpandedChange(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded, onExpandedChange]);
+
+  if (!page) return <ParseError />;
+
+  const fix = async () => {
+    if (!onFix || !problem) return;
+    setFixing(true);
+    setFixError(null);
+    const err = await onFix(problem);
+    setFixing(false);
+    setFixError(err);
+  };
+
+  return (
+    <div
+      className={
+        expanded
+          ? "anim-fade fixed inset-0 z-50 flex flex-col bg-canvas"
+          : "flex min-h-0 flex-1 flex-col"
+      }
+      role={expanded ? "dialog" : undefined}
+      aria-label={expanded ? title : undefined}
+    >
+      {expanded && (
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b border-edge-soft bg-panel px-3">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-tight">{title}</span>
+          <IconButton onClick={() => setRun((n) => n + 1)} label="Restart">
+            <RotateCw size={14} strokeWidth={1.8} />
+          </IconButton>
+          <IconButton onClick={() => onExpandedChange(false)} label="Exit full screen (Esc)">
+            <X size={16} strokeWidth={1.8} />
+          </IconButton>
+        </div>
+      )}
+      {problem && (
+        <div className="mx-3 mt-3 flex items-start gap-2 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+          <span className="min-w-0 flex-1">
+            This page hit an error: <span className="font-mono text-[11px]">{problem}</span>
+            {fixError && <span className="mt-1 block">{fixError}</span>}
+          </span>
+          {onFix && (
+            <button
+              onClick={() => void fix()}
+              disabled={fixing}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-danger-edge px-2 py-0.5 font-medium transition-colors hover:bg-panel disabled:opacity-60"
+            >
+              {fixing ? <Loader2 size={11} className="animate-spin" /> : <Wrench size={11} />}
+              {fixing ? "Fixing…" : "Fix with AI"}
+            </button>
+          )}
+        </div>
+      )}
+      <iframe
+        key={run}
+        ref={frameRef}
+        title={title}
+        srcDoc={doc}
+        sandbox="allow-scripts"
+        className="min-h-0 w-full flex-1 border-0 bg-canvas"
+      />
+      {!expanded && (
+        <p className="shrink-0 border-t border-edge-soft px-3 py-1.5 text-[11px] text-ink-3">
+          Tip: open it full screen for the best view.{" "}
+          <button onClick={() => setRun((n) => n + 1)} className="underline hover:text-ink">
+            Restart
+          </button>
+        </p>
       )}
     </div>
   );

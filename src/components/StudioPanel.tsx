@@ -4,6 +4,7 @@ import {
   GraduationCap,
   Layers,
   Loader2,
+  MonitorPlay,
   Network,
   Pencil,
   PenLine,
@@ -17,7 +18,7 @@ import {
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { mediaExt } from "../lib/blobs";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
-import { complete, extractJson, isAbortError } from "../lib/llm";
+import { complete, extractJson, isAbortError, type StreamUsage } from "../lib/llm";
 import {
   condenseNotebook,
   condensedSystemPrompt,
@@ -45,6 +46,16 @@ import {
   type ReportOptions,
 } from "../lib/studio";
 import type { StudioCommand } from "../lib/studioCommands";
+import {
+  INTERACTIVE_REVISE_FORMAT,
+  INTERACTIVE_STYLE_LABELS,
+  buildPagePrompt,
+  buildPageSystem,
+  buildStoryboardPrompt,
+  parseInteractive,
+  writePage,
+  type InteractiveOptions,
+} from "../lib/interactive";
 import { writeAudioScript } from "../lib/audioScript";
 import { parseScript, scriptLine, synthesizeScript, type ScriptTurn } from "../lib/tts";
 import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
@@ -56,6 +67,7 @@ import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
   FlashcardsModal,
+  InteractiveModal,
   MindmapModal,
   QuizModal,
   ReportModal,
@@ -105,6 +117,7 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
   audio: AudioLines,
   research: Telescope,
   drawing: PenLine,
+  interactive: MonitorPlay,
 };
 
 /* ---------------------------------- Audio --------------------------------- */
@@ -153,6 +166,7 @@ const StudioPanel = forwardRef<
   const [drawing, setDrawing] = useState<Artifact | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
+  const [interactiveOpen, setInteractiveOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
   /** Quick-generation naming step: prefilled default + what to run on confirm. */
   const [naming, setNaming] = useState<{
@@ -385,6 +399,107 @@ const StudioPanel = forwardRef<
     }
   };
 
+  /** The chosen model and its Settings → AI Model tuning, for one Studio request. */
+  const llmRequest = (signal: AbortSignal) => ({
+    provider: settings.provider,
+    apiKey: activeKey(settings),
+    model: settings.model,
+    thinking: settings.thinking,
+    maxOutput: settings.maxOutput,
+    temperature: settings.temperature ?? undefined,
+    signal,
+    onUsage: (u: StreamUsage) => void recordUsage("studio", settings.provider, settings.model, u),
+  });
+
+  /** Progress for a page build, e.g. "Building the page… 14 KB written". */
+  const pageProgress = (label: string, setPhase: (p: string) => void) => (chars: number) =>
+    setPhase(`${label}… ${Math.max(1, Math.round(chars / 1024))} KB written`);
+
+  /**
+   * Interactive: a storyboard grounded in the sources, then a self-contained
+   * HTML page built from the storyboard alone (the long, expensive pass skips
+   * re-reading the sources).
+   */
+  const genInteractive = async (opts: InteractiveOptions): Promise<string> => {
+    setInteractiveOpen(false);
+    setError(null);
+    const blocked = canGenerate();
+    if (blocked) {
+      const msg = blocked === "no-key"
+        ? "Add an API key in Settings first — I opened it for you."
+        : blocked;
+      if (blocked !== "no-key") setError(msg);
+      return msg;
+    }
+    const title = opts.title?.trim() || "Interactive";
+    const job = startStudioJob(notebookId, "interactive", title, "Planning the storyboard…");
+    try {
+      const prompt = buildStoryboardPrompt(opts);
+      const system = await groundedSystem(scopedSources(opts.sourceIds), opts.topic || prompt, {
+        exhaustive: true,
+        onPhase: job.setPhase,
+      });
+      job.setPhase("Planning the storyboard…");
+      const storyboard = (
+        await complete({
+          ...llmRequest(job.signal),
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: prompt },
+          ],
+        })
+      ).trim();
+      if (storyboard.length < 100) throw new Error("The storyboard came back empty — try again.");
+      job.setPhase("Building the page…");
+      const html = await writePage({
+        ...llmRequest(job.signal),
+        messages: [
+          { role: "system", content: buildPageSystem(opts.style) },
+          { role: "user", content: buildPagePrompt(storyboard) },
+        ],
+        onProgress: pageProgress("Building the page", job.setPhase),
+      });
+      throwIfCancelled(job.signal);
+      await addArtifact(notebookId, "interactive", title, JSON.stringify({ html, storyboard, style: opts.style }));
+      return `Saved interactive “${title}” to Studio.`;
+    } catch (e) {
+      return failMsg(e, "Interactive", job.signal);
+    } finally {
+      job.finish();
+    }
+  };
+
+  /** One repair pass on an interactive page that failed at runtime; updates it in place. Returns an error message, or null. */
+  const fixInteractive = async (a: Artifact, problem: string): Promise<string | null> => {
+    const page = parseInteractive(a.data);
+    if (!page) return "This page's data looks malformed.";
+    if (!activeKey(settings)) {
+      onOpenSettings();
+      return "Add an API key in Settings first.";
+    }
+    const job = startStudioJob(notebookId, "interactive", a.title, "Fixing the page…");
+    try {
+      const html = await writePage({
+        ...llmRequest(job.signal),
+        messages: [
+          { role: "system", content: buildPageSystem(page.style) },
+          {
+            role: "user",
+            content: `This page fails when it runs:\n\n${problem}\n\nFind and fix the cause, and any similar bugs. Change nothing else.\n\n${page.html}\n\n${INTERACTIVE_REVISE_FORMAT}`,
+          },
+        ],
+        onProgress: pageProgress("Fixing the page", job.setPhase),
+      });
+      throwIfCancelled(job.signal);
+      await updateArtifact(a.id, JSON.stringify({ ...page, html }));
+      return null;
+    } catch (e) {
+      return failMsg(e, "Fix", job.signal);
+    } finally {
+      job.finish();
+    }
+  };
+
   /**
    * Audio overview: chat model writes a two-host podcast script; the TTS
    * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
@@ -527,6 +642,7 @@ const StudioPanel = forwardRef<
         return a.data;
       }
     }
+    if (a.kind === "interactive") return parseInteractive(a.data)?.html ?? a.data;
     return a.data; // mindmap, notes, report
   };
 
@@ -544,6 +660,7 @@ const StudioPanel = forwardRef<
     research:
       "Return ONLY the revised markdown report — no preface, no commentary. Keep the existing citation style (sources by title/url).",
     drawing: "", // drawings aren't revised by the AI
+    interactive: INTERACTIVE_REVISE_FORMAT,
     audio: `Respond with the revised script only: one turn per line, exactly "Host: <line>" or "Co-Host: <line>", alternating and starting with the Host, about as long as the current script unless the instruction says otherwise. The hosts never call each other by name. Spoken language only: no markdown, no emojis, no stage directions.`,
   };
 
@@ -578,20 +695,15 @@ const StudioPanel = forwardRef<
     const ctrl = new AbortController();
     try {
       const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`;
-      const raw = await complete({
-        provider: settings.provider,
-        apiKey: activeKey(settings),
-        model: settings.model,
-        thinking: settings.thinking,
-        maxOutput: settings.maxOutput,
-        temperature: settings.temperature ?? undefined,
-        signal: ctrl.signal,
-        onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
+      const request = {
+        ...llmRequest(ctrl.signal),
         messages: [
-          { role: "system", content: await groundedSystem(sources, note) },
-          { role: "user", content: revisePrompt },
+          { role: "system" as const, content: await groundedSystem(sources, note) },
+          { role: "user" as const, content: revisePrompt },
         ],
-      });
+      };
+      // Pages come back as a whole HTML document; writePage extracts and checks it.
+      const raw = a.kind === "interactive" ? await writePage(request) : await complete(request);
 
       let data: string;
       if (a.kind === "flashcards" || a.kind === "quiz") {
@@ -630,6 +742,9 @@ const StudioPanel = forwardRef<
           }
         }
         data = JSON.stringify({ audio, script: turns, note: ttsNote });
+      } else if (a.kind === "interactive") {
+        const page = parseInteractive(a.data);
+        data = JSON.stringify({ html: raw, storyboard: page?.storyboard ?? "", style: page?.style ?? "animation" });
       } else if (a.kind === "research") {
         const md = raw.trim();
         if (md.length < 30) throw new Error("The revision came back empty — try again.");
@@ -794,6 +909,8 @@ const StudioPanel = forwardRef<
           onSourcesChanged={onSourcesChanged}
           onArtifactChanged={onArtifactsChanged}
           running={jobs.length}
+          dark={isDarkTheme(settings.theme)}
+          onFixInteractive={(problem) => fixInteractive(artifacts.find((x) => x.id === viewing.id) ?? viewing, problem)}
         />
       ) : (
         <>
@@ -886,6 +1003,25 @@ const StudioPanel = forwardRef<
               <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
               <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
             </div>
+            {/* Interactive — an AI-built animation, simulation or game page */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setInteractiveOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setInteractiveOpen(true);
+              }}
+              className="lift group relative col-span-2 flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+            >
+              <MonitorPlay size={16} strokeWidth={1.8} className="text-ink" />
+              <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                Interactive
+                {runningSpinner("interactive")}
+              </span>
+              <span className="text-[11px] leading-tight text-ink-3">
+                Animation, simulation or game you can play with
+              </span>
+            </div>
             {/* Deep research */}
             <button
               onClick={() => setResearchOpen(true)}
@@ -959,6 +1095,10 @@ const StudioPanel = forwardRef<
                       const d = JSON.parse(a.data);
                       subtitle = `${d.sources?.length ?? 0} sources read`;
                     } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
+                    else if (a.kind === "interactive") {
+                      const page = parseInteractive(a.data);
+                      subtitle = `${page ? INTERACTIVE_STYLE_LABELS[page.style] : "Interactive"} · ${formatTime(a.created_at)}`;
+                    }
                     else subtitle = formatTime(a.created_at);
                   } catch {
                     subtitle = formatTime(a.created_at);
@@ -1051,6 +1191,14 @@ const StudioPanel = forwardRef<
             ))}
           </div>
         </Modal>
+      )}
+
+      {interactiveOpen && (
+        <InteractiveModal
+          sources={textSources}
+          onClose={() => setInteractiveOpen(false)}
+          onGenerate={(opts) => void genInteractive(opts)}
+        />
       )}
 
       {researchOpen && (

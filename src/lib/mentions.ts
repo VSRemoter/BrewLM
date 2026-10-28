@@ -1,6 +1,7 @@
 /** @-mentions: reference sources and saved LLM outputs (artifacts) in chat. */
 
 import { sourceText } from "./db";
+import { parseInteractive } from "./interactive";
 import type { Artifact, Source } from "./types";
 
 export interface MentionItem {
@@ -19,6 +20,9 @@ export function artifactText(a: Artifact): string | null {
     switch (a.kind) {
       case "drawing":
         return null; // the user's own sketch — never sent to the AI
+      case "interactive":
+        // The storyboard is the readable version; the page itself is code.
+        return parseInteractive(a.data)?.storyboard.trim() || null;
       case "notes":
       case "report":
       case "mindmap":

@@ -277,6 +277,7 @@ export default function NotebookView({
       research: "research",
       note: "notes", notes: "notes",
       drawing: "drawing", drawings: "drawing",
+      interactive: "interactive", interactives: "interactive",
     };
 
     if (what === "sources") {

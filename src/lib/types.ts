@@ -81,8 +81,21 @@ export interface Chat {
   pinned: number;
 }
 
-/** "drawing" is the user's own Excalidraw sketch — never sent to the AI. */
-export type ArtifactKind = "flashcards" | "quiz" | "mindmap" | "notes" | "report" | "audio" | "research" | "drawing";
+/**
+ * "drawing" is the user's own Excalidraw sketch — never sent to the AI.
+ * "interactive" is an AI-written HTML page (animation, simulation or game),
+ * shown in a sandboxed iframe.
+ */
+export type ArtifactKind =
+  | "flashcards"
+  | "quiz"
+  | "mindmap"
+  | "notes"
+  | "report"
+  | "audio"
+  | "research"
+  | "drawing"
+  | "interactive";
 
 export interface Artifact {
   id: string;

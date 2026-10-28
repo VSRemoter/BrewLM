@@ -32,6 +32,13 @@ import {
   type ReportOptions,
   type ReportType,
 } from "../lib/studio";
+import {
+  INTERACTIVE_STYLE_DESCS,
+  INTERACTIVE_STYLE_LABELS,
+  INTERACTIVE_STYLES,
+  type InteractiveOptions,
+  type InteractiveStyle,
+} from "../lib/interactive";
 import type { Source } from "../lib/types";
 import { Modal, PrimaryButton, Segmented } from "./ui";
 
@@ -480,6 +487,60 @@ export function ReportModal({
           />
         </Field>
       )}
+    </CustomizeFrame>
+  );
+}
+
+/* ------------------------------- interactive ------------------------------- */
+
+export function InteractiveModal({
+  sources,
+  onClose,
+  onGenerate,
+}: {
+  sources: Source[];
+  onClose: () => void;
+  onGenerate: (opts: InteractiveOptions) => void;
+}) {
+  const [style, setStyle] = useState<InteractiveStyle>("animation");
+  const [sourceIds, setSourceIds] = useSourceSelection(sources);
+  const [topic, setTopic] = useState("");
+  const [name, setName] = useState("Interactive");
+
+  return (
+    <CustomizeFrame
+      title="Create interactive"
+      name={name}
+      onNameChange={setName}
+      sources={sources}
+      selected={sourceIds}
+      onSourcesChange={setSourceIds}
+      onClose={onClose}
+      onGenerate={() => onGenerate({ style, topic: topic.trim(), sourceIds, title: name.trim() || "Interactive" })}
+      generateLabel="Generate interactive"
+    >
+      <Field label="Style">
+        <Segmented
+          options={INTERACTIVE_STYLES.map((id) => ({ id, label: INTERACTIVE_STYLE_LABELS[id] }))}
+          value={style}
+          onChange={setStyle}
+        />
+        <p className="mt-1.5 text-[11.5px] leading-snug text-ink-3">
+          {INTERACTIVE_STYLE_DESCS[style]}
+        </p>
+      </Field>
+      <Field label="What should it show? (optional)">
+        <textarea
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          placeholder="e.g. how an action potential travels down a myelinated axon"
+          rows={2}
+          className={textareaClass}
+        />
+      </Field>
+      <p className="-mt-1.5 text-[11px] leading-snug text-ink-3">
+        Writes a whole web page, so it uses more of your model&apos;s output than other tools (roughly 15–45k tokens). Works best on a strong model.
+      </p>
     </CustomizeFrame>
   );
 }
