@@ -98,6 +98,9 @@ export interface Artifact {
 /** "local" = any OpenAI-compatible server the user runs (Ollama, LM Studio, llama.cpp…). */
 export type Provider = "openrouter" | "openai" | "anthropic" | "local";
 
+/** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
+export type Thinking = "auto" | "low" | "medium" | "high";
+
 /** Where Audio overviews get their voices from. */
 export type TtsProvider = "system" | "openai" | "openrouter" | "elevenlabs";
 
@@ -142,6 +145,10 @@ export interface Settings {
   ttsInstructions: string;
   /** Sampling temperature; null = provider default (the param is never sent). */
   temperature: number | null;
+  /** Reasoning effort for models that think before answering. */
+  thinking: Thinking;
+  /** Output ceiling in tokens; null = automatic (sized to the model). */
+  maxOutput: number | null;
   /** OpenRouter Image API model used by /image (separate from the chat model). */
   imageModel: string;
   /** Model for /research and /search, per chat provider; missing or "" = the main model. */

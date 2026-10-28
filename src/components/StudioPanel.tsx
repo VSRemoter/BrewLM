@@ -17,7 +17,7 @@ import {
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { mediaExt } from "../lib/blobs";
 import { addArtifact, addSource, deleteArtifact, renameArtifact, setArtifactPinned, sourceText, updateArtifact } from "../lib/db";
-import { complete, extractJson, isAbortError, LONG_OUTPUT_TOKENS } from "../lib/llm";
+import { complete, extractJson, isAbortError } from "../lib/llm";
 import {
   condenseNotebook,
   condensedSystemPrompt,
@@ -275,7 +275,8 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: LONG_OUTPUT_TOKENS,
+        thinking: settings.thinking,
+        maxOutput: settings.maxOutput,
         temperature: settings.temperature ?? undefined,
         signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -362,7 +363,8 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: LONG_OUTPUT_TOKENS,
+        thinking: settings.thinking,
+        maxOutput: settings.maxOutput,
         temperature: settings.temperature ?? undefined,
         signal: job.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -410,7 +412,8 @@ const StudioPanel = forwardRef<
             provider: settings.provider,
             apiKey: activeKey(settings),
             model: settings.model,
-            maxTokens: LONG_OUTPUT_TOKENS,
+            thinking: settings.thinking,
+            maxOutput: settings.maxOutput,
             temperature: settings.temperature ?? undefined,
             signal: job.signal,
             onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),
@@ -579,7 +582,8 @@ const StudioPanel = forwardRef<
         provider: settings.provider,
         apiKey: activeKey(settings),
         model: settings.model,
-        maxTokens: LONG_OUTPUT_TOKENS,
+        thinking: settings.thinking,
+        maxOutput: settings.maxOutput,
         temperature: settings.temperature ?? undefined,
         signal: ctrl.signal,
         onUsage: (u) => void recordUsage("studio", settings.provider, settings.model, u),

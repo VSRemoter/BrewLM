@@ -7,6 +7,7 @@ import {
   ArrowUpFromLine,
   AudioLines,
   BookOpen,
+  Brain,
   Check,
   ChevronDown,
   Copy,
@@ -64,7 +65,7 @@ import {
   segmentMentions,
   type MentionItem,
 } from "../lib/mentions";
-import { isAbortError, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { isAbortError, streamChat, takesThinking, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
@@ -107,6 +108,7 @@ import {
   saveModelList,
   saveResearchModelList,
   saveVoiceList,
+  THINKING_LABELS,
   TTS_PROVIDER_LABELS,
   voiceLabel,
   type Host,
@@ -121,7 +123,7 @@ import { fmtReplyCost, recordUsage, replyCostUsd } from "../lib/usage";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import { FONTS, chooseFont } from "../lib/fonts";
-import type { Artifact, ChatMessage, Folder, Settings, Source } from "../lib/types";
+import type { Artifact, ChatMessage, Folder, Settings, Source, Thinking } from "../lib/types";
 import { BrewingStatus, IconButton } from "./ui";
 
 const MAX_MENTION_CHARS = 8000;
@@ -348,6 +350,25 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: false,
   },
   {
+    cmd: "/thinking",
+    usage: "/thinking [auto|low|medium|high]",
+    desc: "Show how hard reasoning models think",
+    icon: Brain,
+    takesArgs: false,
+  },
+  ...(["low", "medium", "high", "auto"] as const).map((level) => ({
+    cmd: `/thinking ${level}`,
+    usage: `/thinking ${level}`,
+    desc: {
+      low: "Think briefly — faster and cheaper",
+      medium: "Balanced thinking",
+      high: "Think longest — best for hard questions, slower and costs more",
+      auto: "Each model's own default",
+    }[level],
+    icon: Brain,
+    takesArgs: false,
+  })),
+  {
     cmd: "/ground",
     usage: "/ground",
     desc: "Toggle source grounding on/off for this notebook",
@@ -552,6 +573,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/voice\` — shows which voices the Audio overview hosts use. \`/voicehost <name>\` and \`/voicecohost <name>\` switch the Host's and Co-Host's voice, and \`/voice swap\` trades them. \`/voice add <name>\` saves a voice — on OpenRouter use the model's own voice name (e.g. \`voice_3150\` for Voxtral TTS 3), for ElevenLabs add its voice ID too, e.g. \`/voice add Rachel 21m00Tcm4TlvDq8ikWAM\` — and \`/voice remove <name>\` deletes one. Also in Settings → Audio Voices.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
+- \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = replies (and Studio) ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
@@ -872,6 +894,9 @@ export default function ChatPanel({
   // Mirror of settings.showDetails so /details flips the usage lines instantly.
   const [showDetails, setShowDetails] = useState(settings.showDetails);
   useEffect(() => setShowDetails(settings.showDetails), [settings.showDetails]);
+  // Mirror of settings.thinking so /thinking and the footer chip update instantly.
+  const [thinking, setThinking] = useState(settings.thinking);
+  useEffect(() => setThinking(settings.thinking), [settings.thinking]);
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
@@ -958,6 +983,26 @@ export default function ChatPanel({
 
   const hasDraggedFiles = (e: React.DragEvent) =>
     Array.from(e.dataTransfer.types).includes("Files");
+
+  /** Pasted images (screenshots, "Copy image") ride the same path as dropped files. */
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    // Office/Pages copies carry the text plus a rendered picture of it — paste the text.
+    // Finder copies carry the file names as text, which still counts as an image paste.
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (text && !images.some((f) => text.includes(f.name))) return;
+    e.preventDefault();
+    // Clipboard images all arrive as "image.png" — give each a distinct, mentionable title.
+    const stamp = new Date().toLocaleString("sv-SE").replace(/:/g, ".");
+    const named = images.map((f, i) => {
+      if (!/^image\.\w+$/i.test(f.name)) return f;
+      const ext = f.name.split(".").pop();
+      const suffix = images.length > 1 ? ` (${i + 1})` : "";
+      return new File([f], `Pasted image ${stamp}${suffix}.${ext}`, { type: f.type });
+    });
+    handleFiles(named);
+  };
 
   const catalog = useMemo(() => buildMentionCatalog(sources, artifacts), [sources, artifacts]);
   /** Text sources' bodies — a reply already saved to Sources shows as saved. */
@@ -1218,6 +1263,36 @@ export default function ChatPanel({
     const next = [...list, id];
     await spec.save(next);
     setModels(next);
+  };
+
+  /** /thinking [level] — show or set the Thinking effort (app-wide, no LLM). */
+  const runThinkingCommand = async (text: string): Promise<void> => {
+    const arg = text.replace(/^\/thinking\s*/i, "").trim().toLowerCase();
+    const levels = Object.keys(THINKING_LABELS) as Thinking[];
+    if (arg && !levels.includes(arg as Thinking))
+      return say(`\`${arg}\` isn't a thinking level. Use ${levels.map((l) => `\`/thinking ${l}\``).join(", ")}.`);
+    const level = (arg || thinking) as Thinking;
+    if (arg) {
+      await setSetting("thinking", level);
+      setThinking(level);
+      onSettingsChanged();
+    }
+    const what = {
+      auto: "each model thinks as much as it normally does",
+      low: "reasoning models think briefly, so replies are faster and cheaper",
+      medium: "reasoning models think a moderate amount",
+      high: "reasoning models think longest, which is slower and costs more but helps on hard questions",
+    }[level];
+    const head = arg
+      ? `Thinking effort set to **${THINKING_LABELS[level]}**: ${what}.`
+      : `Thinking effort: **${THINKING_LABELS[level]}** (${what}). Change it with ${levels.filter((l) => l !== level).map((l) => `\`/thinking ${l}\``).join(", ")}.`;
+    if (level === "auto") return say(head);
+    const takes = await takesThinking(settings.provider, keyed, model);
+    await say(
+      takes === false
+        ? `${head} \`${model}\` doesn't take a thinking level, so it ignores this. It applies once you switch to a reasoning model that does.`
+        : head
+    );
   };
 
   /** Execute /model locally (no LLM) — swap the model and persist it. */
@@ -1983,6 +2058,14 @@ export default function ChatPanel({
       return;
     }
 
+    // /thinking [level] — show or set how hard reasoning models think (app-wide).
+    if (/^\/thinking(\s|$)/i.test(text)) {
+      await runThinkingCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
     // /ground — toggle source grounding for this notebook.
     if (/^\/ground(\s|$)/i.test(text)) {
       const next = (notebookGrounded ?? 1) === 0;
@@ -2392,6 +2475,8 @@ export default function ChatPanel({
         model: settings.model,
         messages: llmMessages,
         temperature: settings.temperature ?? undefined,
+        thinking: settings.thinking,
+        maxOutput: settings.maxOutput,
         signal: ctrl.signal,
         onUsage: (u) => {
           usage = u;
@@ -3050,6 +3135,7 @@ export default function ChatPanel({
             <textarea
               ref={textareaRef}
               value={draft}
+              onPaste={handlePaste}
               onChange={(e) => {
                 setDraft(e.target.value);
                 autoSize(e.target);
@@ -3268,6 +3354,22 @@ export default function ChatPanel({
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
             {model} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
+            {thinking !== "auto" && settings.provider !== "local" && (
+              <>
+                {" · "}
+                <button
+                  onClick={async () => {
+                    await setSetting("thinking", "auto");
+                    setThinking("auto");
+                    onSettingsChanged();
+                  }}
+                  className="rounded hover:text-ink-2 hover:underline"
+                  title="Thinking effort for reasoning models. Click to go back to Auto."
+                >
+                  thinking {THINKING_LABELS[thinking].toLowerCase()}
+                </button>
+              </>
+            )}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}

@@ -25,7 +25,7 @@ import {
   unembeddedSourceIds,
   uid,
 } from "./db";
-import { complete, LONG_OUTPUT_TOKENS } from "./llm";
+import { complete } from "./llm";
 import { ensureMediaText } from "./media";
 import { contextBudget, loadLocalServer, localHeaders } from "./local";
 import { activeKey, loadSettings } from "./settings";
@@ -529,9 +529,10 @@ async function condenseTo(
             provider: settings.provider,
             apiKey: activeKey(settings),
             model: settings.model,
-            // Notes are short, but a reasoning model thinks first: 2048 left it
-            // no room to write, failing the whole podcast or report.
-            maxTokens: LONG_OUTPUT_TOKENS,
+            // Notes are short, but a reasoning model thinks first: a small fixed
+            // cap left it no room to write, failing the whole podcast or report.
+            thinking: settings.thinking,
+            maxOutput: settings.maxOutput,
             onUsage: (u) => addUsage(acc, u),
             messages: [
               {

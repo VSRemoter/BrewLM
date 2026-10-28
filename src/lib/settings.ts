@@ -13,8 +13,10 @@ import type {
   Provider,
   ReportType,
   Settings,
+  Thinking,
   TtsProvider,
 } from "./types";
+import { loadOpenRouterCatalog } from "./modelLimits";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
   openrouter: "openai/gpt-4o-mini",
@@ -79,6 +81,16 @@ export const LOCAL_PRESETS: { id: string; label: string; url: string }[] = [
   { id: "llamacpp", label: "llama.cpp", url: "http://localhost:8080/v1" },
 ];
 
+export const THINKING_LABELS: Record<Thinking, string> = {
+  auto: "Auto",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+/** Stops on the output-limit slider in Settings → AI Model, in tokens: 4K to 512K, about ×1.5 apart. */
+export const MAX_OUTPUT_OPTIONS = [4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512].map((k) => k * 1024);
+
 /** Context-window choices for local models, in tokens. */
 export const LOCAL_CONTEXT_OPTIONS = [4096, 8192, 16384, 32768, 131072];
 const DEFAULT_LOCAL_CONTEXT = 8192;
@@ -137,6 +149,8 @@ const DEFAULT_TTS = {
 
 const DEFAULT_BEHAVIOR = {
   temperature: null as number | null,
+  thinking: "auto" as Thinking,
+  maxOutput: null as number | null,
   defFlashcardsAmount: "default" as Amount,
   defFlashcardsDifficulty: "medium" as Difficulty,
   defQuizAmount: "default" as Amount,
@@ -186,6 +200,8 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   ttsVoiceSam: (s) => s.ttsVoiceSam,
   ttsInstructions: (s) => s.ttsInstructions,
   temperature: (s) => (s.temperature == null ? "" : String(s.temperature)),
+  thinking: (s) => s.thinking,
+  maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
   researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
   defFlashcardsAmount: (s) => s.defFlashcardsAmount,
@@ -211,7 +227,7 @@ export async function loadSettings(): Promise<Settings> {
     temperature, defFlashcardsAmount, defFlashcardsDifficulty,
     defQuizAmount, defQuizDifficulty, defAudioMode, defAudioFormat, defAudioLength,
     defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
-    localBaseUrl, localKey, localEmbedModel, localContext, researchModels,
+    localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -246,6 +262,8 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localEmbedModel"),
     getSetting("localContext"),
     getSetting("researchModels"),
+    getSetting("thinking"),
+    getSetting("maxOutput"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -279,6 +297,8 @@ export async function loadSettings(): Promise<Settings> {
   const safeTemp = Number.isFinite(parsedTemp)
     ? Math.min(1, Math.max(0, parsedTemp))
     : DEFAULT_BEHAVIOR.temperature;
+  const parsedMaxOutput = Number.parseInt(maxOutput, 10);
+  const safeMaxOutput = MAX_OUTPUT_OPTIONS.includes(parsedMaxOutput) ? parsedMaxOutput : DEFAULT_BEHAVIOR.maxOutput;
   const parsedContext = Number.parseInt(localContext, 10);
   const safeContext = Number.isFinite(parsedContext) && parsedContext >= 2048 ? parsedContext : DEFAULT_LOCAL_CONTEXT;
   const parsedRetention = Number.parseInt(trashRetentionDays, 10);
@@ -306,6 +326,8 @@ export async function loadSettings(): Promise<Settings> {
     ttsVoiceSam: scrubVoice(ttsVoiceSam) || DEFAULT_TTS.ttsVoiceSam,
     ttsInstructions: ttsInstructions || DEFAULT_TTS.ttsInstructions,
     temperature: safeTemp,
+    thinking: pick(thinking, Object.keys(THINKING_LABELS) as Thinking[], DEFAULT_BEHAVIOR.thinking),
+    maxOutput: safeMaxOutput,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
     researchModels: parseResearchModels(researchModels),
     defFlashcardsAmount: pick(defFlashcardsAmount, AMOUNTS, DEFAULT_BEHAVIOR.defFlashcardsAmount),
@@ -560,18 +582,9 @@ export function normalizeModelId(raw: string): string {
   return id;
 }
 
-let openRouterIds: Promise<string[] | null> | null = null;
-
 /** Every chat model id OpenRouter lists (public endpoint, cached per session). */
-function loadOpenRouterIds(): Promise<string[] | null> {
-  return (openRouterIds ??= fetch("https://openrouter.ai/api/v1/models")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((j) => (Array.isArray(j?.data) ? j.data.map((m: { id: string }) => m.id) : null))
-    .catch(() => null)
-    .then((ids) => {
-      if (!ids) openRouterIds = null; // retry next time
-      return ids;
-    }));
+async function loadOpenRouterIds(): Promise<string[] | null> {
+  return (await loadOpenRouterCatalog())?.map((m) => m.id) ?? null;
 }
 
 export type ModelCheck =

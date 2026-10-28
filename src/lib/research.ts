@@ -1,4 +1,4 @@
-import { complete, extractJson, LONG_OUTPUT_TOKENS, type StreamUsage } from "./llm";
+import { complete, extractJson, type StreamUsage } from "./llm";
 import { activeKey, researchModelFor } from "./settings";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
@@ -381,7 +381,8 @@ export async function deepResearch(opts: {
       provider: settings.provider,
       apiKey: key,
       model,
-      maxTokens: LONG_OUTPUT_TOKENS,
+      thinking: settings.thinking,
+      maxOutput: settings.maxOutput,
       temperature: settings.temperature ?? undefined,
       signal,
       onUsage: (u) => void recordUsage("research", settings.provider, model, u),

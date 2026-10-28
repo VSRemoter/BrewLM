@@ -1,6 +1,7 @@
 import { platform } from "../platform";
 import { budgetForContext, loadLocalServer, localHeaders } from "./local";
-import type { Provider } from "./types";
+import { modelLimits, STANDARD_EFFORTS, type ModelLimits } from "./modelLimits";
+import type { Provider, Thinking } from "./types";
 
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
@@ -24,10 +25,15 @@ interface StreamOptions {
   apiKey: string;
   model: string;
   messages: LlmMessage[];
+  /** Hard cap for deliberately short replies. Omit it: replies are sized to the model. */
   maxTokens?: number;
   jsonMode?: boolean;
   /** Sampling temperature (0–1). Undefined = provider default: never sent. */
   temperature?: number;
+  /** Settings → Thinking effort. "auto" or undefined = the model's default: never sent. */
+  thinking?: Thinking;
+  /** Settings → Max output, in tokens. null or undefined = automatic. */
+  maxOutput?: number | null;
   /** Abort mid-request to cancel generation; fetch + stream stop promptly. */
   signal?: AbortSignal;
   /** Called once the stream ends with provider-reported token usage (if any). */
@@ -46,6 +52,14 @@ function isReasoningModel(model: string): boolean {
 /** Reasoning-model families reject sampling params like temperature. */
 export function supportsTemperature(model: string): boolean {
   return !isReasoningModel(model);
+}
+
+/** Whether a model takes a Thinking effort level; null when its limits can't be looked up. */
+export async function takesThinking(provider: Provider, apiKey: string, model: string): Promise<boolean | null> {
+  if (provider === "local") return false;
+  if (provider === "openai") return isReasoningModel(model);
+  const limits = await modelLimits(provider, apiKey, model);
+  return limits ? limits.efforts.length > 0 : null;
 }
 
 /** True when an error came from an intentional AbortController cancel. */
@@ -71,12 +85,65 @@ export async function* streamChat(opts: StreamOptions): AsyncGenerator<string> {
 }
 
 /**
- * Output ceiling for long-form generations (reports, mind maps, Studio decks,
- * podcast scripts, research write-ups). Reasoning models spend part of it
- * thinking, so 4096 could run out before the answer. It's a cap, not a cost —
- * only the tokens actually written are billed.
+ * Output ceiling when Max output is automatic, lowered to what the model
+ * allows. Reasoning models spend part of it thinking, so it's generous. It's a
+ * cap, not a cost: only the tokens actually written are billed.
  */
-export const LONG_OUTPUT_TOKENS = 8192;
+export const AUTO_OUTPUT_TOKENS = 32_000;
+/** Anthropic needs a cap even when the model's limits can't be looked up; every current Claude model allows this. */
+const FALLBACK_ANTHROPIC_OUTPUT = 8192;
+/** Below this, a reply is too short to be worth retrying for. */
+const MIN_USEFUL_OUTPUT = 1024;
+
+/** Rough prompt size in tokens (~3.5 characters each). */
+function promptTokens(messages: LlmMessage[]): number {
+  return Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 3.5);
+}
+
+/**
+ * Tokens the model may write: `want` (Max output or the automatic ceiling),
+ * never above a short-reply cap, the model's own limit, or the room left
+ * beside the prompt in its context window. undefined = send no cap at all.
+ */
+function outputCap(want: number | undefined, opts: StreamOptions, ceiling?: number, context?: number): number | undefined {
+  const room = context ? context - promptTokens(opts.messages) - 256 : undefined;
+  const caps = [want, opts.maxTokens, ceiling, room].filter((n): n is number => typeof n === "number");
+  return caps.length ? Math.max(256, Math.floor(Math.min(...caps))) : undefined;
+}
+
+/** The effort level to send, or undefined when Thinking is Auto or the model takes none. */
+function effortFor(opts: StreamOptions, limits: ModelLimits | null, level = opts.thinking): string | undefined {
+  if (!level || level === "auto") return undefined;
+  // Unknown limits: OpenRouter drops parameters a model doesn't take; OpenAI only takes effort on reasoning models.
+  const accepted =
+    limits?.efforts ??
+    (opts.provider === "openrouter" || (opts.provider === "openai" && isReasoningModel(opts.model)) ? STANDARD_EFFORTS : []);
+  return accepted.includes(level) ? level : undefined;
+}
+
+/**
+ * An output limit a provider's error says the request went over, so it can be
+ * retried under it: low OpenRouter credit, OpenAI's and Anthropic's per-model
+ * caps, or a prompt plus cap that overflows the context window.
+ */
+function allowedOutput(message: string): number | undefined {
+  const m =
+    /can only afford (\d+)/i.exec(message) ??
+    /supports at most (\d+) completion tokens/i.exec(message) ??
+    /> (\d+), which is the maximum allowed/i.exec(message);
+  if (m) return Number(m[1]);
+  const ctx = /maximum context length is (\d+) tokens.*?\((\d+) in the messages/is.exec(message);
+  if (ctx) return Number(ctx[1]) - Number(ctx[2]);
+  return undefined;
+}
+
+function ranOutThinking(model: string, room: number | undefined): Error {
+  const allowance = room ? `${room.toLocaleString()}-token output allowance` : "output allowance";
+  return new Error(
+    `“${model}” spent its whole ${allowance} thinking and never wrote an answer. ` +
+      "Try again, set Thinking effort to Low in Settings → AI Model, or use a model that thinks less (or not at all) for this."
+  );
+}
 
 /** Non-streaming helper — returns the full completion text. */
 export async function complete(opts: StreamOptions): Promise<string> {
@@ -126,13 +193,21 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     stream: true,
     stream_options: { include_usage: true },
   };
-  // Local windows are small: never ask for more output than the budget leaves room for.
+  const limits = local ? null : await modelLimits(opts.provider, opts.apiKey, opts.model);
+  // Local windows are small: the budget keeps room for the answer. OpenAI
+  // publishes no limits, so automatic sends no cap and it allows the model's maximum.
   const maxTokens = local
-    ? Math.min(opts.maxTokens ?? 4096, budgetForContext(local.context).maxOutput)
-    : opts.maxTokens ?? 4096;
+    ? outputCap(opts.maxOutput ?? budgetForContext(local.context).maxOutput, opts, undefined, local.context)
+    : outputCap(opts.maxOutput ?? (opts.provider === "openai" ? undefined : AUTO_OUTPUT_TOKENS), opts, limits?.maxOutput, limits?.context);
   // o1/o3/gpt-5-class models reject `max_tokens` outright — the request fails.
-  if (isReasoningModel(opts.model)) body.max_completion_tokens = maxTokens;
-  else body.max_tokens = maxTokens;
+  const capField = isReasoningModel(opts.model) ? "max_completion_tokens" : "max_tokens";
+  if (maxTokens) body[capField] = maxTokens;
+  const setEffort = (effort: string) => {
+    if (opts.provider === "openrouter") body.reasoning = { effort };
+    else body.reasoning_effort = effort;
+  };
+  const effort = local ? undefined : effortFor(opts, limits);
+  if (effort) setEffort(effort);
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
@@ -149,8 +224,10 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
 
   // A reasoning model can spend the whole output allowance thinking and stop
   // ("length") before writing a word. Nothing has been shown yet then, so try
-  // once more with twice the room and its thinking turned down.
-  for (let attempt = 0; ; attempt++) {
+  // once more with more room (within the model's limit) and its thinking turned down.
+  let retriedThinking = false;
+  let shrinks = 0;
+  for (;;) {
     const res = await (local ? platform.fetch : fetch)(base, {
       method: "POST",
       headers,
@@ -160,7 +237,18 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       if (local && !isAbortError(e)) throw new Error(`Couldn't reach your local server at ${local.baseUrl}. Is it running?`);
       throw e;
     });
-    if (!res.ok) throw new Error(await apiError(res));
+    if (!res.ok) {
+      const message = await apiError(res);
+      // Asked for more output than the model, the context window or the credit allows: retry under that.
+      const allowed = allowedOutput(message);
+      const current = body[capField] as number | undefined;
+      if (shrinks < 2 && allowed !== undefined && allowed >= MIN_USEFUL_OUTPUT && (current === undefined || allowed < current)) {
+        body[capField] = allowed;
+        shrinks++;
+        continue;
+      }
+      throw new Error(message);
+    }
     if (!res.body) throw new Error("Empty response body");
 
     // Image-capable models return binary output in `images` (or typed content
@@ -215,20 +303,19 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.(usage);
     for (const url of images) yield `\n\n![generated image](${url})\n\n`;
 
-    const ranOutThinking = finishReason === "length" && !wroteText && images.length === 0;
-    if (!ranOutThinking) return;
-    const room = (body.max_completion_tokens ?? body.max_tokens) as number;
-    if (attempt === 0 && !local) {
-      if (body.max_completion_tokens) body.max_completion_tokens = room * 2;
-      else body.max_tokens = room * 2;
-      if (opts.provider === "openrouter") body.reasoning = { effort: "low" };
-      else if (isReasoningModel(opts.model)) body.reasoning_effort = "low";
-      continue;
+    const ranOut = finishReason === "length" && !wroteText && images.length === 0;
+    if (!ranOut) return;
+    const room = body[capField] as number | undefined;
+    if (!retriedThinking && !local) {
+      retriedThinking = true;
+      const more = room && outputCap(room * 2, { ...opts, maxTokens: undefined }, limits?.maxOutput, limits?.context);
+      if (more) body[capField] = more;
+      const low = effortFor(opts, limits, "low");
+      if (low) setEffort(low);
+      // Retry only if it changes something.
+      if (more !== room || (low && low !== effort)) continue;
     }
-    throw new Error(
-      `“${opts.model}” spent its whole ${room.toLocaleString()}-token output allowance thinking and never wrote an answer. ` +
-        "Try again, or use a model that thinks less (or not at all) for this — reasoning models can run out of room on long outputs like reports and mind maps."
-    );
+    throw ranOutThinking(opts.model, room);
   }
 }
 
@@ -250,37 +337,82 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
   const rest = opts.messages.filter((m) => m.role !== "system");
   const systemText = system.map((m) => m.content).join("\n\n");
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": opts.apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: opts.maxTokens ?? 4096,
-      stream: true,
-      // All Claude models accept temperature; only sent when the user set one.
-      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
-      // One ephemeral cache breakpoint at the end of the (large, stable)
-      // system prompt: repeat turns re-read the sources at ~10% input cost.
-      system: systemText
-        ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
-        : undefined,
-      messages: rest.map((m) => ({ role: m.role, content: m.content })),
-    }),
-    signal: opts.signal,
-  });
-  if (!res.ok) throw new Error(await apiError(res));
-  if (!res.body) throw new Error("Empty response body");
+  const limits = await modelLimits("anthropic", opts.apiKey, opts.model);
+  const effort = effortFor(opts, limits);
+  const body: Record<string, unknown> = {
+    model: opts.model,
+    // Anthropic requires a cap: the model's own limit, or one every Claude model allows.
+    max_tokens: outputCap(
+      opts.maxOutput ?? AUTO_OUTPUT_TOKENS,
+      opts,
+      limits?.maxOutput ?? FALLBACK_ANTHROPIC_OUTPUT,
+      limits?.context
+    ),
+    stream: true,
+    // All Claude models accept temperature; only sent when the user set one.
+    ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+    ...(effort ? { output_config: { effort } } : {}),
+    // One ephemeral cache breakpoint at the end of the (large, stable)
+    // system prompt: repeat turns re-read the sources at ~10% input cost.
+    system: systemText
+      ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
+      : undefined,
+    messages: rest.map((m) => ({ role: m.role, content: m.content })),
+  };
 
+  // Same recovery as the OpenAI-compatible path: shrink to a cap the API names,
+  // or retry once with thinking turned down when it ran out before writing.
+  let retriedThinking = false;
+  let shrinks = 0;
+  for (;;) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": opts.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      const message = await apiError(res);
+      const allowed = allowedOutput(message);
+      if (shrinks < 2 && allowed !== undefined && allowed >= MIN_USEFUL_OUTPUT && allowed < (body.max_tokens as number)) {
+        body.max_tokens = allowed;
+        shrinks++;
+        continue;
+      }
+      throw new Error(message);
+    }
+    if (!res.body) throw new Error("Empty response body");
+
+    const { wroteText, stopReason } = yield* readAnthropicStream(res.body, opts);
+    if (stopReason !== "max_tokens" || wroteText) return;
+    const low = effortFor(opts, limits, "low");
+    if (!retriedThinking && low && low !== effort) {
+      retriedThinking = true;
+      body.output_config = { effort: low };
+      continue;
+    }
+    throw ranOutThinking(opts.model, body.max_tokens as number);
+  }
+}
+
+/** Yield one Anthropic stream's text; report whether any was written and why it stopped. */
+async function* readAnthropicStream(
+  stream: ReadableStream<Uint8Array>,
+  opts: StreamOptions
+): AsyncGenerator<string, { wroteText: boolean; stopReason?: string }> {
   const usage: StreamUsage = {};
-  for await (const payload of sseLines(res.body)) {
+  let wroteText = false;
+  let stopReason: string | undefined;
+  for await (const payload of sseLines(stream)) {
     try {
       const json = JSON.parse(payload);
       if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
+        if (json.delta.text) wroteText = true;
         yield json.delta.text as string;
       } else if (json.type === "message_start") {
         const u = json.message?.usage;
@@ -291,6 +423,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
           usage.cachedWrite = u.cache_creation_input_tokens ?? usage.cachedWrite;
         }
       } else if (json.type === "message_delta") {
+        if (typeof json.delta?.stop_reason === "string") stopReason = json.delta.stop_reason;
         const u = json.usage;
         if (u) {
           // message_delta carries cumulative output tokens (and possibly cache stats).
@@ -300,8 +433,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
           usage.input = u.input_tokens ?? usage.input;
         }
       } else if (json.type === "message_stop") {
-        opts.onUsage?.(usage);
-        return;
+        break;
       } else if (json.type === "error") {
         throw new Error(json.error?.message ?? "Anthropic stream error");
       }
@@ -311,6 +443,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
     }
   }
   opts.onUsage?.(usage);
+  return { wroteText, stopReason };
 }
 
 export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {

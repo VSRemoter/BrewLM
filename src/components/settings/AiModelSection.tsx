@@ -1,12 +1,14 @@
 import { ExternalLink, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { supportsTemperature } from "../../lib/llm";
+import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
 import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
 import {
   DEFAULT_IMAGE_MODEL,
   defaultModelFor,
   LOCAL_CONTEXT_OPTIONS,
   LOCAL_PRESETS,
+  MAX_OUTPUT_OPTIONS,
+  THINKING_LABELS,
   loadImageModelList,
   loadModelList,
   loadResearchModelList,
@@ -15,7 +17,7 @@ import {
   saveModelList,
   saveResearchModelList,
 } from "../../lib/settings";
-import type { Provider, Settings } from "../../lib/types";
+import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
 import { platform } from "../../platform";
@@ -458,6 +460,60 @@ export default function AiModelSection({
           for your other models.
         </Footnote>
       )}
+
+      {/* Thinking effort + output limit */}
+      <Card>
+        {!isLocal && (
+          <Row
+            label="Thinking effort"
+            desc="How long reasoning models think before answering. Lower is faster and cheaper, and leaves more room for long outputs. Auto uses each model's default; models that don't think ignore it."
+            alignTop
+          >
+            <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
+              {(Object.keys(THINKING_LABELS) as Thinking[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => patch({ thinking: t })}
+                  className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
+                    settings.thinking === t ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+                  }`}
+                >
+                  {THINKING_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </Row>
+        )}
+        <Row
+          label="Custom output limit"
+          desc={
+            isLocal
+              ? "The most a reply can be. Off sizes it to your context window."
+              : `The most a reply can be, thinking included. Off uses up to ${AUTO_OUTPUT_TOKENS / 1000}K tokens, within what each model allows. You only pay for what's written.`
+          }
+        >
+          <Toggle
+            label="Custom output limit"
+            checked={settings.maxOutput != null}
+            onChange={(on) => patch({ maxOutput: on ? 16384 : null })}
+          />
+        </Row>
+        {settings.maxOutput != null && (
+          <Row label="Limit" desc="Lowered automatically when a model allows less.">
+            <div className="flex items-center gap-3">
+              <Slider
+                label="Output limit"
+                min={0}
+                max={MAX_OUTPUT_OPTIONS.length - 1}
+                step={1}
+                value={Math.max(0, MAX_OUTPUT_OPTIONS.indexOf(settings.maxOutput))}
+                onChange={(i) => patch({ maxOutput: MAX_OUTPUT_OPTIONS[i] })}
+              />
+              <span className="w-10 text-right font-mono text-[12px] text-ink-2">{settings.maxOutput / 1024}K</span>
+            </div>
+          </Row>
+        )}
+      </Card>
 
       {/* Image generation (/image) */}
       <Card>
