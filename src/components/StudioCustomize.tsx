@@ -32,13 +32,7 @@ import {
   type ReportOptions,
   type ReportType,
 } from "../lib/studio";
-import {
-  INTERACTIVE_STYLE_DESCS,
-  INTERACTIVE_STYLE_LABELS,
-  INTERACTIVE_STYLES,
-  type InteractiveOptions,
-  type InteractiveStyle,
-} from "../lib/interactive";
+import type { InteractiveOptions } from "../lib/interactive";
 import type { Source } from "../lib/types";
 import { Modal, PrimaryButton, Segmented } from "./ui";
 
@@ -502,7 +496,6 @@ export function InteractiveModal({
   onClose: () => void;
   onGenerate: (opts: InteractiveOptions) => void;
 }) {
-  const [style, setStyle] = useState<InteractiveStyle>("animation");
   const [sourceIds, setSourceIds] = useSourceSelection(sources);
   const [topic, setTopic] = useState("");
   const [name, setName] = useState("Interactive");
@@ -516,25 +509,17 @@ export function InteractiveModal({
       selected={sourceIds}
       onSourcesChange={setSourceIds}
       onClose={onClose}
-      onGenerate={() => onGenerate({ style, topic: topic.trim(), sourceIds, title: name.trim() || "Interactive" })}
+      onGenerate={() => onGenerate({ topic: topic.trim(), sourceIds, title: name.trim() || "Interactive" })}
       generateLabel="Generate interactive"
     >
-      <Field label="Style">
-        <Segmented
-          options={INTERACTIVE_STYLES.map((id) => ({ id, label: INTERACTIVE_STYLE_LABELS[id] }))}
-          value={style}
-          onChange={setStyle}
-        />
-        <p className="mt-1.5 text-[11.5px] leading-snug text-ink-3">
-          {INTERACTIVE_STYLE_DESCS[style]}
-        </p>
-      </Field>
-      <Field label="What should it show? (optional)">
+      <p className="text-[12px] leading-snug text-ink-2">
+        Generate web apps, animations, games, simulations and more from your sources. Describe what you want, or leave it blank and the AI picks.
+      </p>
+      <Field label="What do you want to make? (optional)">
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
-          placeholder="e.g. how an action potential travels down a myelinated axon"
-          rows={2}
+          rows={3}
           className={textareaClass}
         />
       </Field>

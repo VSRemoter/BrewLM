@@ -1,35 +1,19 @@
 /**
- * Interactive Studio outputs: an AI-written, self-contained HTML page — a
- * guided animation, an explorable simulation or a small learning game — that
- * makes a process in the sources visible.
+ * Interactive Studio outputs: an AI-written, self-contained HTML page — a web
+ * app, animation, game, simulation or whatever the user asks for — built from
+ * their sources.
  *
- * Generation is two passes: a storyboard grounded in the sources (facts,
- * scenes, controls), then the page built from that storyboard alone, so the
- * expensive long-output pass doesn't re-read every source. The page runs in a
- * sandboxed iframe (scripts only, opaque origin, no network) — see sandboxDoc.
+ * Generation is two passes: a storyboard grounded in the sources (format,
+ * facts, layout, controls), then the page built from that storyboard alone, so
+ * the expensive long-output pass doesn't re-read every source. The page runs
+ * in a sandboxed iframe (scripts only, opaque origin, no network) — see
+ * sandboxDoc.
  */
 import { streamChat, type LlmMessage, type StreamUsage } from "./llm";
 import type { Provider, Thinking } from "./types";
 
-export type InteractiveStyle = "animation" | "simulation" | "game";
-
-export const INTERACTIVE_STYLES: InteractiveStyle[] = ["animation", "simulation", "game"];
-
-export const INTERACTIVE_STYLE_LABELS: Record<InteractiveStyle, string> = {
-  animation: "Animation",
-  simulation: "Simulation",
-  game: "Game",
-};
-
-export const INTERACTIVE_STYLE_DESCS: Record<InteractiveStyle, string> = {
-  animation: "A guided, step-by-step animation with captions — play, pause and step through it.",
-  simulation: "A live model with sliders and toggles — change the inputs and watch what happens.",
-  game: "Short hands-on challenges with instant feedback and a score.",
-};
-
 export interface InteractiveOptions {
-  style: InteractiveStyle;
-  /** What to visualize; empty = the model picks the most visual process in the sources. */
+  /** What to build, in the user's words; empty = the model picks something fitting from the sources. */
   topic: string;
   sourceIds: string[];
   /** Custom name for the saved artifact (falls back to the tool default). */
@@ -41,18 +25,13 @@ export interface InteractiveData {
   html: string;
   /** The markdown plan the page was built from — the readable text of the output. */
   storyboard: string;
-  style: InteractiveStyle;
 }
 
 export function parseInteractive(data: string): InteractiveData | null {
   try {
     const d = JSON.parse(data);
     if (typeof d?.html !== "string" || !d.html.trim()) return null;
-    return {
-      html: d.html,
-      storyboard: typeof d.storyboard === "string" ? d.storyboard : "",
-      style: INTERACTIVE_STYLES.includes(d.style) ? d.style : "animation",
-    };
+    return { html: d.html, storyboard: typeof d.storyboard === "string" ? d.storyboard : "" };
   } catch {
     return null;
   }
@@ -60,37 +39,27 @@ export function parseInteractive(data: string): InteractiveData | null {
 
 /* --------------------------------- prompts --------------------------------- */
 
-const STYLE_BRIEF: Record<InteractiveStyle, string> = {
-  animation:
-    "a guided animation: a sequence of scenes the learner plays, pauses and steps through, each one animating what changes and showing a short caption",
-  simulation:
-    "an explorable simulation: a live model whose key parameters the learner changes with sliders and toggles, with visuals and numeric readouts updating in real time",
-  game:
-    "a short learning game: a handful of hands-on challenges (drag, click, order, predict what happens next) with instant feedback, a score and a recap at the end",
-};
+export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "topic">): string {
+  const request = opts.topic.trim()
+    ? `What I want: ${opts.topic.trim()}`
+    : "What I want: you choose — pick the idea in my sources that gains most from being seen and played with, and the format that shows it best.";
+  return `I want to turn part of my sources into an interactive web page — a web app, animation, game, simulation, explorer, quiz or whatever format fits.
 
-export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "style" | "topic">): string {
-  const topic = opts.topic.trim()
-    ? `Topic: ${opts.topic.trim()}`
-    : "Topic: pick the single process or mechanism in my sources that benefits most from being seen in motion.";
-  return `I want to turn part of my sources into ${STYLE_BRIEF[opts.style]}, built as an interactive web page.
-
-${topic}
+${request}
 
 Write the storyboard for it in markdown — not the code. Include:
-1. **Title** and a one-sentence learning goal.
+1. **Title**, the **format** (e.g. guided animation, simulation, game, web app) and a one-sentence goal.
 2. **Visual layout** — what is on screen (objects, labels, axes, colors and what each color means).
-3. **${opts.style === "game" ? "Challenges" : "Scenes"}** — ${opts.style === "game" ? "4–6 challenges, each with the task, the correct answer and the feedback for right and wrong answers" : "4–8 in order, each with what is shown, what moves or changes, and a 1–2 sentence caption"}.
+3. **Flow** — the scenes, steps, challenges or views in order: what is shown, what moves or changes, and any captions, answers or feedback.
 4. **Key facts and values** — every number, unit, threshold and named structure the page must show, exactly as my sources give them.
-5. **Controls** — ${opts.style === "simulation" ? "each slider/toggle with its range, default and what it changes" : "the controls the learner uses"}.
-6. **Takeaways** — 3 short points the learner should leave with.
+5. **Controls** — each button, slider, toggle or input, with ranges, defaults and what it changes.
+6. **Takeaways** — 3 short points the user should leave with.
 
-Use the facts in my sources. Where the visual needs a detail my sources don't give (e.g. a standard value), use the standard textbook value and mark it "(general knowledge)". Keep it under 900 words.`;
+Use the facts in my sources. Where the page needs a detail my sources don't give (e.g. a standard value), use the standard textbook value and mark it "(general knowledge)". Keep it under 900 words.`;
 }
 
 /** Instructions for the build pass; the storyboard goes in the user message. */
-export function buildPageSystem(style: InteractiveStyle): string {
-  return `You build single-file interactive web pages that teach. You write ${STYLE_BRIEF[style]}, following the storyboard you are given exactly — its facts, values, labels and order.
+export const PAGE_SYSTEM = `You build single-file interactive web pages — web apps, animations, games, simulations and more. You follow the storyboard you are given exactly — its format, facts, values, labels and order.
 
 Hard requirements:
 - Output ONE complete HTML document and nothing else: start with <!DOCTYPE html>, end with </html>. No markdown fences, no commentary.
@@ -98,10 +67,9 @@ Hard requirements:
 - The page runs in a sandbox: do not use localStorage, sessionStorage, cookies, alert, confirm, prompt, window.open or forms.
 - Fill the viewport and work from 320px wide up to a full desktop screen. No horizontal scrolling. Readable text (at least 13px), large click targets.
 - Theming: define every color as a CSS variable on :root (light palette) and override them under :root[data-theme="dark"]. The host sets data-theme on <html>. Use a clear, restrained palette; color-code meaningfully and add a legend.
-- ${style === "animation" ? "Controls: Play/Pause, Back, Next, Restart, a scene indicator (e.g. 3 / 6) and a speed control. Space toggles play, ←/→ step. Start paused on scene 1 with the caption visible." : style === "simulation" ? "Controls: labelled sliders/toggles with live values and units, a Reset button, and 2–3 \"Try this\" suggestions that set up interesting cases. Changes take effect immediately and smoothly." : "Flow: an intro screen with a Start button, one challenge at a time, immediate feedback explaining why, a visible score, and a final recap screen with Play again."}
-- Label every structure and show values with units. Be scientifically accurate to the storyboard.
+- Controls that fit the format: animations get Play/Pause, Back, Next, Restart, a step indicator and a speed control (Space toggles play, ←/→ step; start paused on step 1); simulations get labelled sliders/toggles with live values and units, a Reset and a few "Try this" presets; games get a Start screen, instant feedback explaining why, a visible score and a recap with Play again. Anything else gets whatever controls the storyboard describes.
+- Label every structure and show values with units. Be accurate to the storyboard.
 - Plain, robust JavaScript: wrap it in an IIFE, guard against null elements, no console errors. Keep the code compact — no dead code or long comments.`;
-}
 
 export function buildPagePrompt(storyboard: string): string {
   return `Storyboard:\n\n${storyboard.trim()}\n\nBuild the page now. Output only the HTML document.`;

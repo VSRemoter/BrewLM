@@ -44,12 +44,8 @@ describe("sandboxDoc", () => {
 });
 
 describe("parseInteractive", () => {
-  it("reads stored data and defaults an unknown style", () => {
-    expect(parseInteractive(JSON.stringify({ html: PAGE, storyboard: "s", style: "weird" }))).toEqual({
-      html: PAGE,
-      storyboard: "s",
-      style: "animation",
-    });
+  it("reads stored data", () => {
+    expect(parseInteractive(JSON.stringify({ html: PAGE, storyboard: "s" }))).toEqual({ html: PAGE, storyboard: "s" });
   });
 
   it("returns null for malformed data", () => {

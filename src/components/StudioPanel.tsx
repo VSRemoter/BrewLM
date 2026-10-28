@@ -56,9 +56,8 @@ import {
 import type { StudioCommand } from "../lib/studioCommands";
 import {
   INTERACTIVE_REVISE_FORMAT,
-  INTERACTIVE_STYLE_LABELS,
   buildPagePrompt,
-  buildPageSystem,
+  PAGE_SYSTEM,
   buildStoryboardPrompt,
   parseInteractive,
   writePage,
@@ -457,7 +456,7 @@ const StudioPanel = forwardRef<
       const html = await writePage({
         ...llmRequest(job.signal, meter),
         messages: [
-          { role: "system", content: buildPageSystem(opts.style) },
+          { role: "system", content: PAGE_SYSTEM },
           { role: "user", content: buildPagePrompt(storyboard) },
         ],
         onProgress: pageProgress("Building the page", job.setPhase),
@@ -467,7 +466,7 @@ const StudioPanel = forwardRef<
         notebookId,
         "interactive",
         title,
-        JSON.stringify({ html, storyboard, style: opts.style }),
+        JSON.stringify({ html, storyboard }),
         meterTotal(meter)
       );
       return `Saved interactive “${title}” to Studio.`;
@@ -492,7 +491,7 @@ const StudioPanel = forwardRef<
       const html = await writePage({
         ...llmRequest(job.signal, meter),
         messages: [
-          { role: "system", content: buildPageSystem(page.style) },
+          { role: "system", content: PAGE_SYSTEM },
           {
             role: "user",
             content: `This page fails when it runs:\n\n${problem}\n\nFind and fix the cause, and any similar bugs. Change nothing else.\n\n${page.html}\n\n${INTERACTIVE_REVISE_FORMAT}`,
@@ -757,7 +756,7 @@ const StudioPanel = forwardRef<
         data = JSON.stringify({ audio, script: turns, note: ttsNote });
       } else if (a.kind === "interactive") {
         const page = parseInteractive(a.data);
-        data = JSON.stringify({ html: raw, storyboard: page?.storyboard ?? "", style: page?.style ?? "animation" });
+        data = JSON.stringify({ html: raw, storyboard: page?.storyboard ?? "" });
       } else if (a.kind === "research") {
         const md = raw.trim();
         if (md.length < 30) throw new Error("The revision came back empty — try again.");
@@ -1017,7 +1016,7 @@ const StudioPanel = forwardRef<
               <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
               <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
             </div>
-            {/* Interactive — an AI-built animation, simulation or game page */}
+            {/* Interactive — an AI-built web page: app, animation, game, simulation… */}
             <div
               role="button"
               tabIndex={0}
@@ -1033,7 +1032,7 @@ const StudioPanel = forwardRef<
                 {runningSpinner("interactive")}
               </span>
               <span className="text-[11px] leading-tight text-ink-3">
-                Animation, simulation or game you can play with
+                Generate web apps, animations, games, simulations and more
               </span>
             </div>
             {/* Deep research */}
@@ -1109,10 +1108,7 @@ const StudioPanel = forwardRef<
                       const d = JSON.parse(a.data);
                       subtitle = `${d.sources?.length ?? 0} sources read`;
                     } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
-                    else if (a.kind === "interactive") {
-                      const page = parseInteractive(a.data);
-                      subtitle = `${page ? INTERACTIVE_STYLE_LABELS[page.style] : "Interactive"} · ${formatTime(a.created_at)}`;
-                    }
+                    else if (a.kind === "interactive") subtitle = `Interactive · ${formatTime(a.created_at)}`;
                     else subtitle = formatTime(a.created_at);
                   } catch {
                     subtitle = formatTime(a.created_at);
