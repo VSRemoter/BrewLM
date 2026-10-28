@@ -105,10 +105,14 @@ jobs:
       - name: Fetch sidecar binaries
         run: bash scripts/fetch-sidecars.sh
 
+      # Signs the updater bundles and uploads latest.json, which the app's
+      # in-place updater reads (plugins.updater in tauri.conf.json).
       - name: Build app and upload release assets
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}

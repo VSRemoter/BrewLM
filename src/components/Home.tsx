@@ -27,6 +27,7 @@ import { fileToCoverDataUrl, formatTime } from "../lib/source";
 import { usePhone } from "../lib/usePhone";
 import { BrewIcon } from "./BrewIcon";
 import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
+import UpdateAction from "./UpdateAction";
 
 const inputClass =
   "w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
@@ -796,14 +797,7 @@ export default function Home({
           <span className="text-ink-2">
             BrewLM <b>v{updateInfo.latest}</b> is available — you're on v{updateInfo.current}.
           </span>
-          <a
-            href={updateInfo.url}
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-link hover:underline"
-          >
-            Download
-          </a>
+          <UpdateAction info={updateInfo} />
           {onDismissUpdate && (
             <button
               onClick={onDismissUpdate}

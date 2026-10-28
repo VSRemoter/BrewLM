@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { Settings } from "../../lib/types";
 import { checkForUpdate, type UpdateInfo } from "../../lib/updates";
 import { platform } from "../../platform";
+import UpdateAction from "../UpdateAction";
 import { Card, Row, SectionTitle, Toggle } from "./controls";
 
 export default function AboutSection({
@@ -67,14 +68,9 @@ export default function AboutSection({
                           : `Up to date (v${result.current})`}
                 </span>
                 {result?.isNewer && (
-                  <a
-                    href={result.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-[12.5px] text-link hover:underline"
-                  >
-                    Download <ExternalLink size={11} />
-                  </a>
+                  <span className="text-[12.5px]">
+                    <UpdateAction info={result} />
+                  </span>
                 )}
                 <button
                   onClick={() => void check()}

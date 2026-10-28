@@ -128,6 +128,8 @@ Produces a native bundle for your OS in `src-tauri/target/release/bundle/` (`.dm
 
 **Maintainers:** phone pairing tunnels run through [cloudflared](https://github.com/cloudflare/cloudflared) (BSD-3-Clause © Cloudflare), bundled as a Tauri sidecar. Run `bash scripts/fetch-sidecars.sh` once before `tauri build` (the CI release workflow does this automatically). In dev (`tauri dev`) any `cloudflared` on PATH works — e.g. `brew install cloudflared`; Windows builds currently fall back to PATH (see the script header). Pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
 
+**In-app updates:** the desktop app updates itself (Settings → About & Updates, or the banner on the homepage) from the `latest.json` each release carries. The bundles are signed with the updater key whose public half is in `tauri.conf.json` (`plugins.updater.pubkey`); CI reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets. A local `tauri build` needs the same two environment variables set, or it stops at the signing step. Losing the private key means installed apps can no longer update in place, so keep a backup of it.
+
 ---
 
 ## Slash commands (all in-app)

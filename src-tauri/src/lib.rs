@@ -82,6 +82,14 @@ fn cleanup_sharing(app: &tauri::AppHandle) {
     }
 }
 
+/// Relaunch after an update was installed (the updater plugin only swaps the
+/// files). Stops sharing first so the cloudflared sidecar isn't orphaned.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    cleanup_sharing(&app);
+    app.restart();
+}
+
 /// Dev builds only: BREWLM_PROFILE=<name> runs a separate copy of the app with
 /// its own data folder (identifier `com.brewlm.app.<name>`), for testing Sync
 /// between two copies on one machine.
@@ -115,6 +123,8 @@ pub fn run() {
         }
         _ => {}
     });
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     let app = builder
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -130,6 +140,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            restart_app,
             server::start_sharing,
             server::stop_sharing,
             server::share_status,
