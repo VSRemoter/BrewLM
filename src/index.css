@@ -866,9 +866,14 @@ html.theme-fade *::after {
   animation-delay: 0.3s;
 }
 
-/* While a drawing is open, the audio mini player moves to the bottom centre,
-   clear of Excalidraw's corner controls (zoom/undo left, help right). */
-html[data-drawing] .mini-player {
+/* While a drawing is open, the audio mini player steps clear of Excalidraw's
+   corner controls (zoom/undo left, help right): to the bottom left while the
+   drawing sits in the Studio panel, to the bottom centre in full screen. */
+html[data-drawing="panel"] .mini-player {
+  right: auto;
+  left: 1rem;
+}
+html[data-drawing="full"] .mini-player {
   right: auto;
   left: 50%;
   translate: -50% 0;

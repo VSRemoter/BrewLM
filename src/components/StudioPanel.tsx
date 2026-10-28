@@ -166,11 +166,11 @@ const StudioPanel = forwardRef<
   const jobs = useStudioJobs(notebookId);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
-  // Tell the layout when an output is open so it can widen the panel for reading.
-  const reading = viewing !== null;
-  useEffect(() => onReadingChange?.(reading), [reading, onReadingChange]);
-  /** The drawing open in the sketchpad. */
+  /** The drawing open in the sketchpad (takes over the panel like `viewing`). */
   const [drawing, setDrawing] = useState<Artifact | null>(null);
+  // Tell the layout when an output is open so it can widen the panel for reading.
+  const reading = viewing !== null || drawing !== null;
+  useEffect(() => onReadingChange?.(reading), [reading, onReadingChange]);
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [interactiveOpen, setInteractiveOpen] = useState(false);
@@ -896,14 +896,20 @@ const StudioPanel = forwardRef<
 
   const viewArtifact = (a: Artifact) => {
     // kind-specific data already stored; reopen latest copy from props
-    if (a.kind === "drawing") setDrawing(a);
-    else setViewing(a);
+    if (a.kind === "drawing") {
+      setViewing(null);
+      setDrawing(a);
+    } else {
+      setDrawing(null);
+      setViewing(a);
+    }
   };
 
   /** Drawings: name it, save an empty canvas, open the sketchpad. */
   const newDrawing = async (title: string) => {
     const a = await addArtifact(notebookId, "drawing", title.trim() || "Drawing", JSON.stringify({ elements: [], files: {} }));
     onArtifactsChanged();
+    setViewing(null);
     setDrawing(a);
   };
 
@@ -924,6 +930,16 @@ const StudioPanel = forwardRef<
           dark={isDarkTheme(settings.theme)}
           showDetails={settings.showDetails}
           onFixInteractive={(problem) => fixInteractive(artifacts.find((x) => x.id === viewing.id) ?? viewing, problem)}
+        />
+      ) : drawing ? (
+        <DrawingView
+          key={drawing.id}
+          artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
+          dark={isDarkTheme(settings.theme)}
+          onClose={() => {
+            setDrawing(null);
+            onArtifactsChanged();
+          }}
         />
       ) : (
         <>
@@ -1311,18 +1327,6 @@ const StudioPanel = forwardRef<
           onGenerate={(opts) => {
             setCustomizing(null);
             genCustomReport(opts);
-          }}
-        />
-      )}
-
-      {drawing && (
-        <DrawingView
-          key={drawing.id}
-          artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
-          dark={isDarkTheme(settings.theme)}
-          onClose={() => {
-            setDrawing(null);
-            onArtifactsChanged();
           }}
         />
       )}

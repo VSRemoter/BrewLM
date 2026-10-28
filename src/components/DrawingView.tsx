@@ -1,14 +1,17 @@
 /**
- * Studio → Drawings: a full-window sketchpad (Excalidraw) for quick notes,
- * diagrams and working math by hand — e.g. while an Audio Overview plays in
- * the mini player. Saves as you draw; drawings are never sent to the AI.
+ * Studio → Drawings: a sketchpad (Excalidraw) for quick notes, diagrams and
+ * working math by hand — e.g. while an Audio Overview plays in the mini
+ * player. Like other outputs it takes over the Studio panel, so the chat stays
+ * usable alongside it, and can go full screen. Saves as you draw; drawings are
+ * never sent to the AI.
  */
-import { Download, PenLine, X } from "lucide-react";
+import { Download, Maximize2, Minimize2, PenLine, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getArtifact, renameArtifact, updateArtifact } from "../lib/db";
 import { platform } from "../platform";
 import type { Artifact } from "../lib/types";
 import type { DrawingApi } from "./DrawingCanvas";
+import { IconButton } from "./ui";
 
 const DrawingCanvas = lazy(() => import("./DrawingCanvas"));
 
@@ -23,11 +26,14 @@ export default function DrawingView({
   artifact: Artifact;
   /** Match Excalidraw's light/dark UI to the app theme. */
   dark: boolean;
+  /** Minimize: back to the Studio tools and saved outputs. */
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(artifact.title);
   const [status, setStatus] = useState<"saved" | "saving" | "error">("saved");
   const [exportError, setExportError] = useState<string | null>(null);
+  /** Shown over the whole window instead of in the panel. */
+  const [expanded, setExpanded] = useState(false);
   const apiRef = useRef<DrawingApi | null>(null);
   /** The scene as last saved — read fresh so a quick close-and-reopen never loses strokes. */
   const [data, setData] = useState<string | null>(null);
@@ -70,15 +76,22 @@ export default function DrawingView({
     onClose();
   };
 
-  // Save anything pending if the view goes away another way; let the audio
-  // mini player step out of Excalidraw's corner controls meanwhile.
+  // Save anything pending if the view goes away another way.
+  useEffect(() => () => void flush(), [flush]);
+
+  // Let the audio mini player step out of Excalidraw's corner controls.
   useEffect(() => {
-    document.documentElement.dataset.drawing = "open";
+    document.documentElement.dataset.drawing = expanded ? "full" : "panel";
     return () => {
       delete document.documentElement.dataset.drawing;
-      void flush();
     };
-  }, [flush]);
+  }, [expanded]);
+
+  // The canvas is restyled, not remounted, when going full screen — tell
+  // Excalidraw it moved so pointer positions line up again.
+  useEffect(() => {
+    apiRef.current?.refresh();
+  }, [expanded]);
 
   const downloadPng = async () => {
     const api = apiRef.current;
@@ -104,9 +117,25 @@ export default function DrawingView({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-canvas text-ink" role="dialog" aria-label={title}>
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-edge-soft bg-panel px-4">
-        <PenLine size={15} strokeWidth={1.8} className="shrink-0 text-ink-2" />
+    <div
+      className={
+        expanded
+          ? "anim-fade fixed inset-0 z-50 flex flex-col bg-canvas text-ink"
+          : "anim-fade flex h-full min-h-0 flex-col"
+      }
+      role={expanded ? "dialog" : "region"}
+      aria-label={title}
+    >
+      <div
+        className={`flex h-11 shrink-0 items-center gap-1 border-b border-edge-soft ${expanded ? "bg-panel px-3" : "px-2"}`}
+      >
+        {expanded ? (
+          <PenLine size={15} strokeWidth={1.8} className="mx-1 shrink-0 text-ink-2" />
+        ) : (
+          <IconButton onClick={close} label="Minimize — back to Studio">
+            <Minimize2 size={15} strokeWidth={1.8} />
+          </IconButton>
+        )}
         <input
           value={title}
           onChange={(e) => {
@@ -114,30 +143,30 @@ export default function DrawingView({
             queue({ title: e.target.value });
           }}
           aria-label="Drawing name"
-          className="min-w-0 max-w-sm flex-1 rounded-md bg-transparent px-1.5 py-1 text-[13.5px] font-semibold tracking-tight outline-none hover:bg-hover focus:bg-hover"
+          className="min-w-0 max-w-sm flex-1 rounded-md bg-transparent px-1.5 py-1 text-[13px] font-semibold tracking-tight outline-none hover:bg-hover focus:bg-hover"
         />
-        <span className="shrink-0 text-[11px] text-ink-3">
+        <span className="shrink-0 px-1 text-[11px] text-ink-3">
           {status === "saving" ? "Saving…" : status === "error" ? "Couldn't save" : "Saved"}
         </span>
-        <span className="flex-1" />
-        {exportError && <span className="truncate text-[11.5px] text-danger">{exportError}</span>}
-        <button
-          onClick={downloadPng}
-          className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
-          title="Download as PNG"
-        >
-          <Download size={13} strokeWidth={1.9} />
-          PNG
-        </button>
-        <button
-          onClick={close}
-          className="shrink-0 rounded-md p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-          aria-label="Close drawing"
-          title="Close (saved automatically)"
-        >
-          <X size={16} strokeWidth={2} />
-        </button>
+        {expanded && <span className="flex-1" />}
+        <IconButton onClick={downloadPng} label="Download as PNG">
+          <Download size={15} strokeWidth={1.8} />
+        </IconButton>
+        {expanded ? (
+          <IconButton onClick={() => setExpanded(false)} label="Exit full screen">
+            <X size={16} strokeWidth={1.8} />
+          </IconButton>
+        ) : (
+          <IconButton onClick={() => setExpanded(true)} label="Full screen">
+            <Maximize2 size={15} strokeWidth={1.8} />
+          </IconButton>
+        )}
       </div>
+      {exportError && (
+        <p className="mx-3 mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+          {exportError}
+        </p>
+      )}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<CanvasLoading />}>
           {data === null ? (
