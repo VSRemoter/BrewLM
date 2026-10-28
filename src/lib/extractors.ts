@@ -9,6 +9,30 @@
 
 import { unzipSync } from "fflate";
 
+/** What an office file or eBook may unpack to, in all: more is a "zip bomb". */
+const MAX_UNZIPPED = 300 * 1024 * 1024;
+/** The parts the extractors read: XML and (X)HTML, never embedded media. */
+const TEXT_PART = /\.(xml|rels|opf|ncx|x?html?)$/i;
+
+class TooBigToUnpack extends Error {}
+
+/**
+ * Unpack an office file or eBook's text parts. Refuses an archive whose parts
+ * add up to more than MAX_UNZIPPED; fflate never unpacks a part past the size
+ * its directory states, so a lying directory can't get around that.
+ */
+function unzipText(bytes: Uint8Array): Record<string, Uint8Array> {
+  let total = 0;
+  return unzipSync(bytes, {
+    filter: (f) => {
+      if (!TEXT_PART.test(f.name)) return false;
+      total += f.originalSize;
+      if (total > MAX_UNZIPPED) throw new TooBigToUnpack("it unpacks to more than 300 MB of text, so it can't be read.");
+      return true;
+    },
+  });
+}
+
 /**
  * Sanity guard only (~2,500 pages). Chat never sends a whole source — it
  * retrieves the relevant chunks — so full books are stored and searchable
@@ -62,7 +86,7 @@ function cap(text: string): string {
 
 /** .pptx — slides live at ppt/slides/slideN.xml, text in <a:t> runs. */
 function extractPptxText(bytes: Uint8Array): string {
-  const entries = unzipSync(bytes);
+  const entries = unzipText(bytes);
   const decoder = new TextDecoder();
   const slides: { num: number; xml: string }[] = [];
   for (const name of Object.keys(entries)) {
@@ -81,7 +105,7 @@ function extractPptxText(bytes: Uint8Array): string {
 /** .docx — body text lives at word/document.xml in <w:p>/<w:t>. Table cells
  * are paragraphs too, so tabular content comes along for free. */
 function extractDocxText(bytes: Uint8Array): string {
-  const entries = unzipSync(bytes);
+  const entries = unzipText(bytes);
   if (!entries["word/document.xml"]) throw new Error("missing word/document.xml");
   const doc = parseXml(new TextDecoder().decode(entries["word/document.xml"]));
   return cap(paragraphLines(doc).join("\n"));
@@ -90,7 +114,7 @@ function extractDocxText(bytes: Uint8Array): string {
 /** .xlsx — cells hold either inline text or an index into the shared-strings
  * table; sheet names come from workbook.xml joined through its .rels. */
 function extractXlsxText(bytes: Uint8Array): string {
-  const entries = unzipSync(bytes);
+  const entries = unzipText(bytes);
   const decode = (name: string) => new TextDecoder().decode(entries[name]);
 
   const shared: string[] = [];
@@ -166,7 +190,7 @@ function extractXlsxText(bytes: Uint8Array): string {
 
 /** .epub — a zip whose OPF manifest lists chapter documents in spine order. */
 function extractEpubText(bytes: Uint8Array): string {
-  const entries = unzipSync(bytes);
+  const entries = unzipText(bytes);
   const decode = (name: string) => new TextDecoder().decode(entries[name]);
   if (!entries["META-INF/container.xml"]) throw new Error("missing META-INF/container.xml");
   const container = parseXml(decode("META-INF/container.xml"));
@@ -387,7 +411,8 @@ export async function extractFileText(file: File): Promise<ExtractedText> {
     if (name.endsWith(".docx")) return office(extractDocxText(bytes));
     if (name.endsWith(".xlsx")) return office(extractXlsxText(bytes));
     if (name.endsWith(".epub")) return office(extractEpubText(bytes));
-  } catch {
+  } catch (e) {
+    if (e instanceof TooBigToUnpack) throw e;
     throw new Error("couldn't read this file — it may be corrupted or not really what its extension says.");
   }
 

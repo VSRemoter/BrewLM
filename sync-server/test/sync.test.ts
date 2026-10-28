@@ -83,7 +83,7 @@ describe("push and pull", () => {
       { key: "notebooks:2", hlc: hlc(1001, DEV_A), payload: "b" },
       { key: "notebooks:3", hlc: hlc(1002, DEV_A), payload: "c" },
     ]);
-    expect(await res.json()).toEqual({ accepted: 3, stale: [], cursor: 3 });
+    expect(await res.json()).toMatchObject({ accepted: 3, stale: [], cursor: 3 });
 
     const page1 = await pull("v2", 0, 2);
     expect(page1.changes.map((c) => c.key)).toEqual(["notebooks:1", "notebooks:2"]);
@@ -147,7 +147,7 @@ describe("blobs", () => {
     const bytes = new Uint8Array([0, 1, 2, 250, 255]);
     expect(await missing("b1", ["abc.m4a", "def.jpg"])).toEqual(["abc.m4a", "def.jpg"]);
     const put = await blob("b1", "abc.m4a", { method: "PUT", body: bytes, headers: { "content-length": "5" } });
-    expect(put.status).toBe(204);
+    expect(put.status).toBe(200);
     expect(await missing("b1", ["abc.m4a", "def.jpg"])).toEqual(["def.jpg"]);
 
     const got = await blob("b1", "abc.m4a");

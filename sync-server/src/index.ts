@@ -23,9 +23,9 @@
  *   GET  /v1/vaults/:vault/links/:id/status → { pending }
  *   DELETE /v1/vaults/:vault/links/:id
  *   POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
- *   POST /v1/vaults/:vault/blobs/sweep     { cursor, live } → { removed, freed }  (409 if the vault changed)
+ *   POST /v1/vaults/:vault/blobs/sweep     { cursor, live } → { removed, freed, waiting, retryInMs, usedBytes }  (409 if the vault changed)
  *   POST /v1/vaults/:vault/sizes           { blobs, keys } → { blobs, keys }  (counted bytes)
- *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes)
+ *   PUT  /v1/vaults/:vault/blobs/:id       (raw bytes) → { usedBytes }
  *   GET  /v1/vaults/:vault/blobs/:id
  *
  * The web app (another origin) may call every route: CORS_ORIGINS lists the
@@ -58,11 +58,21 @@ const UUID_RE = /^[0-9a-f-]{36}$/;
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" },
   });
 }
 
 const fail = (status: number, error: string) => json({ error }, status);
+
+/** A push's records together; Durable Object calls carry at most 32 MB. */
+const MAX_PUSH_CHARS = 20_000_000;
+
+/** Over the account's request rate (ACCOUNT_RATE in wrangler.jsonc)? */
+async function flooding(env: Env, userId: string): Promise<boolean> {
+  return !(await env.ACCOUNT_RATE.limit({ key: userId })).success;
+}
+
+const SLOW_DOWN = "Too many requests. Wait a minute and try again.";
 
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 
@@ -90,6 +100,7 @@ async function vaultCaller(req: Request, env: Env, vault: string): Promise<Calle
   const user = await userForSession(env, bearer(req));
   if (!user) return fail(401, "unauthorized");
   if (user.id !== vault) return fail(403, "not your vault");
+  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
   const ent = await entitlement(env, user);
   return { canWrite: ent.canSync, limitBytes: ent.limitBytes };
 }
@@ -99,6 +110,7 @@ async function fetchCaller(req: Request, env: Env): Promise<string | Response> {
   if (isDevToken(req, env)) return "dev";
   const user = await userForSession(env, bearer(req));
   if (!user) return fetchFail(401, "Signed out — sign in again in Settings → Sync.");
+  if (await flooding(env, user.id)) return fetchFail(429, SLOW_DOWN);
   if (!(await entitlement(env, user)).canSync)
     return fetchFail(402, "Your free trial has ended. Choose a plan to add web pages from this device.");
   return user.id;
@@ -120,7 +132,8 @@ function validChanges(v: unknown): v is Change[] {
         HLC_RE.test(c.hlc) &&
         typeof c.payload === "string" &&
         c.payload.length <= MAX_PAYLOAD
-    )
+    ) &&
+    v.reduce((n, c) => n + c.payload.length, 0) <= MAX_PUSH_CHARS
   );
 }
 
@@ -135,6 +148,7 @@ async function accountRoutes(req: Request, env: Env, path: string): Promise<Resp
   if (!signedIn.includes(path)) return null;
   const user = await userForSession(env, bearer(req));
   if (!user) return fail(401, "unauthorized");
+  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
   if (path === "/v1/auth/session" && req.method === "DELETE") return signOut(env, bearer(req));
   if (path === "/v1/me" && req.method === "GET") return me(env, user);
   if (path === "/v1/billing/checkout" && req.method === "POST") return checkout(req, env, user);
@@ -207,11 +221,10 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (!Number.isSafeInteger(cursor) || (cursor as number) < 0) return fail(400, "bad cursor");
     if (!Array.isArray(live) || live.length > MAX_LIVE || !live.every((id) => typeof id === "string" && BLOB_RE.test(id)))
       return fail(400, "bad live list");
-    const res = await stub.sweep(cursor as number, live as string[]);
+    const res = await stub.sweep(vault, cursor as number, live as string[]);
     if (!res.ok) return json({ error: "the vault changed; sync and try again" }, 409);
-    for (let i = 0; i < res.removed.length; i += 1000)
-      await env.BLOBS.delete(res.removed.slice(i, i + 1000).map((id) => `${vault}/${id}`));
-    return json({ removed: res.removed.length, freed: res.freed });
+    const { ok: _, ...out } = res;
+    return json(out);
   }
   if (op === "sizes") {
     if (req.method !== "POST") return fail(405, "method not allowed");
@@ -230,6 +243,10 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (!Array.isArray(ids) || ids.length > MAX_MISSING || !ids.every((id) => typeof id === "string" && BLOB_RE.test(id)))
       return fail(400, "bad ids");
     const heads = await Promise.all(ids.map((id) => env.BLOBS.head(`${vault}/${id}`)));
+    // A stored file the vault doesn't count (its upload's bookkeeping was lost) counts now.
+    const counted = new Set(await stub.counted(ids));
+    for (const [i, obj] of heads.entries())
+      if (obj && !counted.has(ids[i])) await stub.adoptBlob(ids[i], obj.size, obj.uploaded.getTime());
     return json({ missing: ids.filter((_, i) => !heads[i]) });
   }
   if (blobId !== undefined) {
@@ -238,8 +255,14 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (req.method === "GET") {
       const obj = await env.BLOBS.get(key);
       if (!obj) return fail(404, "no such blob");
+      // Never serve a file that doesn't count against the plan.
+      await stub.adoptBlob(blobId, obj.size, obj.uploaded.getTime());
       return new Response(obj.body, {
-        headers: { "content-type": "application/octet-stream", "content-length": String(obj.size) },
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(obj.size),
+          "x-content-type-options": "nosniff",
+        },
       });
     }
     if (req.method === "PUT") {
@@ -247,16 +270,24 @@ async function route(req: Request, env: Env): Promise<Response> {
       const size = Number(req.headers.get("content-length") ?? "-1");
       if (!Number.isSafeInteger(size) || size < 0) return fail(411, "content-length required");
       if (size > MAX_BLOB) return fail(413, "blob too large");
-      const reserved = await stub.reserveBlob(blobId, size, caller.limitBytes);
+      const reserved = await stub.reserveBlob(vault, blobId, size, caller.limitBytes);
+      if (reserved.busy) return fail(429, "Too many uploads today. Syncing continues tomorrow.");
       if (!reserved.ok) return fail(413, "storage full");
+      let stored: R2Object | null = null;
       try {
-        await env.BLOBS.put(key, req.body ?? new Uint8Array(0));
+        // Exactly the bytes reserved: a body longer (or shorter) than its
+        // content-length fails here instead of being stored.
+        const body = req.body && size > 0 ? req.body.pipeThrough(new FixedLengthStream(size)) : new Uint8Array(0);
+        stored = await env.BLOBS.put(key, body);
       } catch {
-        // Nothing (or not all of it) arrived: don't count it.
-        await stub.releaseBlob(blobId, reserved.prev);
+        /* handled below */
+      }
+      if (!stored) {
+        // Nothing (or not all of it) arrived: give the reservation back.
+        await stub.abortBlob(reserved.token);
         return fail(502, "upload didn't complete");
       }
-      return new Response(null, { status: 204 });
+      return json({ usedBytes: await stub.commitBlob(reserved.token, blobId, stored.size, stored.uploaded.getTime()) });
     }
     return fail(405, "method not allowed");
   }

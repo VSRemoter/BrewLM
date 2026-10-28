@@ -131,6 +131,7 @@ export async function pageFetch(req: Request, env: Env, userId: string): Promise
       "content-type": res.headers.get("content-type") ?? "application/octet-stream",
       "x-final-url": url,
       "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
     },
   });
 }

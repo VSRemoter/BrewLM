@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/auth";
@@ -114,7 +114,7 @@ describe("plans and vault access", () => {
     expect((await push(a.vault, b.session)).status).toBe(403);
     expect((await call(`/v1/vaults/${a.vault}/pull`)).status).toBe(401);
     const me = (await (await call("/v1/me", { session: a.session })).json()) as { usedBytes: number };
-    expect(me.usedBytes).toBe(4);
+    expect(me.usedBytes).toBe(4 + 1 + 100); // payload, key and overhead
   });
 
   it("goes read-only when the trial ends", async () => {
@@ -135,72 +135,210 @@ describe("plans and vault access", () => {
 });
 
 describe("storage limits", () => {
+  /** A record's counted size: payload, key and a fixed overhead. */
+  const rec = (key: string, payload: string) => payload.length + key.length + 100;
+
   it("refuses records and files past the limit; shrinking always works", async () => {
     const vault = env.VAULT.get(env.VAULT.idFromName("quota-1"));
     const change = (key: string, payload: string, ms: number) => ({ key, hlc: hlc(ms), payload });
-    expect((await vault.push(DEV, [change("a", "x".repeat(60), 1)], 100)).accepted).toBe(1);
-    expect((await vault.push(DEV, [change("b", "x".repeat(60), 2)], 100)).full).toBe(true);
-    expect((await vault.usage()).total).toBe(60);
+    const limit = rec("a", "x".repeat(60)) + 50;
+    const first = await vault.push(DEV, [change("a", "x".repeat(60), 1)], limit);
+    expect(first.accepted).toBe(1);
+    expect(first.usedBytes).toBe(rec("a", "x".repeat(60)));
+    expect((await vault.push(DEV, [change("b", "x".repeat(60), 2)], limit)).full).toBe(true);
     // Shrinking a record always works.
     expect((await vault.push(DEV, [change("a", "x", 3)], 10)).accepted).toBe(1);
-    expect((await vault.reserveBlob("f1", 50, 100)).ok).toBe(true);
-    expect((await vault.reserveBlob("f2", 50, 100)).ok).toBe(false);
-    expect((await vault.reserveBlob("f1", 40, 100)).ok).toBe(true); // rewrite replaces its old size
-    expect(await vault.usage()).toEqual({ records: 1, blobs: 40, total: 41 });
+    const used = rec("a", "x");
+    expect((await vault.reserveBlob("quota-1", "f1", 50, used + 100)).ok).toBe(true);
+    expect((await vault.reserveBlob("quota-1", "f2", 51, used + 100)).ok).toBe(false);
+    expect(await vault.usage()).toEqual({ records: used, blobs: 50, total: used + 50 });
   });
 
-  it("gives back the space of an upload that didn't complete", async () => {
-    const vault = env.VAULT.get(env.VAULT.idFromName("quota-release"));
-    const first = await vault.reserveBlob("new", 30, 1000);
-    expect(first.prev).toBeNull();
-    await vault.releaseBlob("new", first.prev);
-    expect((await vault.usage()).blobs).toBe(0);
-    await vault.reserveBlob("kept", 20, 1000);
-    const rewrite = await vault.reserveBlob("kept", 70, 1000);
-    expect(rewrite.prev).toBe(20);
-    await vault.releaseBlob("kept", rewrite.prev); // the old file is still there: its old size counts
-    expect((await vault.usage()).blobs).toBe(20);
+  it("counts empty records, so a flood of them isn't free", async () => {
+    const vault = env.VAULT.get(env.VAULT.idFromName("quota-empty"));
+    const many = Array.from({ length: 50 }, (_, i) => ({ key: `k${i}`, hlc: hlc(i + 1), payload: "" }));
+    expect((await vault.push(DEV, many, 1000)).full).toBe(true);
+    expect((await vault.usage()).total).toBe(0);
+  });
+
+  it("counts an upload from the moment it's let in, and what R2 stored once it lands", async () => {
+    const vault = env.VAULT.get(env.VAULT.idFromName("quota-commit"));
+    const a = await vault.reserveBlob("quota-commit", "f", 30, 1000);
+    // Parallel uploads can't share the same free space.
+    expect((await vault.usage()).blobs).toBe(30);
+    expect((await vault.reserveBlob("quota-commit", "g", 980, 1000)).ok).toBe(false);
+    expect(await vault.commitBlob(a.token, "f", 31, 1000)).toBe(31);
+    // A failed upload gives its reservation back; the counted copy stays.
+    const b = await vault.reserveBlob("quota-commit", "f", 500, 1000);
+    expect((await vault.usage()).blobs).toBe(531);
+    await vault.abortBlob(b.token);
+    expect((await vault.usage()).blobs).toBe(31);
+  });
+
+  it("can't be fooled by overlapping uploads of one file", async () => {
+    const vault = env.VAULT.get(env.VAULT.idFromName("quota-race"));
+    // A big upload, and a small one of the same id that fails while the big one is in flight.
+    const big = await vault.reserveBlob("quota-race", "f", 800, 1000);
+    const small = await vault.reserveBlob("quota-race", "f", 1, 1000);
+    await vault.abortBlob(small.token);
+    expect((await vault.usage()).blobs).toBe(800);
+    await vault.commitBlob(big.token, "f", 800, 2000);
+    expect((await vault.usage()).blobs).toBe(800);
+    // Two that both land: the copy R2 stored last is the one counted, whatever order the bookkeeping arrives in.
+    const x = await vault.reserveBlob("quota-race", "g", 100, 10_000);
+    const y = await vault.reserveBlob("quota-race", "g", 5, 10_000);
+    await vault.commitBlob(x.token, "g", 100, 3002);
+    await vault.commitBlob(y.token, "g", 5, 3001);
+    expect((await vault.sizes(["g"], [])).blobs).toEqual({ g: 100 });
+  });
+
+  it("settles uploads cut off before their bookkeeping, counting what R2 holds", async () => {
+    const vault = env.VAULT.get(env.VAULT.idFromName("quota-stale"));
+    const lost = await vault.reserveBlob("quota-stale", "landed", 40, 10_000);
+    await vault.reserveBlob("quota-stale", "never", 60, 10_000);
+    expect(lost.ok).toBe(true);
+    await env.BLOBS.put("quota-stale/landed", "x".repeat(40));
+    // Hours later the next upload settles both: the stored one counts, the other is let go.
+    await vault.reserveBlob("quota-stale", "next", 1, 10_000, Date.now() + 3 * 60 * 60 * 1000);
+    expect(await vault.sizes(["landed", "never"], [])).toEqual({ blobs: { landed: 40 }, keys: {} });
+    expect((await vault.usage()).blobs).toBe(41);
   });
 
   it("sweeps files the library no longer uses, safely", async () => {
     const vault = env.VAULT.get(env.VAULT.idFromName("quota-sweep"));
     const change = (key: string, ms: number) => ({ key, hlc: hlc(ms), payload: "p" });
     await vault.push(DEV, [change("r1", 1)], 10_000);
-    for (const id of ["used", "unused", "fresh"]) await vault.reserveBlob(id, 100, 10_000);
+    for (const id of ["used", "unused", "fresh"]) {
+      const r = await vault.reserveBlob("quota-sweep", id, 100, 10_000);
+      await vault.commitBlob(r.token, id, 100, 1);
+      await env.BLOBS.put(`quota-sweep/${id}`, "x");
+    }
     const { cursor, epoch } = await vault.pull(0, 500);
-    const later = Date.now() + 11 * 60 * 1000; // "used" and "unused" are past the grace period by then
+    const later = Date.now() + 3 * 60 * 1000; // past the grace period by then
     // A list from a device that hasn't seen the latest change doesn't count.
-    expect((await vault.sweep(cursor - 1, ["used"], later)).ok).toBe(false);
-    await vault.reserveBlob("fresh", 100, 10_000); // rewritten just now…
-    const res = await vault.sweep(cursor, ["used"], Date.now() + 5 * 60 * 1000);
-    // …so only files written over 10 minutes before "now" can go: none yet.
-    expect(res).toEqual({ ok: true, removed: [], freed: 0 });
-    const swept = await vault.sweep(cursor, ["used"], later);
-    expect(swept.ok && swept.removed.sort()).toEqual(["fresh", "unused"]);
-    expect((await vault.usage()).blobs).toBe(100);
+    expect((await vault.sweep("quota-sweep", cursor - 1, ["used"], later)).ok).toBe(false);
+    const res = await vault.sweep("quota-sweep", cursor, ["used"], Date.now() + 60 * 1000);
+    // Too new to go yet: the device is told when to ask again.
+    expect(res.ok && res.removed).toBe(0);
+    expect(res.ok && res.waiting).toBe(2);
+    expect(res.ok && res.retryInMs).toBeGreaterThan(30 * 1000);
+    expect(res.ok && res.retryInMs).toBeLessThanOrEqual(60 * 1000);
+    // A file being uploaded is never swept.
+    const moving = await vault.reserveBlob("quota-sweep", "unused", 100, 10_000);
+    const swept = await vault.sweep("quota-sweep", cursor, ["used"], later);
+    expect(swept.ok && [swept.removed, swept.freed]).toEqual([1, 100]);
+    expect(await env.BLOBS.head("quota-sweep/fresh")).toBeNull();
+    expect(await env.BLOBS.head("quota-sweep/used")).not.toBeNull();
+    await vault.abortBlob(moving.token);
     // Devices learn a sweep deleted something, and re-check their files.
     expect((await vault.pull(cursor, 500)).epoch).toBe(epoch + 1);
-    const sizes = await vault.sizes(["used", "unused"], ["r1", "nope"]);
-    expect(sizes).toEqual({ blobs: { used: 100 }, keys: { r1: 1 } });
+    const sizes = await vault.sizes(["used", "fresh"], ["r1", "nope"]);
+    expect(sizes).toEqual({ blobs: { used: 100 }, keys: { r1: rec("r1", "p") } });
   });
 
   it("deletes swept files from storage over HTTP, and refuses junk", async () => {
     const auth = { authorization: "Bearer test-token" };
     const put = (id: string) =>
       call(`/v1/vaults/sweep-http/blobs/${id}`, { method: "PUT", headers: { ...auth, "content-length": "3" }, body: "abc" });
-    expect((await put("keepme")).status).toBe(204);
-    expect((await put("dropme")).status).toBe(204);
-    const pulled = (await (await call("/v1/vaults/sweep-http/pull?since=0", { headers: auth })).json()) as { cursor: number };
+    const first = await put("keepme");
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ usedBytes: 3 });
+    expect(await (await put("dropme")).json()).toEqual({ usedBytes: 6 });
+    const pulled = (await (await call("/v1/vaults/sweep-http/pull?since=0", { headers: auth })).json()) as {
+      cursor: number;
+      usedBytes: number;
+    };
+    expect(pulled.usedBytes).toBe(6);
     const sweep = (body: unknown) =>
       call("/v1/vaults/sweep-http/blobs/sweep", { method: "POST", headers: auth, body: JSON.stringify(body) });
     expect((await sweep({ cursor: pulled.cursor, live: "x" })).status).toBe(400);
     expect((await sweep({ cursor: pulled.cursor + 5, live: [] })).status).toBe(409);
     // Fresh files survive a sweep (grace period).
-    const res = (await (await sweep({ cursor: pulled.cursor, live: ["keepme"] })).json()) as { removed: number };
-    expect(res.removed).toBe(0);
+    const res = (await (await sweep({ cursor: pulled.cursor, live: ["keepme"] })).json()) as Record<string, number>;
+    expect(res).toMatchObject({ removed: 0, waiting: 1, usedBytes: 6 });
     expect(await env.BLOBS.head("sweep-http/dropme")).not.toBeNull();
     const sizes = await call("/v1/vaults/sweep-http/sizes", { method: "POST", headers: auth, body: JSON.stringify({ blobs: ["keepme"], keys: [] }) });
     expect(await sizes.json()).toEqual({ blobs: { keepme: 3 }, keys: {} });
+  });
+
+  it("stores only the bytes it counted, and counts any stored file it serves", async () => {
+    const auth = { authorization: "Bearer test-token" };
+    const url = "/v1/vaults/len-http/blobs";
+    // A body longer than its content-length isn't stored.
+    const liar = await call(`${url}/liar`, {
+      method: "PUT",
+      headers: { ...auth, "content-length": "3" },
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode("x".repeat(5000)));
+          c.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    expect(liar.status).not.toBe(200);
+    expect(await env.BLOBS.head("len-http/liar")).toBeNull();
+    // A file in R2 the vault doesn't count (lost bookkeeping) starts counting when it's fetched or checked.
+    await env.BLOBS.put("len-http/orphan", "y".repeat(25));
+    expect((await call(`${url}/orphan`, { headers: auth })).status).toBe(200);
+    const vault = env.VAULT.get(env.VAULT.idFromName("len-http"));
+    expect((await vault.usage()).blobs).toBe(25);
+    await env.BLOBS.put("len-http/orphan2", "z".repeat(7));
+    await call(`${url}/missing`, { method: "POST", headers: auth, body: JSON.stringify({ ids: ["orphan2"] }) });
+    expect((await vault.usage()).blobs).toBe(32);
+  });
+});
+
+describe("abuse limits", () => {
+  it("caps uploads per day, and records whatever the plan", async () => {
+    const vault = env.VAULT.get(env.VAULT.idFromName("abuse-day"));
+    const day = `uploads:${new Date().toISOString().slice(0, 10)}`;
+    await runInDurableObject(vault, (_obj, state) => {
+      state.storage.sql.exec("INSERT INTO usage (k, v) VALUES (?, 20000)", day);
+    });
+    expect(await vault.reserveBlob("abuse-day", "f", 1, 1000)).toMatchObject({ ok: false, busy: true });
+    const res = await call("/v1/vaults/abuse-day/blobs/f", {
+      method: "PUT",
+      headers: { authorization: "Bearer test-token", "content-length": "1" },
+      body: "x",
+    });
+    expect(res.status).toBe(429);
+    // Tomorrow it starts again.
+    const tomorrow = Date.now() + 24 * 60 * 60 * 1000;
+    expect((await vault.reserveBlob("abuse-day", "f", 1, 1000, tomorrow)).ok).toBe(true);
+    // Records stop at 2 GB even on a plan that allows more.
+    await runInDurableObject(vault, (_obj, state) => {
+      state.storage.sql.exec("UPDATE usage SET v = ? WHERE k = 'records'", 2 * 1024 ** 3 - 10);
+    });
+    const big = await vault.push(DEV, [{ key: "k", hlc: hlc(1), payload: "x".repeat(50) }], 100 * 1024 ** 3);
+    expect(big.full).toBe(true);
+  });
+
+  it("refuses a push too big to handle in one go", async () => {
+    const changes = Array.from({ length: 15 }, (_, i) => ({ key: `k${i}`, hlc: hlc(i + 1), payload: "x".repeat(1_400_000) }));
+    const res = await call("/v1/vaults/abuse-push/push", {
+      method: "POST",
+      headers: { authorization: "Bearer test-token" },
+      body: JSON.stringify({ device: DEV, changes }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("limits requests per account", async () => {
+    const { session, vault } = await signIn("flood@example.com");
+    const statuses: number[] = [];
+    for (let i = 0; i < 610; i++)
+      statuses.push((await call(`/v1/vaults/${vault}/pull?since=0`, { session })).status);
+    expect(statuses.slice(0, 600).every((s) => s === 200)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
+    // Another account isn't affected.
+    const other = await signIn("calm@example.com");
+    expect((await call(`/v1/vaults/${other.vault}/pull?since=0`, { session: other.session })).status).toBe(200);
+  });
+
+  it("tells browsers not to guess what a file is", async () => {
+    const res = await call("/v1/vaults/abuse-push/pull?since=0", { headers: { authorization: "Bearer test-token" } });
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   });
 });
 

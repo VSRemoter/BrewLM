@@ -254,6 +254,11 @@ pub async fn backup_restore_zip(app: tauri::AppHandle, src: String) -> Result<()
 
 fn restore_zip(data_dir: &Path, src: &Path) -> Result<(), String> {
     let file = File::open(src).map_err(|e| format!("open backup: {e}"))?;
+    // Backups are stored uncompressed, so what they unpack to is about their
+    // own size; allow for one recompressed elsewhere, but never a "zip bomb"
+    // that would fill the disk.
+    let zipped = file.metadata().map_err(|e| format!("open backup: {e}"))?.len();
+    let mut budget = zipped.saturating_mul(10).saturating_add(64 << 20);
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a BrewLM backup: {e}"))?;
     if zip.index_for_name("brewlm.db").is_none() {
         return Err("not a BrewLM backup (no brewlm.db inside)".into());
@@ -274,7 +279,17 @@ fn restore_zip(data_dir: &Path, src: &Path) -> Result<(), String> {
             continue; // ignore anything we didn't write
         };
         let mut out = File::create(&target).map_err(|e| format!("restore {name}: {e}"))?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| format!("restore {name}: {e}"))?;
+        let copied = std::io::copy(&mut (&mut entry).take(budget + 1), &mut out)
+            .map_err(|e| format!("restore {name}: {e}"))?;
+        if copied > budget {
+            drop(out);
+            let _ = std::fs::remove_file(&target);
+            if let Some(p) = &db_tmp {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err("not a BrewLM backup (it unpacks to far more than its size)".into());
+        }
+        budget -= copied;
     }
     let db_tmp = db_tmp.ok_or("backup has no database")?;
     std::fs::rename(db_tmp, data_dir.join("brewlm.db")).map_err(|e| format!("restore database: {e}"))

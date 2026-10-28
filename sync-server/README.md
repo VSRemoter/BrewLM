@@ -40,6 +40,12 @@ Accounts: email sign-in links (the app polls while you confirm in the
 browser; opening the link alone never signs in), a 14-day trial without a
 card, then Sync (10 GB) or Sync Plus (100 GB) through Polar. Without a plan or
 trial a vault is read-only (402 on uploads); uploads past the limit get 413.
+The limit is checked inside the vault's Durable Object on every write, one
+at a time, so parallel uploads can't share the same free space: an upload
+counts in full from the moment it's let in, R2 stores exactly the bytes
+counted, and any file found in R2 that isn't counted starts counting.
+Records count their key and a fixed overhead too. Every pull, push, upload
+and sweep returns `usedBytes`, so the app's storage figure is always current.
 
 Conflicts are last-writer-wins on each change's hybrid logical clock
 (`<ms>:<counter>:<device>`), checked here and again on the device
@@ -108,5 +114,7 @@ devices' changes are fetched every 30 s and when the window regains focus.
 The web app (milestone 3b) uses the same API from the browser: CORS allows
 https://app.brewlm.com. Since 3d it also asks `POST /v1/fetch` to read web
 pages and YouTube transcripts it can't read itself (src/fetch.ts: public
-http(s) addresses only, 25 MB, 120 an hour per account). Still to come: live updates (WebSocket) and cleaning
-up server files nothing points to any more.
+http(s) addresses only, 25 MB, 120 an hour per account). Files nothing
+points to any more are deleted when an up-to-date device sends the list of
+files it uses (`blobs/sweep`), right after a delete and every few hours.
+Still to come: live updates (WebSocket).

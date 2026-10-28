@@ -12,6 +12,9 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "brewlm-sync-blobs" }],
+  // Requests per signed-in account per minute (src/index.ts): stops one
+  // account flooding the server. Far above what the app sends.
+  "ratelimits": [{ "name": "ACCOUNT_RATE", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }],
   // Accounts, sessions and subscriptions. Run migrations with
   // `npx wrangler d1 migrations apply brewlm-sync --local` (or --remote).
   "d1_databases": [

@@ -147,15 +147,23 @@ const TICK_MS = 3000;
 const PULL_MS = import.meta.env.DEV ? 3000 : 30_000;
 const MAX_BACKOFF_MS = 60_000;
 const PUSH_BATCH = 200;
+/** Records per push together, in characters (the server takes 20M). */
+const PUSH_CHARS = 8_000_000;
 /** Records above this travel as blobs (the server's change-log cap is 1.5M chars, after base64). */
 const MAX_INLINE = 1_000_000;
 /** Larger than any real row; such a record is kept local and logged. */
 const MAX_RECORD = 50_000_000;
+/** Tables whose rows hold files themselves (an edit can drop one). Messages only matter when they carry one. */
+const FILE_TABLES = new Set(["notebooks", "folders", "sources", "images", "artifacts"]);
 /** Tables whose rows can point at media files (refresh views when files land). */
 const MEDIA_TABLES = ["notebooks", "folders", "sources", "images", "artifacts", "messages"];
 /** A file another device hasn't uploaded yet is retried this often. */
 const DOWNLOAD_RETRY_MS = 30_000;
-/** How often the plan and storage use are refreshed while syncing (and whenever Settings → Sync opens). */
+/**
+ * How often the plan is refreshed while syncing (and whenever Settings → Sync
+ * opens). Storage use doesn't wait for this: every pull, push, upload and
+ * sweep reports it (`noteUsage`).
+ */
 const ACCOUNT_REFRESH_MS = import.meta.env.DEV ? 60_000 : 10 * 60_000;
 export const MIN_PASSWORD = 10;
 
@@ -298,6 +306,16 @@ async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Pr
     connectTimeout: 15000,
   });
   if (!res.ok) throw await serverError(res);
+  // Older servers answer 204 with no body.
+  if (res.headers.get("content-type")?.includes("json"))
+    noteUsage(((await res.json()) as { usedBytes?: number }).usedBytes);
+}
+
+/** The server's latest count of this vault's storage, shown in Settings → Sync right away. */
+function noteUsage(usedBytes: number | undefined): void {
+  const acct = status.account;
+  if (typeof usedBytes !== "number" || !acct || acct.usedBytes === usedBytes) return;
+  setStatus({ account: { ...acct, usedBytes } });
 }
 
 /** The blob's bytes, or null if the server doesn't have it (yet). */
@@ -351,8 +369,10 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       cursor: number;
       more: boolean;
       epoch?: number;
+      usedBytes?: number;
     }>(cfg, `pull?since=${cursor}&limit=500`);
     await noteSweeps(res.epoch);
+    noteUsage(res.usedBytes);
     const batch: { tbl: string; row_id: string; hlc: string; deleted: boolean; row?: Record<string, unknown> }[] = [];
     for (const c of res.changes) {
       clock.observe(c.hlc);
@@ -436,7 +456,12 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
     const pointers = new Map<string, string | null>();
     const sent: { tbl: string; row_id: string; changed_at: number; hlc: string | null }[] = [];
     const sentByKey = new Map<string, (typeof sent)[number]>();
+    /** Records that may have let go of a file (deleted, or pointing at files): sweep after. */
+    const mayFreeFiles = new Set<string>();
+    let batchChars = 0;
     for (const e of entries) {
+      // Big rows fill a push sooner; the rest wait for the next one.
+      if (changes.length > 0 && batchChars >= PUSH_CHARS) break;
       const label = `${e.tbl}:${e.row_id}`;
       if (!SYNCED_TABLES[e.tbl] || (e.tbl === "settings" && !syncsSetting(e.row_id, syncKeys))) {
         sent.push({ ...e, hlc: null }); // never leaves this device: just clear it
@@ -449,7 +474,8 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
         oversized.add(label);
         continue;
       }
-      for (const ref of blobRefsIn(json)) media.toUpload.add(ref.slice(BLOB_PREFIX.length));
+      const refs = blobRefsIn(json);
+      for (const ref of refs) media.toUpload.add(ref.slice(BLOB_PREFIX.length));
       let pointer: string | null = null;
       if (json.length > MAX_INLINE) {
         const bytes = new TextEncoder().encode(json);
@@ -459,18 +485,24 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       }
       const key = await hiddenId(keys, label);
       const hlc = clock.next(e.changed_at);
-      changes.push({ key, hlc, payload: await encryptRecord(keys, key, json) });
+      const payload = await encryptRecord(keys, key, json);
+      changes.push({ key, hlc, payload });
+      batchChars += payload.length;
       const s = { ...e, hlc };
       sent.push(s);
       sentByKey.set(key, s);
       pointers.set(key, pointer);
+      // A row in a table that holds files may have dropped one (a cover
+      // replaced, say); a big record's earlier copy is left behind.
+      if (!row || pointer || refs.length > 0 || FILE_TABLES.has(e.tbl)) mayFreeFiles.add(key);
     }
 
     // Files first, so a device that pulls these rows can fetch what they point at.
     await uploadMedia(cfg, keys);
     if (changes.length > 0) {
-      const res = await api<{ accepted: number; stale: string[] }>(cfg, "push", { device, changes });
+      const res = await api<{ accepted: number; stale: string[]; usedBytes?: number }>(cfg, "push", { device, changes });
       accepted += res.accepted;
+      noteUsage(res.usedBytes);
       // Stale = the server already holds a newer version; drop ours (it lost).
       for (const k of res.stale) {
         const s = sentByKey.get(k);
@@ -478,6 +510,8 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       }
       // Accepted records are now the server's current ones.
       for (const [k, s] of sentByKey) if (s.hlc !== null) await setRecordBlob(s.tbl, s.row_id, pointers.get(k) ?? null);
+      // Free the space of files nothing uses now, without waiting for the next periodic sweep.
+      if ([...mayFreeFiles].some((k) => sentByKey.get(k)?.hlc)) sweepWanted = true;
     }
     await platform.sync.markPushed(sent);
     await setState("hlc_last", clock.toString());
@@ -632,11 +666,19 @@ function fetchFileNow(name: string): Promise<boolean> {
  * tells it (sync-server/src/vault.ts, `sweep`): every media file rows point at,
  * plus each big row's own record file. Files left out (deleted media, old
  * copies of edited big rows, failed uploads) are deleted from the server and
- * stop counting against the plan. Runs every few hours, and soon after the
- * storage manager deletes something (`requestStorageSweep`).
+ * stop counting against the plan. Runs every few hours, right after a change
+ * that may have let go of a file (a delete, a new cover…), and when the
+ * storage manager deletes something (`requestStorageSweep`). Files uploaded in
+ * the last few minutes are kept a little longer (another device may be about
+ * to use them); the server says when, and the sweep runs again then.
  */
 const SWEEP_EVERY_MS = 6 * 60 * 60 * 1000;
+/** Edits can come in bursts: at most one sweep they prompt this often. */
+const SWEEP_GAP_MS = 15_000;
 let sweepWanted = false;
+/** When files the last sweep had to keep (too new) can go; 0 = none waiting. */
+let sweepAgainAt = 0;
+let lastSweepAt = 0;
 
 /** Which file a row's current server record uses (null: the record holds the row itself). */
 async function setRecordBlob(tbl: string, rowId: string, blob: string | null): Promise<void> {
@@ -681,7 +723,9 @@ export function requestStorageSweep(): void {
 }
 
 async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
-  if (!sweepWanted && Date.now() - Number((await getState("swept_at")) || 0) < SWEEP_EVERY_MS) return;
+  const now = Date.now();
+  const prompted = (sweepWanted && now - lastSweepAt >= SWEEP_GAP_MS) || (sweepAgainAt > 0 && now >= sweepAgainAt);
+  if (!prompted && now - Number((await getState("swept_at")) || 0) < SWEEP_EVERY_MS) return;
   // Only from a complete, current view: every record read, nothing waiting to go up.
   if ((await getState("record_blobs")) !== cfg.vault || unreadable.size > 0 || media.toUpload.size > 0) return;
   const pending = await (await getDb()).select<{ k: string }[]>("SELECT tbl || ':' || row_id AS k FROM sync_outbox");
@@ -691,7 +735,7 @@ async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
   const recordFiles = (await d.select<{ blob: string }[]>("SELECT blob FROM sync_record_blobs")).map((r) => r.blob);
   const live = [...(await Promise.all(names.map((n) => fileId(keys, n)))), ...recordFiles];
-  let res: { removed: number; freed: number };
+  let res: { removed: number; freed: number; waiting?: number; retryInMs?: number; usedBytes?: number };
   try {
     res = await api(cfg, "blobs/sweep", { cursor: Number((await getState("cursor")) || "0"), live });
   } catch (e) {
@@ -703,12 +747,15 @@ async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
     throw e;
   }
   sweepWanted = false;
-  await setState("swept_at", String(Date.now()));
+  lastSweepAt = Date.now();
+  sweepAgainAt = res.waiting ? lastSweepAt + (res.retryInMs ?? 0) + 5000 : 0;
+  await setState("swept_at", String(lastSweepAt));
   if (res.removed > 0) {
     const freed = res.freed >= 1e6 ? `${(res.freed / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(res.freed / 1e3))} KB`;
     log(`freed ${freed} on the server (${res.removed} unused file${res.removed === 1 ? "" : "s"})`);
-    if (account) await refreshAccount().catch(() => {});
   }
+  if (res.usedBytes !== undefined) noteUsage(res.usedBytes);
+  else if (res.removed > 0 && account) await refreshAccount().catch(() => {});
 }
 
 /**
