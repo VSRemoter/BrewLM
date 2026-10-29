@@ -716,6 +716,16 @@ export function buildSystemPrompt(
       }
       section = `# Sources\n${sections.join("\n\n---\n\n")}`;
     }
+    // Where each link source came from, so "what does the link point to?"
+    // has an answer even when none of that page's text was picked.
+    const links = knowledge.filter((s) => s.type === "link" && s.mime).slice(0, 20);
+    if (links.length > 0) {
+      const line = (s: Source) => {
+        const t = s.title.replace(/\s+/g, " ").trim();
+        return `- ${t.length > 100 ? t.slice(0, 100) + "…" : t} — ${s.mime}`;
+      };
+      section += `\n\n[Link sources and their addresses:\n${links.map(line).join("\n")}]`;
+    }
     parts.push(section);
   }
 

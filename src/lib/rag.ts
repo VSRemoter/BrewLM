@@ -380,10 +380,35 @@ function boundaryChunks(
   return out;
 }
 
+/* ----------------------- just-added sources safety net ---------------------- */
+
+/** A source this new is likely what the user is asking about ("what does the link say?"). */
+const FRESH_SOURCE_MS = 30 * 60_000;
+
+/**
+ * The opening chunks of the one or two newest sources, when they were added
+ * in the last half hour. "What's in the link I just added?" shares no words
+ * with the page itself, so relevance scoring alone would leave it out.
+ */
+function freshChunks(live: SourceChunk[], sources: Source[]): SourceChunk[] {
+  const now = Date.now();
+  const fresh = sources
+    .filter((s) => now - s.created_at < FRESH_SOURCE_MS)
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, 2);
+  return fresh.flatMap((s) =>
+    live
+      .filter((c) => c.source_id === s.id)
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, 2)
+  );
+}
+
 /**
  * The most relevant chunks for `query`, capped by total characters.
  * Positional queries (last/first/end…) additionally get the document's
- * boundary chunks, packed before relevance fill so they can't be starved.
+ * boundary chunks, and sources added in the last half hour their opening
+ * chunks, packed before relevance fill so they can't be starved.
  * Empty result = no usable signal (caller falls back to legacy truncation).
  */
 export async function rankChunks(
@@ -443,7 +468,11 @@ export async function rankChunks(
   // Boundary chunks FIRST: they must be packed before the ranked fill can
   // consume the whole budget — a positional question needs the document's
   // actual end/beginning, not whatever remains after relevance spending.
-  const ordered = [...boundary.map((c) => ({ c, score: 0 })), ...scored];
+  const ordered = [
+    ...boundary.map((c) => ({ c, score: 0 })),
+    ...freshChunks(live, sources).map((c) => ({ c, score: 0 })),
+    ...scored,
+  ];
   const picked = new Set<string>();
   const out: RetrievedChunk[] = [];
   let used = 0;

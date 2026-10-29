@@ -364,8 +364,8 @@ export default function SourcesPanel({
         <LinkModal
           onClose={() => setLinkOpen(false)}
           onAdd={async (url) => {
-            const { title, text } = await fetchLinkContent(url);
-            await addSource(notebookId, "link", title, text, url);
+            const { title, text, finalUrl } = await fetchLinkContent(url);
+            await addSource(notebookId, "link", title, text, finalUrl);
             onChanged();
           }}
         />
@@ -490,8 +490,9 @@ function LinkModal({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            // a single link still submits with Enter; ⌘/Ctrl+Enter always does
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey || (!e.shiftKey && !draft.includes("\n") && urls.length === 1 && !busy))) {
+            // Enter starts a new line (lists are typed one link per line);
+            // only the button — or ⌘/Ctrl+Enter — fetches
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               void submit();
             }
@@ -535,7 +536,7 @@ function LinkModal({
                 ? `Added ${added}, ${failedCount} failed — fix or remove ${failedCount === 1 ? "it" : "them"} and try again.`
                 : urls.length > 1
                   ? `${urls.length} links · ⌘Enter to add`
-                  : "One link per line"}
+                  : "One link per line · ⌘Enter to add"}
           </span>
           <PrimaryButton type="submit" disabled={urls.length === 0 || busy}>
             {busy ? "Fetching…" : urls.length > 1 ? `Fetch & add ${urls.length} links` : "Fetch & add"}

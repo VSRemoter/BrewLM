@@ -137,8 +137,47 @@ export function fileToCoverDataUrl(file: File, maxWidth = 560, quality = 0.82): 
   });
 }
 
-/** Fetches a URL (see webFetch.ts: direct on desktop, via the sync server on the web) and extracts readable text. */
-export async function fetchLinkContent(url: string): Promise<{ title: string; text: string }> {
+/** Tags whose text starts on its own line, so adjacent blocks don't run together ("Log inSign up"). */
+const BLOCK_TAGS = new Set([
+  "address", "article", "blockquote", "dd", "details", "div", "dl", "dt", "fieldset", "figcaption",
+  "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "li", "main", "ol", "p", "pre", "section",
+  "summary", "table", "tbody", "thead", "tfoot", "tr", "ul",
+]);
+
+/** A parsed page's readable text, with line breaks between blocks and spaces between table cells and buttons. */
+function htmlToText(root: Node): string {
+  const out: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out.push(node.textContent ?? "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = (node as Element).tagName.toLowerCase();
+    if (tag === "br") return void out.push("\n");
+    const block = BLOCK_TAGS.has(tag);
+    if (block) out.push("\n");
+    for (const child of Array.from(node.childNodes)) walk(child);
+    if (block) out.push("\n");
+    else if (tag === "td" || tag === "th" || tag === "button") out.push(" ");
+  };
+  walk(root);
+  return out
+    .join("")
+    .replace(/[ \t\u00a0]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Pages that render only with JavaScript, or only after signing in, come back as this kind of stub. */
+const SHELL_PAGE_RE = /(enable|turn on|requires?) javascript|javascript is (not available|disabled)|log ?in to continue|sign ?in to continue/i;
+
+/**
+ * Fetches a URL (see webFetch.ts: direct on desktop, via the sync server on the web) and extracts readable text.
+ * `finalUrl` is where the page ended up after redirects (a Google "goto" link → the article itself).
+ */
+export async function fetchLinkContent(url: string): Promise<{ title: string; text: string; finalUrl: string }> {
   let parsed: URL;
   try {
     parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
@@ -146,7 +185,8 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     throw new Error("That doesn't look like a valid URL.");
   }
   // Video pages are player boilerplate as HTML; read the transcript instead.
-  if (isYouTubeUrl(parsed.toString())) return fetchYouTubeTranscript(parsed.toString());
+  if (isYouTubeUrl(parsed.toString()))
+    return { ...(await fetchYouTubeTranscript(parsed.toString())), finalUrl: parsed.toString() };
 
   const res = await fetchWebPage(parsed.toString(), {
     method: "GET",
@@ -157,6 +197,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     },
   });
   if (!res.ok) throw new Error(`Couldn't fetch that page (HTTP ${res.status}).`);
+  const finalUrl = res.headers.get("x-final-url") || res.url || parsed.toString();
 
   const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
   const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "") || parsed.hostname;
@@ -166,7 +207,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     const text = await extractPdfBytes(new Uint8Array(await res.arrayBuffer()));
     if (text.trim().length < 200)
       throw new Error("That PDF has almost no extractable text (it looks scanned/image-only). Download it, run OCR, then add the file.");
-    return { title: fileName, text: text.slice(0, MAX_SOURCE_CHARS) };
+    return { title: fileName, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
   }
   if (/^(image|audio|video)\//.test(contentType))
     throw new Error("That link points to a media file, not a web page — download it and add it with the upload button so the AI can read it.");
@@ -175,7 +216,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     const bytes = await res.arrayBuffer();
     const { text } = await extractFileText(new File([bytes], fileName, { type: contentType }));
     if (!text.trim()) throw new Error("That file was downloaded but has no readable text.");
-    return { title: fileName, text };
+    return { title: fileName, text, finalUrl };
   }
 
   const bytes = new Uint8Array(await res.arrayBuffer());
@@ -190,7 +231,7 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
       throw new Error(`That link isn't a page BrewLM can read — ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!text.trim()) throw new Error("The link loaded but no readable text was found.");
-    return { title: parsed.hostname, text: text.slice(0, MAX_SOURCE_CHARS) };
+    return { title: parsed.hostname, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
   }
   const raw = new TextDecoder().decode(bytes);
 
@@ -199,12 +240,11 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
   const title =
     doc.querySelector("title")?.textContent?.trim() ||
     parsed.hostname;
-  const text = (doc.body?.textContent ?? "")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n\s*\n+/g, "\n\n")
-    .trim();
+  const text = doc.body ? htmlToText(doc.body) : "";
   if (!text) throw new Error("The page loaded but no readable text was found.");
-  return { title: `${title}`, text: text.slice(0, MAX_SOURCE_CHARS) };
+  if (text.length < 400 && SHELL_PAGE_RE.test(text))
+    throw new Error("That page only shows its content in a browser with JavaScript or after signing in, so BrewLM can't read it. Copy the text and add it with Paste text instead.");
+  return { title: `${title}`, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
 }
 
 export function sourcePreview(content: string, max = 90): string {

@@ -12,6 +12,8 @@ export interface MentionItem {
   type: string;
   /** Extracted readable text; null for binary/media that has none. */
   text: string | null;
+  /** Link sources: the page's address, so pasting it in chat points at the source too. */
+  url?: string;
 }
 
 /** Flatten a saved artifact into plain text the model can read. */
@@ -92,6 +94,7 @@ export function buildMentionCatalog(sources: Source[], artifacts: Artifact[] = [
       group: "source" as const,
       type: s.type,
       text: sourceText(s) && !sourceText(s).startsWith("data:") ? sourceText(s) : null,
+      ...(s.type === "link" && s.mime ? { url: s.mime } : {}),
     })),
     // Drawings stay out of @mentions: they're for the user, not the AI.
     ...artifacts.filter((a) => a.kind !== "drawing").map((a) => ({
@@ -143,7 +146,31 @@ export function segmentMentions(content: string, items: MentionItem[]): MentionS
   return out;
 }
 
-/** Which catalog items the text points at (deduped by id, first-seen order). */
+/** Query parameters share buttons and trackers add; they don't change the page. */
+const TRACKING_PARAM_RE = /^(utm_.*|s|t|si|ref|ref_src|ref_url|fbclid|gclid|igshid|feature|share|mc_.*)$/i;
+
+/**
+ * A web address reduced to what identifies the page: no scheme, "www."/"m.",
+ * trailing slash, fragment or tracking parameters ("?s=20" on X share links).
+ * twitter.com and x.com are the same site.
+ */
+export function linkKey(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, "").replace(/^twitter\.com$/, "x.com");
+  const params = [...u.searchParams]
+    .filter(([k]) => !TRACKING_PARAM_RE.test(k))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+  return `${host}${u.pathname.replace(/\/+$/, "").toLowerCase()}${params ? `?${params}` : ""}`;
+}
+
+/** Which catalog items the text points at, by @Title or by pasting a link source's address (deduped, first-seen order). */
 export function resolveMentions(content: string, items: MentionItem[]): MentionItem[] {
   const seen = new Set<string>();
   const out: MentionItem[] = [];
@@ -151,6 +178,17 @@ export function resolveMentions(content: string, items: MentionItem[]): MentionI
     if (seg.item && !seen.has(seg.item.id)) {
       seen.add(seg.item.id);
       out.push(seg.item);
+    }
+  }
+  const pasted = new Set(
+    (content.match(/https?:\/\/[^\s<>()"']+/gi) ?? []).map(linkKey).filter((k): k is string => !!k)
+  );
+  if (pasted.size > 0) {
+    for (const item of items) {
+      if (item.url && !seen.has(item.id) && pasted.has(linkKey(item.url) ?? "")) {
+        seen.add(item.id);
+        out.push(item);
+      }
     }
   }
   return out;

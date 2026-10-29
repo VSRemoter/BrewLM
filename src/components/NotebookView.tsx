@@ -193,8 +193,8 @@ export default function NotebookView({
   /** `/url <link>` in chat — fetch a web page and save it as a link source. */
   const handleAddLink = useCallback(
     async (url: string) => {
-      const { title, text } = await fetchLinkContent(url);
-      const src = await addSource(notebook.id, "link", title, text, url);
+      const { title, text, finalUrl } = await fetchLinkContent(url);
+      const src = await addSource(notebook.id, "link", title, text, finalUrl);
       refreshSources();
       return src;
     },
