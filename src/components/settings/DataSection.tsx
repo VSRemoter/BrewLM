@@ -70,8 +70,6 @@ export default function DataSection({
     <div>
       <SectionTitle title="Data & Storage" />
 
-      <LargestItems />
-
       {desktop && (
         <>
           {/* Storage location */}
@@ -144,6 +142,9 @@ export default function DataSection({
           </button>
         </Row>
       </Card>
+
+      {/* Largest items — below the settings, so they're not pushed down by a long list */}
+      <LargestItems />
 
       {/* Import confirm */}
       {importOpen && (

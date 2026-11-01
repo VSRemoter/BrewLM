@@ -1,8 +1,9 @@
-import { Home as HomeIcon, Plus, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { mediaSrc } from "../lib/blobs";
 import { closeTab, moveTab, showTab, type TabsState } from "../lib/tabs";
 import type { Notebook } from "../lib/types";
+import { BrewIcon } from "./BrewIcon";
 
 /**
  * The desktop top bar: Home, one tab per open notebook, and + (quick switcher).
@@ -67,7 +68,7 @@ export default function TabStrip({
           tabs.active === null ? "bg-hover text-ink" : "text-ink-3 hover:bg-hover hover:text-ink"
         }`}
       >
-        <HomeIcon size={16} strokeWidth={1.8} />
+        <BrewIcon size={16} strokeWidth={2} />
       </button>
       <span className="mx-1 h-5 w-px shrink-0 bg-edge" />
 

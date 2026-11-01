@@ -22,7 +22,7 @@
   --color-edge-soft: #eeeeee;
   --color-ink: #171717;
   --color-ink-2: #525252;
-  --color-ink-3: #8a8a8a;
+  --color-ink-3: #747474;
   --color-accent: #171717;
   --color-accent-ink: #ffffff;
   --color-hover: #f5f5f5;
@@ -53,8 +53,8 @@
   --color-edge: #2b2b31;
   --color-edge-soft: #202025;
   --color-ink: #f4f4f5;
-  --color-ink-2: #a1a1aa;
-  --color-ink-3: #6e6e78;
+  --color-ink-2: #a2a2ab;
+  --color-ink-3: #81818a;
   --color-accent: #f4f4f5;
   --color-accent-ink: #101012;
   --color-hover: #26262c;
@@ -86,7 +86,7 @@
   --color-edge-soft: #1f2824;
   --color-ink: #eef2ec;
   --color-ink-2: #aab5ad;
-  --color-ink-3: #7a877f;
+  --color-ink-3: #7b8880;
   --color-accent: #4cc38a;
   --color-accent-ink: #05210f;
   --color-hover: #232c28;
@@ -118,7 +118,7 @@
   --color-edge-soft: #1b2434;
   --color-ink: #edf2f9;
   --color-ink-2: #a9b4c5;
-  --color-ink-3: #76839a;
+  --color-ink-3: #77849b;
   --color-accent: #4ea6ff;
   --color-accent-ink: #04162b;
   --color-hover: #1f2a3d;
@@ -212,8 +212,8 @@
   --color-edge: #f2d3e1;
   --color-edge-soft: #f8e2ec;
   --color-ink: #3f1a2d;
-  --color-ink-2: #93536f;
-  --color-ink-3: #c18ba6;
+  --color-ink-2: #814660;
+  --color-ink-3: #97677f;
   --color-accent: #ec4899;
   --color-accent-ink: #ffffff;
   --color-hover: #f9e3ee;
@@ -245,7 +245,7 @@
   --color-edge-soft: #082014;
   --color-ink: #a3f7bf;
   --color-ink-2: #52b96f;
-  --color-ink-3: #2d7a44;
+  --color-ink-3: #3f8d56;
   --color-accent: #22e05c;
   --color-accent-ink: #011505;
   --color-hover: #0a2b18;
@@ -280,8 +280,8 @@
   --color-edge: #e4ddf6;
   --color-edge-soft: #ece7fa;
   --color-ink: #2d2342;
-  --color-ink-2: #6e5f99;
-  --color-ink-3: #a89ccc;
+  --color-ink-2: #5e5184;
+  --color-ink-3: #796e98;
   --color-accent: #7c5cff;
   --color-accent-ink: #ffffff;
   --color-hover: #eae5fb;
@@ -312,8 +312,8 @@
   --color-edge: #f3e1d4;
   --color-edge-soft: #f9ece2;
   --color-ink: #2b1709;
-  --color-ink-2: #7a5341;
-  --color-ink-3: #b39079;
+  --color-ink-2: #76503e;
+  --color-ink-3: #8d6e5a;
   --color-accent: #f2541b;
   --color-accent-ink: #ffffff;
   --color-hover: #ffede0;
@@ -344,7 +344,7 @@
   --color-edge-soft: #331a22;
   --color-ink: #f7e8dd;
   --color-ink-2: #c4a0a5;
-  --color-ink-3: #8a5f68;
+  --color-ink-3: #a17c81;
   --color-accent: #ff9e42;
   --color-accent-ink: #2a1200;
   --color-hover: #3a1f29;
@@ -375,7 +375,7 @@
   --color-edge-soft: #1f1840;
   --color-ink: #efeaff;
   --color-ink-2: #a99bdd;
-  --color-ink-3: #6c5fa8;
+  --color-ink-3: #8478b8;
   --color-accent: #ff6bcb;
   --color-accent-ink: #2b0a20;
   --color-hover: #241c4a;
