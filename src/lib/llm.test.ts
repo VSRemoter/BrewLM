@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../platform", () => ({ platform: { fetch: vi.fn() } }));
+/** Saved settings rows (Provider routing lives under "openrouterRouting"). */
+const settingsRows = vi.hoisted(() => new Map<string, string>());
+vi.mock("./db", () => ({ getSetting: async (key: string) => settingsRows.get(key) ?? "" }));
 vi.mock("./local", () => ({
   budgetForContext: () => ({ maxOutput: 4096 }),
   loadLocalServer: async () => null,
@@ -74,7 +77,10 @@ beforeEach(() => {
   );
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  settingsRows.clear();
+});
 
 const ask = (over: Partial<Parameters<typeof complete>[0]>) =>
   complete({
@@ -84,6 +90,29 @@ const ask = (over: Partial<Parameters<typeof complete>[0]>) =>
     messages: [{ role: "user", content: "hi" }],
     ...over,
   });
+
+describe("OpenRouter provider routing", () => {
+  it("sends no provider object by default", async () => {
+    replies.push(openAiText("ok"));
+    await ask({});
+    expect(sent[0].provider).toBeUndefined();
+  });
+
+  it("sends the saved routing and reports who served the reply", async () => {
+    settingsRows.set("openrouterRouting", JSON.stringify({ sort: "price", noTraining: true }));
+    replies.push(sse({ provider: "DeepInfra", choices: [{ delta: { content: "ok" } }] }, { usage: { prompt_tokens: 3, completion_tokens: 1 } }, "[DONE]"));
+    let usage: { servedBy?: string } = {};
+    await ask({ onUsage: (u) => (usage = u) });
+    expect(sent[0].provider).toEqual({ sort: "price", data_collection: "deny" });
+    expect(usage.servedBy).toBe("DeepInfra");
+  });
+
+  it("says when the routing left no provider for the model", async () => {
+    settingsRows.set("openrouterRouting", JSON.stringify({ pins: { "think/big": { order: ["groq"], only: true } } }));
+    replies.push(errorResponse(404, "No allowed providers are available for the selected model."));
+    await expect(ask({})).rejects.toThrow(/under your provider routing \(only groq\)/);
+  });
+});
 
 describe("OpenRouter output sizing", () => {
   it("uses the automatic ceiling and sends the thinking level to a model that reasons", async () => {

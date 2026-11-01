@@ -17,6 +17,7 @@ import type {
   TtsProvider,
 } from "./types";
 import { loadOpenRouterCatalog } from "./modelLimits";
+import { parseRouting, serializeRouting } from "./routing";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
   openrouter: "openai/gpt-4o-mini",
@@ -204,6 +205,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
   researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
+  openrouterRouting: (s) => serializeRouting(s.openrouterRouting),
   defFlashcardsAmount: (s) => s.defFlashcardsAmount,
   defFlashcardsDifficulty: (s) => s.defFlashcardsDifficulty,
   defQuizAmount: (s) => s.defQuizAmount,
@@ -228,6 +230,7 @@ export async function loadSettings(): Promise<Settings> {
     defQuizAmount, defQuizDifficulty, defAudioMode, defAudioFormat, defAudioLength,
     defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
+    openrouterRouting,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -264,6 +267,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("researchModels"),
     getSetting("thinking"),
     getSetting("maxOutput"),
+    getSetting("openrouterRouting"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -330,6 +334,7 @@ export async function loadSettings(): Promise<Settings> {
     maxOutput: safeMaxOutput,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
     researchModels: parseResearchModels(researchModels),
+    openrouterRouting: parseRouting(openrouterRouting),
     defFlashcardsAmount: pick(defFlashcardsAmount, AMOUNTS, DEFAULT_BEHAVIOR.defFlashcardsAmount),
     defFlashcardsDifficulty: pick(defFlashcardsDifficulty, DIFFICULTIES, DEFAULT_BEHAVIOR.defFlashcardsDifficulty),
     defQuizAmount: pick(defQuizAmount, AMOUNTS, DEFAULT_BEHAVIOR.defQuizAmount),

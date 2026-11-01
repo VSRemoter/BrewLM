@@ -204,19 +204,21 @@ function fmtLineTokens(n: number | undefined): string | null {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 }
 
-/** "1.2k in · 340 out · 800 cache hit · ~$0.0031" — the Response details line. */
+/** "1.2k in · 340 out · 800 cache hit · ~$0.0031 · via DeepInfra" — the Response details line. */
 export function fmtUsageLine(u: {
   input?: number;
   output?: number;
   cachedRead?: number;
   costUsd?: number;
   estimated?: boolean;
+  servedBy?: string;
 }): string {
   return [
     fmtLineTokens(u.input) && `${fmtLineTokens(u.input)} in`,
     fmtLineTokens(u.output) && `${fmtLineTokens(u.output)} out`,
     fmtLineTokens(u.cachedRead) && `${fmtLineTokens(u.cachedRead)} cache hit`,
     u.costUsd != null && `${u.estimated ? "~" : ""}${fmtReplyCost(u.costUsd)}`,
+    u.servedBy && `via ${u.servedBy}`,
   ]
     .filter(Boolean)
     .join(" · ");

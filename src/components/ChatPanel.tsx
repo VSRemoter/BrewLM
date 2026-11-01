@@ -29,6 +29,7 @@ import {
   Type,
   Pencil,
   Plus,
+  Route,
   Search,
   Settings2,
   Sparkles,
@@ -120,6 +121,7 @@ import { platform } from "../platform";
 import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { fmtUsageLine, recordUsage, replyCostUsd } from "../lib/usage";
+import { runProviderCommand } from "../lib/providerCommand";
 import { BrewIcon } from "./BrewIcon";
 import { THEMES, chooseTheme } from "../lib/themes";
 import { FONTS, chooseFont } from "../lib/fonts";
@@ -369,6 +371,46 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: false,
   })),
   {
+    cmd: "/provider",
+    usage: "/provider",
+    desc: "Show how OpenRouter picks the provider that runs your model",
+    icon: Route,
+    takesArgs: false,
+  },
+  ...(
+    [
+      ["balanced", "OpenRouter's default mix, mostly the cheapest provider that's up"],
+      ["cheapest", "Cheapest provider first"],
+      ["fastest", "Provider that writes fastest first"],
+      ["quickest", "Provider that starts answering soonest first"],
+      ["private", "Skip providers that may train on your prompts (toggles)"],
+      ["zdr", "Zero-data-retention providers only (toggles)"],
+      ["unpin", "Clear this model's pinned providers"],
+      ["off", "Back to OpenRouter's default routing for this model"],
+    ] as const
+  ).map(([sub, desc]) => ({ cmd: `/provider ${sub}`, usage: `/provider ${sub}`, desc, icon: Route, takesArgs: false })),
+  {
+    cmd: "/provider pin",
+    usage: "/provider pin <provider>[, <provider>…]",
+    desc: "Try these providers first for this model, in order",
+    icon: Route,
+    takesArgs: true,
+  },
+  {
+    cmd: "/provider only",
+    usage: "/provider only <provider>[, <provider>…]",
+    desc: "Use only these providers for this model, no fallback",
+    icon: Route,
+    takesArgs: true,
+  },
+  {
+    cmd: "/provider block",
+    usage: "/provider block <provider>",
+    desc: "Never use a provider, for any model (/provider unblock undoes)",
+    icon: Route,
+    takesArgs: true,
+  },
+  {
     cmd: "/ground",
     usage: "/ground",
     desc: "Toggle source grounding on/off for this notebook",
@@ -574,6 +616,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply and at the foot of each Studio output (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
+- \`/provider\` — OpenRouter only: shows which providers may run your model and which one answered last. \`/provider cheapest\`, \`fastest\`, \`quickest\` or \`balanced\` sets the priority for every model; \`/provider private\` skips providers that may train on your prompts and \`/provider zdr\` keeps to zero-data-retention ones (each toggles); \`/provider block <provider>\` never uses one (\`/provider unblock\` undoes). \`/provider pin groq, deepinfra\` tries those first for the current model, \`/provider only groq\` allows nothing else for it, and \`/provider unpin\` clears that. \`/provider off\` goes back to OpenRouter's default for the current model. Also in Settings → AI Model → Provider routing; rules in your OpenRouter account apply too.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = chat replies ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.
@@ -2096,6 +2139,19 @@ export default function ChatPanel({
     // /thinking [level] — show or set how hard reasoning models think (app-wide).
     if (/^\/thinking(\s|$)/i.test(text)) {
       await runThinkingCommand(text);
+      onChatActivity?.(chatId, isFirst ? text : undefined);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // /provider … — OpenRouter provider routing (app-wide; pins are per model).
+    if (/^\/provider(\s|$)/i.test(text)) {
+      await say(
+        settings.provider === "openrouter"
+          ? await runProviderCommand(text, model)
+          : `Provider routing is an OpenRouter feature: it picks which company runs a model there. You're on ${PROVIDER_LABELS[settings.provider]}, which runs its own models.`
+      );
+      onSettingsChanged();
       onChatActivity?.(chatId, isFirst ? text : undefined);
       textareaRef.current?.focus();
       return;

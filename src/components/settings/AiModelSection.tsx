@@ -20,6 +20,7 @@ import {
 import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
+import ProviderRoutingCard from "./ProviderRoutingCard";
 import { platform } from "../../platform";
 
 const KEY_FIELD: Record<Provider, keyof Settings> = {
@@ -425,6 +426,8 @@ export default function AiModelSection({
           onRemove={removeModel}
         />
       </Card>
+
+      {provider === "openrouter" && <ProviderRoutingCard settings={settings} patch={patch} models={modelList} />}
 
       {/* Temperature */}
       <Card>

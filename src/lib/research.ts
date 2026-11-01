@@ -1,4 +1,5 @@
 import { complete, extractJson, type StreamUsage } from "./llm";
+import { openRouterPrefs, routingError } from "./routing";
 import { activeKey, researchModelFor } from "./settings";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
@@ -65,6 +66,12 @@ interface UrlCitation {
   title?: string;
 }
 
+/** A failed OpenRouter search, explained when the user's provider routing left no provider. */
+async function openRouterSearchError(res: Response, model: string): Promise<Error> {
+  const detail = await res.text().catch(() => "");
+  return new Error((await routingError(detail, model)) || `web search failed (HTTP ${res.status})`);
+}
+
 /** OpenRouter "web" plugin: annotations on the assistant message. */
 async function searchOpenRouter(
   query: string,
@@ -73,6 +80,7 @@ async function searchOpenRouter(
   signal?: AbortSignal,
   onUsage?: UsageSink
 ): Promise<WebHit[]> {
+  const provider = await openRouterPrefs(model);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -83,6 +91,7 @@ async function searchOpenRouter(
     },
     body: JSON.stringify({
       model,
+      ...(provider ? { provider } : {}),
       plugins: [{ id: "web", max_results: 5 }],
       messages: [
         {
@@ -93,7 +102,7 @@ async function searchOpenRouter(
     }),
     signal,
   });
-  if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
+  if (!res.ok) throw await openRouterSearchError(res, model);
   const json = await res.json();
   noteUsage("openrouter", model, usageFromJson("openrouter", json), onUsage);
   return collectCitations(json.choices?.[0]?.message?.annotations);
@@ -313,6 +322,7 @@ async function answerOpenRouter(
   system: string | undefined,
   signal?: AbortSignal
 ): Promise<WebAnswerOutcome> {
+  const provider = await openRouterPrefs(model);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -323,6 +333,7 @@ async function answerOpenRouter(
     },
     body: JSON.stringify({
       model,
+      ...(provider ? { provider } : {}),
       plugins: [{ id: "web", max_results: 5 }],
       messages: [
         ...(system ? [{ role: "system", content: system }] : []),
@@ -331,7 +342,7 @@ async function answerOpenRouter(
     }),
     signal,
   });
-  if (!res.ok) throw new Error(`web search failed (HTTP ${res.status})`);
+  if (!res.ok) throw await openRouterSearchError(res, model);
   const json = await res.json();
   void recordUsage("research", "openrouter", model, usageFromJson("openrouter", json));
   const msg = json.choices?.[0]?.message;

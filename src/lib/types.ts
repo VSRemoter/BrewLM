@@ -1,3 +1,5 @@
+import type { OpenRouterRouting } from "./routing";
+
 export interface Notebook {
   id: string;
   title: string;
@@ -168,6 +170,8 @@ export interface Settings {
   imageModel: string;
   /** Model for /research and /search, per chat provider; missing or "" = the main model. */
   researchModels: Partial<Record<Provider, string>>;
+  /** OpenRouter provider routing: priority, privacy filters, blocked providers and per-model pins. */
+  openrouterRouting: OpenRouterRouting;
   /* Studio defaults — seed the customize modals and slash commands. */
   defFlashcardsAmount: Amount;
   defFlashcardsDifficulty: Difficulty;

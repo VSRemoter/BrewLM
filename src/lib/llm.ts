@@ -1,6 +1,7 @@
 import { platform } from "../platform";
 import { budgetForContext, loadLocalServer, localHeaders } from "./local";
 import { modelLimits, STANDARD_EFFORTS, type ModelLimits } from "./modelLimits";
+import { noteServedBy, openRouterPrefs, routingError } from "./routing";
 import type { Provider, Thinking } from "./types";
 
 export interface LlmMessage {
@@ -18,6 +19,8 @@ export interface StreamUsage {
   cachedWrite?: number;
   /** Real billed cost in USD, when the provider reports it (OpenRouter). */
   costUsd?: number;
+  /** The provider OpenRouter routed the request to (e.g. "DeepInfra"). */
+  servedBy?: string;
 }
 
 interface StreamOptions {
@@ -213,7 +216,12 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   }
   // Ask for token usage in the final stream chunk (cost visibility).
   if (opts.provider === "openai") body.stream_options = { include_usage: true };
-  if (opts.provider === "openrouter") body.usage = { include: true };
+  if (opts.provider === "openrouter") {
+    body.usage = { include: true };
+    // Settings → AI Model → Provider routing: who may serve this model, in what order.
+    const prefs = await openRouterPrefs(opts.model);
+    if (prefs) body.provider = prefs;
+  }
   // Image-generation models (e.g. gemini-*-image) need both modalities requested.
   if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
     body.modalities = ["image", "text"];
@@ -247,7 +255,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
         shrinks++;
         continue;
       }
-      throw new Error(message);
+      throw new Error((opts.provider === "openrouter" && (await routingError(message, opts.model))) || message);
     }
     if (!res.body) throw new Error("Empty response body");
 
@@ -259,6 +267,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       if (url && !images.includes(url)) images.push(url);
     };
     let usage: StreamUsage = {};
+    let servedBy: string | undefined;
     let wroteText = false;
     let finishReason: string | undefined;
 
@@ -266,6 +275,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       if (payload === "[DONE]") break;
       try {
         const json = JSON.parse(payload);
+        if (opts.provider === "openrouter" && typeof json.provider === "string") servedBy = json.provider;
         const choice = json.choices?.[0];
         if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
         const delta = choice?.delta?.content ?? choice?.message?.content;
@@ -300,7 +310,8 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
         // partial JSON chunk — ignore
       }
     }
-    if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.(usage);
+    if (servedBy) noteServedBy(opts.model, servedBy);
+    if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.({ ...usage, servedBy });
     for (const url of images) yield `\n\n![generated image](${url})\n\n`;
 
     const ranOut = finishReason === "length" && !wroteText && images.length === 0;

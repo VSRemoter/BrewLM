@@ -14,6 +14,7 @@ import { platform } from "../platform";
 import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
+import { openRouterPrefs, routingError } from "./routing";
 import { loadSettings } from "./settings";
 import type { Provider, Settings, Source } from "./types";
 import { recordUsage } from "./usage";
@@ -179,17 +180,23 @@ async function chatCompletion(
     "Content-Type": "application/json",
     Authorization: `Bearer ${key}`,
   };
+  const body: Record<string, unknown> = { model, max_tokens: 8192, messages: [{ role: "user", content }] };
   if (p === "openrouter") {
     headers["HTTP-Referer"] = "https://brewlm.app";
     headers["X-Title"] = "BrewLM";
+    const prefs = await openRouterPrefs(model);
+    if (prefs) body.provider = prefs;
   }
   const res = await platform.fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: "user", content }] }),
+    body: JSON.stringify(body),
     connectTimeout: 30000,
   });
-  if (!res.ok) throw await failure(res);
+  if (!res.ok) {
+    const err = await failure(res);
+    throw p === "openrouter" ? new Error((await routingError(err.message, model)) || err.message) : err;
+  }
   const json = await res.json();
   const msg = json?.choices?.[0]?.message?.content;
   const text = Array.isArray(msg)

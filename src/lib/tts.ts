@@ -3,6 +3,7 @@
 import { platform } from "../platform";
 import { encodeM4a } from "./audioEncode";
 import { sseLines } from "./llm";
+import { openRouterPrefs, routingError } from "./routing";
 import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
 import type { Settings } from "./types";
 
@@ -101,6 +102,7 @@ async function requestOpenRouterAudio(
   signal?: AbortSignal
 ): Promise<OpenRouterAudio> {
   throwIfAborted(signal);
+  const provider = await openRouterPrefs(model);
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -111,6 +113,7 @@ async function requestOpenRouterAudio(
     },
     body: JSON.stringify({
       model,
+      ...(provider ? { provider } : {}),
       // audio output is only delivered via SSE chunks
       stream: true,
       modalities: ["text", "audio"],
@@ -127,6 +130,8 @@ async function requestOpenRouterAudio(
     } catch {
       /* keep raw */
     }
+    const routed = await routingError(detail, model);
+    if (routed) throw new Error(routed);
     if (/modalit|no endpoints|not a valid model/i.test(detail))
       throw new Error(
         `“${model}” can't generate audio on OpenRouter — use an audio-output model there (e.g. ${DEFAULT_TTS_MODELS.openrouter}). Pick one in Settings → Audio voices.`
