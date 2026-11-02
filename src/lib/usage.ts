@@ -417,10 +417,33 @@ export interface Bucket {
 }
 
 const HOUR = 3_600_000;
-const DAY = 86_400_000;
 
 function localMidnight(t: number): number {
   const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * Next local midnight. Not `t + 24h`: days around a DST change last 23 or 25
+ * hours, and on a 25-hour day midnight + 24h is still the same date.
+ */
+function nextMidnight(t: number): number {
+  const d = new Date(t);
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * Where a usage range starts, matching bucketize's first bucket so the totals
+ * and the chart cover the same events: 24h → the oldest of the 24 hourly
+ * buckets; N days → local midnight N−1 days ago (today is one of the N).
+ */
+export function rangeStart(days: number | "hours", now = Date.now()): number {
+  if (days === "hours") return Math.floor(now / HOUR) * HOUR - 23 * HOUR;
+  const d = new Date(now);
+  d.setDate(d.getDate() - (days - 1));
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
@@ -434,7 +457,7 @@ function dayLabel(t: number): string {
  * Continuous time buckets (zeros filled) covering [startTs, now]. mode "hour"
  * yields the last 24 hourly buckets; mode "day" daily buckets from startTs.
  */
-export function bucketize(events: UsageEvent[], mode: "hour" | "day", startTs: number): Bucket[] {
+export function bucketize(events: UsageEvent[], mode: "hour" | "day", startTs: number, now = Date.now()): Bucket[] {
   const buckets: Bucket[] = [];
   const index = new Map<number, Bucket>();
 
@@ -453,17 +476,11 @@ export function bucketize(events: UsageEvent[], mode: "hour" | "day", startTs: n
   };
 
   if (mode === "hour") {
-    const current = Math.floor(Date.now() / HOUR) * HOUR;
+    const current = Math.floor(now / HOUR) * HOUR;
     for (let i = 23; i >= 0; i--) push(current - i * HOUR);
   } else {
-    const start = localMidnight(startTs);
-    const end = localMidnight(Date.now());
-    let t = start;
-    let guard = 0;
-    while (t <= end && guard++ < 3000) {
-      push(t);
-      t = localMidnight(t + DAY); // DST-proof next midnight
-    }
+    const end = localMidnight(now);
+    for (let t = localMidnight(startTs); t <= end; t = nextMidnight(t)) push(t);
   }
 
   const floor = (t: number) => (mode === "hour" ? Math.floor(t / HOUR) * HOUR : localMidnight(t));

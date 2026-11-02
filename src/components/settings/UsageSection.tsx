@@ -2,6 +2,7 @@ import { Download } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   bucketize,
+  rangeStart,
   cacheHitRate,
   clearUsageEvents,
   fmtTokens,
@@ -88,11 +89,14 @@ export default function UsageSection() {
   const [range, setRange] = useState<Range>("7");
   const [metric, setMetric] = useState<Metric>("cost");
   const [events, setEvents] = useState<UsageEvent[] | null>(null);
+  /** Start of the loaded range; the chart's first bucket begins here too. */
+  const [since, setSince] = useState(0);
   const [confirmReset, setConfirmReset] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
 
   const load = (r: Range) => {
-    const s = r === "all" ? 0 : Date.now() - Number(r) * 86_400_000;
+    const s = r === "all" ? 0 : rangeStart(r === "1" ? "hours" : Number(r));
+    setSince(s);
     listUsageEvents(s).then(setEvents);
   };
 
@@ -101,7 +105,8 @@ export default function UsageSection() {
     load(range);
   }, [range]);
 
-  const startTs = range === "all" ? (events?.length ? events[events.length - 1].ts : Date.now()) : Date.now() - (Number(range) - 1) * 86_400_000;
+  // "All" starts the chart at the oldest event (events are newest first).
+  const startTs = range === "all" ? (events?.length ? events[events.length - 1].ts : Date.now()) : since;
   const buckets = useMemo(
     () => (events ? bucketize(events, range === "1" ? "hour" : "day", startTs) : []),
     [events, range, startTs]
