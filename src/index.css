@@ -356,6 +356,12 @@ body {
   background: transparent;
 }
 
+/* Text boxes wrap, so they never need a sideways scrollbar — but WebKit (the
+   desktop app) shows a draggable one anyway under the Text size zoom. */
+textarea {
+  overflow-x: hidden;
+}
+
 /* Markdown-ish rendering inside chat bubbles */
 .md p {
   margin: 0 0 0.75em;
