@@ -694,6 +694,12 @@ export async function updateSource(
   await d.execute("DELETE FROM source_chunks WHERE source_id = $1", [id]);
 }
 
+/** Replace a media source's file (e.g. drop it for a placeholder); its text and chunks stay. */
+export async function setSourceContent(id: string, content: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE sources SET content = $1 WHERE id = $2", [await storeMedia(content), id]);
+}
+
 /** Store the model-readable text of a media source (and drop stale chunks). */
 export async function setSourceText(id: string, text: string): Promise<void> {
   const d = await getDb();

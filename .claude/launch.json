@@ -19,6 +19,19 @@
       "port": 1430
     },
     {
+      "name": "web-alt",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--mode",
+        "web",
+        "--port",
+        "1431",
+        "--strictPort"
+      ],
+      "port": 1431
+    },
+    {
       "name": "web-preview",
       "runtimeExecutable": "npx",
       "runtimeArgs": [
@@ -36,10 +49,8 @@
       "name": "website",
       "runtimeExecutable": "python3",
       "runtimeArgs": [
-        "-m",
-        "http.server",
+        "scripts/serve-website.py",
         "1440",
-        "--directory",
         "../openmindFrontEnd"
       ],
       "port": 1440

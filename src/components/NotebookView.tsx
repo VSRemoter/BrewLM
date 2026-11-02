@@ -405,6 +405,7 @@ export default function NotebookView({
       sources={sources}
       constitutionOn={constitutionOn}
       onChanged={refreshSources}
+      showDetails={settings.showDetails}
     />
   );
   // Studio never sees the constitution — it governs chat only; Studio tools

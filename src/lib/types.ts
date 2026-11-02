@@ -147,6 +147,9 @@ export interface Settings {
   theme: string;
   /** UI font id from fonts.ts ("system" follows the theme's default stack). */
   font: string;
+  /** The Custom theme's background and text picks, "#rrggbb" each. */
+  customBg: string;
+  customText: string;
   /** Text-to-speech for studio audio. Independent of the chat provider. */
   ttsProvider: TtsProvider;
   /** Dedicated TTS key for OpenAI; falls back to openaiKey when empty. */
@@ -170,6 +173,8 @@ export interface Settings {
   imageModel: string;
   /** Model for /research and /search, per chat provider; missing or "" = the main model. */
   researchModels: Partial<Record<Provider, string>>;
+  /** Speech-to-text model for audio/video sources, per provider (OpenAI, OpenRouter); missing or "" = automatic. */
+  transcribeModels: Partial<Record<Provider, string>>;
   /** OpenRouter provider routing: priority, privacy filters, blocked providers and per-model pins. */
   openrouterRouting: OpenRouterRouting;
   /* Studio defaults — seed the customize modals and slash commands. */
@@ -185,6 +190,8 @@ export interface Settings {
   trashRetentionDays: number;
   /** Check GitHub Releases for a newer version on launch. */
   updateCheckOnLaunch: boolean;
+  /** Keep a compressed copy of added audio/video for playback; off = transcript only. */
+  keepRecordings: boolean;
   /** Ease mouse-wheel scrolling instead of WebKit's hard per-notch jumps. */
   smoothScroll: boolean;
   /** Token counts + cost under each AI reply (/details toggles). */

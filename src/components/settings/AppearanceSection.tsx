@@ -1,10 +1,12 @@
-import { Check } from "lucide-react";
+import { ArrowLeftRight, Check } from "lucide-react";
 import { useState } from "react";
 import { chooseFont, FONTS } from "../../lib/fonts";
 import { chooseTheme, THEMES } from "../../lib/themes";
+import { applyCustomColors, customSwatch, type CustomColors } from "../../lib/customTheme";
 import { setSmoothScroll } from "../../lib/smoothScroll";
 import { getZoom, setZoom } from "../../lib/zoom";
 import type { Settings } from "../../lib/types";
+import ColorWheel from "./ColorWheel";
 import { Card, Row, SectionTitle, Slider, Toggle } from "./controls";
 
 export default function AppearanceSection({
@@ -19,6 +21,18 @@ export default function AppearanceSection({
   const pickTheme = (id: string) => {
     patch({ theme: id });
     chooseTheme(id); // applies to the DOM immediately and persists
+  };
+
+  // Custom theme: live while dragging the wheel, saved once a pick settles.
+  const [custom, setCustom] = useState<CustomColors>({ bg: settings.customBg, text: settings.customText });
+  const [editing, setEditing] = useState<keyof CustomColors>("bg");
+  const previewCustom = (next: CustomColors) => {
+    setCustom(next);
+    applyCustomColors(next);
+  };
+  const saveCustom = (next: CustomColors) => {
+    previewCustom(next);
+    patch({ customBg: next.bg, customText: next.text });
   };
 
   const pickFont = (id: string) => {
@@ -85,6 +99,7 @@ export default function AppearanceSection({
       <div className="mb-6 grid grid-cols-4 gap-2">
         {THEMES.map((t) => {
           const active = settings.theme === t.id;
+          const swatch = t.id === "custom" ? customSwatch(custom) : t.swatch;
           return (
             <button
               key={t.id}
@@ -97,28 +112,28 @@ export default function AppearanceSection({
               {/* mini window preview */}
               <span
                 className="relative block h-14 w-full overflow-hidden rounded-lg border border-edge"
-                style={{ background: t.swatch.canvas }}
+                style={{ background: swatch.canvas }}
               >
                 <span
                   className="absolute left-1.5 top-1.5 h-[calc(100%-12px)] w-[62%] rounded-[5px]"
-                  style={{ background: t.swatch.panel }}
+                  style={{ background: swatch.panel }}
                 >
                   <span
                     className="absolute left-1.5 right-3 top-1.5 h-[3px] rounded-full"
-                    style={{ background: t.swatch.accent }}
+                    style={{ background: swatch.accent }}
                   />
                   <span
                     className="absolute left-1.5 right-5 top-3.5 h-[3px] rounded-full opacity-30"
-                    style={{ background: t.swatch.ink }}
+                    style={{ background: swatch.ink }}
                   />
                   <span
                     className="absolute left-1.5 right-4 top-[21px] h-[3px] rounded-full opacity-30"
-                    style={{ background: t.swatch.ink }}
+                    style={{ background: swatch.ink }}
                   />
                 </span>
                 <span
                   className="absolute bottom-1.5 right-1.5 h-4 w-4 rounded-full"
-                  style={{ background: t.swatch.accent }}
+                  style={{ background: swatch.accent }}
                 />
                 {active && (
                   <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-ink">
@@ -137,6 +152,45 @@ export default function AppearanceSection({
           );
         })}
       </div>
+
+      {/* Custom theme's two colors — only while that theme is on */}
+      {settings.theme === "custom" && (
+        <>
+          <SectionTitle title="Custom colors" />
+          <div className="mb-6 rounded-2xl border border-edge bg-panel p-4">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              {(["bg", "text"] as const).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setEditing(k)}
+                  aria-pressed={editing === k}
+                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${
+                    editing === k ? "border-accent bg-hover font-semibold" : "border-edge hover:border-ink-3"
+                  }`}
+                >
+                  <span className="h-4 w-4 rounded border border-edge" style={{ background: custom[k] }} />
+                  {k === "bg" ? "Background" : "Text"}
+                  <span className="font-mono uppercase text-ink-3">{custom[k]}</span>
+                </button>
+              ))}
+              <button
+                onClick={() => saveCustom({ bg: custom.text, text: custom.bg })}
+                title="Swap background and text"
+                aria-label="Swap background and text"
+                className="flex items-center self-stretch rounded-lg border border-edge px-2.5 hover:border-ink-3"
+              >
+                <ArrowLeftRight size={13} />
+              </button>
+            </div>
+            <ColorWheel
+              key={editing}
+              value={custom[editing]}
+              onChange={(hex) => previewCustom({ ...custom, [editing]: hex })}
+              onCommit={(hex) => saveCustom({ ...custom, [editing]: hex })}
+            />
+          </div>
+        </>
+      )}
 
       {/* Font */}
       <SectionTitle title="Font" />

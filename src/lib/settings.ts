@@ -3,7 +3,9 @@ import { getSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
 import { isEmbeddingModel, listLocalModels } from "./local";
-import { DEFAULT_THEME, THEMES } from "./themes";
+import { DEFAULT_THEME, RETIRED_THEMES, THEMES } from "./themes";
+import { normalizeHex } from "./color";
+import { DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
 import type {
   Amount,
   AudioFormat,
@@ -51,6 +53,14 @@ export const RESEARCH_MODEL_PRESETS: Record<Provider, string[]> = {
   openrouter: ["anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "openai/gpt-4o"],
   openai: ["gpt-4.1", "o4-mini"],
   anthropic: ["claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"],
+  local: [],
+};
+
+/** Suggestions for Settings → Transcription model (any audio-capable id works; Automatic is listed separately). */
+export const TRANSCRIBE_MODEL_PRESETS: Record<Provider, string[]> = {
+  openrouter: ["google/gemini-2.5-flash-lite", "google/gemini-2.5-pro", "mistralai/voxtral-small-24b-2507"],
+  openai: ["gpt-4o-transcribe", "whisper-1"],
+  anthropic: [],
   local: [],
 };
 
@@ -162,6 +172,7 @@ const DEFAULT_BEHAVIOR = {
   defReportType: "study-guide" as ReportType,
   trashRetentionDays: 0,
   updateCheckOnLaunch: true,
+  keepRecordings: true,
 };
 
 /** Vocab lists used to validate persisted Studio defaults. */
@@ -192,6 +203,8 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   model: (s) => s.model,
   theme: (s) => s.theme,
   font: (s) => s.font,
+  customBg: (s) => s.customBg,
+  customText: (s) => s.customText,
   ttsProvider: (s) => s.ttsProvider,
   openaiTtsKey: (s) => s.openaiTtsKey,
   openrouterTtsKey: (s) => s.openrouterTtsKey,
@@ -205,6 +218,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
   researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
+  transcribeModels: (s) => JSON.stringify(s.transcribeModels ?? {}),
   openrouterRouting: (s) => serializeRouting(s.openrouterRouting),
   defFlashcardsAmount: (s) => s.defFlashcardsAmount,
   defFlashcardsDifficulty: (s) => s.defFlashcardsDifficulty,
@@ -216,6 +230,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   defReportType: (s) => s.defReportType,
   trashRetentionDays: (s) => String(s.trashRetentionDays),
   updateCheckOnLaunch: (s) => (s.updateCheckOnLaunch ? "1" : "0"),
+  keepRecordings: (s) => (s.keepRecordings ? "1" : "0"),
   smoothScroll: (s) => (s.smoothScroll ? "1" : "0"),
   showDetails: (s) => (s.showDetails ? "1" : "0"),
 };
@@ -231,6 +246,7 @@ export async function loadSettings(): Promise<Settings> {
     defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
+    keepRecordings, transcribeModels, customBg, customText,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -268,6 +284,10 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("thinking"),
     getSetting("maxOutput"),
     getSetting("openrouterRouting"),
+    getSetting("keepRecordings"),
+    getSetting("transcribeModels"),
+    getSetting("customBg"),
+    getSetting("customText"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -281,7 +301,8 @@ export async function loadSettings(): Promise<Settings> {
   // Repair paths if a broken build persisted shifted values (model ← key, theme ← model).
   const safeModel = model && !model.startsWith("sk-") ? model : DEFAULT_MODELS[provider];
   const themeIds = new Set(THEMES.map((t) => t.id));
-  const safeTheme = theme && themeIds.has(theme) ? theme : DEFAULT_THEME;
+  const themeId = RETIRED_THEMES[theme] ?? theme;
+  const safeTheme = themeId && themeIds.has(themeId) ? themeId : DEFAULT_THEME;
   const fontIds = new Set(FONTS.map((f) => f.id));
   const safeFont = font && fontIds.has(font) ? font : DEFAULT_FONT;
   // Gemini TTS ids are gone from OpenRouter (they 400 "not a valid model ID") —
@@ -321,6 +342,8 @@ export async function loadSettings(): Promise<Settings> {
     model: safeModel,
     theme: safeTheme,
     font: safeFont,
+    customBg: normalizeHex(customBg) ?? DEFAULT_CUSTOM_BG,
+    customText: normalizeHex(customText) ?? DEFAULT_CUSTOM_TEXT,
     ttsProvider: ttsProv,
     openaiTtsKey: openaiTtsKey || DEFAULT_TTS.openaiTtsKey,
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,
@@ -333,7 +356,8 @@ export async function loadSettings(): Promise<Settings> {
     thinking: pick(thinking, Object.keys(THINKING_LABELS) as Thinking[], DEFAULT_BEHAVIOR.thinking),
     maxOutput: safeMaxOutput,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
-    researchModels: parseResearchModels(researchModels),
+    researchModels: parseProviderModels(researchModels),
+    transcribeModels: parseProviderModels(transcribeModels),
     openrouterRouting: parseRouting(openrouterRouting),
     defFlashcardsAmount: pick(defFlashcardsAmount, AMOUNTS, DEFAULT_BEHAVIOR.defFlashcardsAmount),
     defFlashcardsDifficulty: pick(defFlashcardsDifficulty, DIFFICULTIES, DEFAULT_BEHAVIOR.defFlashcardsDifficulty),
@@ -348,6 +372,7 @@ export async function loadSettings(): Promise<Settings> {
     updateCheckOnLaunch: updateCheckOnLaunch !== "0",
     smoothScroll: smoothScroll !== "0",
     showDetails: showDetails !== "0",
+    keepRecordings: keepRecordings !== "0",
   });
 }
 
@@ -364,7 +389,7 @@ function cloudProviderOnWeb(s: Settings): Settings {
 }
 
 /** Stored JSON {provider: id} → only string entries for known providers. */
-function parseResearchModels(raw: string): Partial<Record<Provider, string>> {
+function parseProviderModels(raw: string): Partial<Record<Provider, string>> {
   const out: Partial<Record<Provider, string>> = {};
   try {
     const parsed = raw ? JSON.parse(raw) : {};
@@ -372,7 +397,7 @@ function parseResearchModels(raw: string): Partial<Record<Provider, string>> {
       if (typeof parsed?.[p] === "string" && parsed[p].trim()) out[p] = parsed[p].trim();
     }
   } catch {
-    /* corrupt value → every provider falls back to its main model */
+    /* corrupt value → every provider falls back to its default */
   }
   return out;
 }
@@ -453,6 +478,15 @@ export function loadResearchModelList(p: Provider): Promise<string[]> {
 
 export function saveResearchModelList(p: Provider, list: string[]): Promise<void> {
   return saveList(`customModels.research.${p}`, RESEARCH_MODEL_PRESETS[p], list);
+}
+
+/** The provider's Transcription model list (Settings → Transcription model). */
+export function loadTranscribeModelList(p: Provider): Promise<string[]> {
+  return loadList(`customModels.transcribe.${p}`, TRANSCRIBE_MODEL_PRESETS[p]);
+}
+
+export function saveTranscribeModelList(p: Provider, list: string[]): Promise<void> {
+  return saveList(`customModels.transcribe.${p}`, TRANSCRIBE_MODEL_PRESETS[p], list);
 }
 
 /** The TTS provider's model list (Settings → Audio Voices). */

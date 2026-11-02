@@ -22,6 +22,7 @@ import { hydrateMermaid } from "../lib/mermaid";
 import { INTERACTIVE_ERROR_MESSAGE, parseInteractive, sandboxDoc } from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
+import { fmtItemStorage, useItemStorage } from "../lib/storage";
 import { fmtUsageLine, parseOutputUsage } from "../lib/usage";
 import { PlayerControls, usePlayer, type ScriptTurn } from "./AudioPlayer";
 import MindmapView from "./MindmapView";
@@ -70,6 +71,8 @@ export default function ArtifactView({
   /** Interactive pages: shown over the whole window instead of in the panel. */
   const [expanded, setExpanded] = useState(false);
   const usage = useMemo(() => (showDetails ? parseOutputUsage(artifact.usage) : null), [showDetails, artifact.usage]);
+  const storage = useItemStorage("artifact", artifact.id, showDetails, artifact.data);
+  const storageLine = storage ? fmtItemStorage(storage) : "";
 
   /** Copy the output as plain text / markdown. */
   const copy = async () => {
@@ -228,12 +231,15 @@ export default function ArtifactView({
           {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
         </div>
       )}
-      {usage && (
-        <div
-          className="shrink-0 border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3"
-          title="Tokens and cost to generate this output, revisions included"
-        >
-          {fmtUsageLine(usage)}
+      {(usage || storageLine) && (
+        <div className="shrink-0 border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
+          {usage && <span title="Tokens and cost to generate this output, revisions included">{fmtUsageLine(usage)}</span>}
+          {usage && storageLine && " · "}
+          {storageLine && (
+            <span title="Space this output takes, files included; Sync storage is what counts toward your Sync limit">
+              {storageLine}
+            </span>
+          )}
         </div>
       )}
     </div>

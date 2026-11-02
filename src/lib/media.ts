@@ -11,10 +11,12 @@
  */
 
 import { platform } from "../platform";
+import { compressRecording, type Recording, splitRecording } from "./audioEncode";
 import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
-import { setSourceText, sourceText, updateSource } from "./db";
+import { setSourceContent, setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
+import { loadOpenRouterCatalog } from "./modelLimits";
 import { loadSettings } from "./settings";
 import type { Provider, Settings, Source } from "./types";
 import { recordUsage } from "./usage";
@@ -28,8 +30,15 @@ const VISION_MODELS: Record<Provider, string> = {
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
 const OPENAI_TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
+/** What "Automatic" means in Settings → Transcription model, per provider. */
+export const AUTO_TRANSCRIBE_MODEL: Partial<Record<Provider, string>> = {
+  openai: OPENAI_TRANSCRIBE_MODELS[0],
+  openrouter: OPENROUTER_AUDIO_MODEL,
+};
 /** OpenAI's transcription upload cap; OpenRouter requests are kept under it too. */
-export const MAX_TRANSCRIBE_BYTES = 25 * 1024 * 1024;
+const MAX_TRANSCRIBE_BYTES = 25 * 1024 * 1024;
+/** Long recordings are transcribed in pieces this long (~7 MB each once compressed). */
+const CHUNK_SECONDS = 20 * 60;
 const MAX_TEXT_CHARS = 200_000;
 
 const IMAGE_PROMPT = `You are preparing an image so a study assistant that cannot see it can answer any question about it.
@@ -40,6 +49,9 @@ Only describe what is actually visible; don't speculate.`;
 
 const TRANSCRIBE_PROMPT =
   "Transcribe this audio verbatim. Mark speaker changes when they are clear (Speaker 1:, Speaker 2:). Output only the transcript, no commentary.";
+
+/** `content` of an audio source whose recording was dropped after transcription (Settings → keep recordings off). */
+export const TRANSCRIPT_ONLY = "[recording not kept — transcript only]";
 
 export interface MediaResult {
   text: string;
@@ -249,11 +261,17 @@ function extOf(name: string, mime: string): string {
   return sub === "mpeg" ? "mp3" : sub === "x-m4a" || sub === "mp4" ? "m4a" : sub;
 }
 
-async function openAiTranscribe(key: string, blob: Blob, filename: string): Promise<string> {
+/** The user's pick first (if any), then the automatic models — a retired or failing pick never blocks transcription. */
+function withPick(pick: string | undefined, auto: string[]): string[] {
+  const p = pick?.trim();
+  return p ? [p, ...auto.filter((m) => m !== p)] : auto;
+}
+
+async function openAiTranscribe(key: string, blob: Blob, filename: string, pick?: string): Promise<string> {
   let lastErr: Error | null = null;
   // gpt-4o-mini-transcribe is cheaper and more accurate but caps duration;
   // whisper-1 takes anything under the byte limit.
-  for (const model of OPENAI_TRANSCRIBE_MODELS) {
+  for (const model of withPick(pick, OPENAI_TRANSCRIBE_MODELS)) {
     const form = new FormData();
     form.append("file", blob, filename);
     form.append("model", model);
@@ -287,50 +305,120 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** Audio/video (File or data URL) → transcript. Never throws. */
+/** One transcription request: bytes in, transcript out (throws on failure). */
+async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: string, ext: string): Promise<string> {
+  const pick = s.transcribeModels?.[p];
+  if (p === "openai") return openAiTranscribe(keyFor(s, p), blob, filename, pick);
+  const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
+  let lastErr: unknown = null;
+  for (const model of withPick(pick, [OPENROUTER_AUDIO_MODEL])) {
+    try {
+      const out = await chatCompletion(p, keyFor(s, p), model, [
+        { type: "text", text: TRANSCRIBE_PROMPT },
+        { type: "input_audio", input_audio: { data, format: ext } },
+      ]);
+      void recordUsage("sources", p, model, out.usage);
+      return out.text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/** Providers that can transcribe with the configured keys, in the order they're tried. */
+export function transcribeProviders(s: Settings): Provider[] {
+  return providersWithKeys(s, ["openai", "openrouter"]);
+}
+
+/**
+ * Whether OpenRouter lists this model as taking audio: true/false, or null
+ * when it can't tell (OpenAI, catalog unavailable). Settings uses it to flag
+ * a typed id that can't transcribe.
+ */
+export async function acceptsAudio(p: Provider, id: string): Promise<boolean | null> {
+  if (p !== "openrouter" || !id.trim()) return null;
+  const catalog = await loadOpenRouterCatalog();
+  if (!catalog) return null;
+  const m = catalog.find((x) => x.id === id.trim());
+  return !!m?.architecture?.input_modalities?.includes("audio");
+}
+
+function clock(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h ? `${h}:${String(m).padStart(2, "0")}:00` : `${m}:00`;
+}
+
+/**
+ * Audio/video (File or data URL) → transcript. Never throws.
+ *
+ * The soundtrack is first compressed to mono speech audio (audioEncode.ts),
+ * which drops any video and brings a 50-minute recording from ~100 MB to
+ * ~18 MB; that copy is returned as `recording` for the caller to keep. Long
+ * recordings are transcribed in CHUNK_SECONDS pieces, which keeps each upload
+ * small, within gpt-4o-mini-transcribe's duration cap, and within the
+ * OpenRouter model's output limit.
+ */
 export async function transcribeAudio(
   src: Blob | string,
   filename: string,
   settings?: Settings
-): Promise<MediaResult> {
+): Promise<MediaResult & { recording?: Recording }> {
   const s = settings ?? (await loadSettings());
   const blob = typeof src === "string" ? await (await fetch(src)).blob() : src;
-  if (blob.size > MAX_TRANSCRIBE_BYTES)
+  const recording = (await compressRecording(blob).catch(() => null)) ?? undefined;
+  const base = filename.replace(/\.[a-z0-9]+$/i, "") || "recording";
+  if (!recording && blob.size > MAX_TRANSCRIBE_BYTES)
     return {
       text: "",
-      warning: `too large to transcribe (${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB) — split or compress it, then re-add.`,
+      warning: `too large to transcribe (${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB) and its audio couldn't be extracted on this device — split or compress it, then re-add.`,
     };
-  const providers = providersWithKeys(s, ["openai", "openrouter"]);
+  const providers = transcribeProviders(s);
   if (providers.length === 0)
     return {
       text: "",
+      recording,
       warning:
         "transcribing audio needs an OpenAI or OpenRouter key (Anthropic models can't hear audio). Add one in Settings and it will be transcribed automatically before your next question.",
     };
-  const ext = extOf(filename, blob.type);
-  let lastErr = "";
-  for (const p of providers) {
+  let pieces: Blob[];
+  let ext: string;
+  let name: string;
+  if (recording) {
     try {
-      let text: string;
-      if (p === "openai") {
-        text = await openAiTranscribe(keyFor(s, p), blob, filename.includes(".") ? filename : `${filename}.${ext}`);
-      } else {
-        const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
-        const out = await chatCompletion(p, keyFor(s, p), OPENROUTER_AUDIO_MODEL, [
-          { type: "text", text: TRANSCRIBE_PROMPT },
-          { type: "input_audio", input_audio: { data, format: ext } },
-        ]);
-        void recordUsage("sources", p, OPENROUTER_AUDIO_MODEL, out.usage);
-        text = out.text;
-      }
-      text = cap(text);
-      if (text) return { text: `[Transcript]\n\n${text}` };
-      lastErr = "no speech detected";
+      pieces = (await splitRecording(recording, CHUNK_SECONDS)).map((b) => new Blob([b], { type: "audio/mp4" }));
     } catch (e) {
-      lastErr = e instanceof Error ? e.message : String(e);
+      return { text: "", recording, warning: `couldn't prepare it for transcription (${e instanceof Error ? e.message : String(e)}).` };
     }
+    ext = "m4a";
+    name = `${base}.m4a`;
+  } else {
+    pieces = [blob];
+    ext = extOf(filename, blob.type);
+    name = filename.includes(".") ? filename : `${filename}.${ext}`;
   }
-  return { text: "", warning: `couldn't transcribe it (${lastErr}).` };
+  const parts: string[] = [];
+  for (let i = 0; i < pieces.length; i++) {
+    let lastErr = "";
+    let text = "";
+    for (const p of providers) {
+      try {
+        text = (await transcribeOnce(s, p, pieces[i], name, ext)).trim();
+        if (text) break;
+        lastErr = "no speech detected";
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+      }
+    }
+    // A partial transcript would read as the whole recording; fail it and retry later instead.
+    if (!text && pieces.length > 1 && lastErr !== "no speech detected")
+      return { text: "", recording, warning: `couldn't transcribe part ${i + 1} of ${pieces.length} (${lastErr}).` };
+    if (!text && pieces.length === 1) return { text: "", recording, warning: `couldn't transcribe it (${lastErr}).` };
+    if (text) parts.push(pieces.length > 1 ? `[${clock(i * CHUNK_SECONDS)}]\n${text}` : text);
+  }
+  const text = cap(parts.join("\n\n"));
+  return text ? { text: `[Transcript]\n\n${text}`, recording } : { text: "", recording, warning: "couldn't transcribe it (no speech detected)." };
 }
 
 /* --------------------------------- backfill -------------------------------- */
@@ -373,6 +461,11 @@ export async function ensureMediaText(sources: Source[], settings?: Settings): P
       if (!r.text) continue;
       await setSourceText(src.id, r.text);
       src.text = r.text;
+      // Kept only so this could be retried; the user asked for transcripts alone.
+      if (src.type === "audio" && !st.keepRecordings) {
+        await setSourceContent(src.id, TRANSCRIPT_ONLY);
+        src.content = TRANSCRIPT_ONLY;
+      }
     } catch (e) {
       console.warn("media: couldn't extract", src.title, e);
     }

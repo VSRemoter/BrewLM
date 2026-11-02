@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Download, FolderOpen, Trash2, Upload } from "lucide-react";
+import { Download, FolderOpen, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   dbFilePath,
@@ -11,7 +11,7 @@ import {
 import type { Settings } from "../../lib/types";
 import { platform } from "../../platform";
 import { GhostButton, Modal, Segmented } from "../ui";
-import { Card, Footnote, Row, SectionTitle } from "./controls";
+import { Card, Footnote, Row, SectionTitle, Toggle } from "./controls";
 import LargestItems from "./LargestItems";
 
 export default function DataSection({
@@ -69,6 +69,29 @@ export default function DataSection({
   return (
     <div>
       <SectionTitle title="Data & Storage" />
+
+      {/* Recordings */}
+      <SectionTitle title="Recordings" />
+      <Card>
+        {/* One block, so the warning sits under its toggle instead of behind a divider. */}
+        <div>
+          <Row
+            label="Keep audio & video recordings"
+            desc="Saves each recording you add as compressed audio (video is dropped), so you can play it back and it can be re-transcribed. Off keeps only the transcript."
+          >
+            <Toggle
+              label="Keep audio & video recordings"
+              checked={settings.keepRecordings}
+              onChange={(on) => patch({ keepRecordings: on })}
+            />
+          </Row>
+          <p className="-mt-1 mb-3 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-warn">
+            <TriangleAlert size={12} className="mt-[3px] shrink-0" />
+            Uses far more storage: about 22 MB per hour of recording, versus under 1 MB for the transcript alone.
+            With Sync on, they're uploaded to your other devices too.
+          </p>
+        </div>
+      </Card>
 
       {desktop && (
         <>

@@ -21,6 +21,7 @@ export interface OpenRouterModel {
   context_length?: number | null;
   top_provider?: { context_length?: number | null; max_completion_tokens?: number | null } | null;
   supported_parameters?: string[];
+  architecture?: { input_modalities?: string[] } | null;
 }
 
 export const STANDARD_EFFORTS = ["low", "medium", "high"];

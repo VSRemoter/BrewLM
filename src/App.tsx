@@ -38,6 +38,7 @@ import {
 import { loadSettings } from "./lib/settings";
 import { applyFont } from "./lib/fonts";
 import { applyTheme } from "./lib/themes";
+import { applyCustomColors } from "./lib/customTheme";
 import { setSmoothScroll } from "./lib/smoothScroll";
 import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import { platform } from "./platform";
@@ -129,6 +130,7 @@ export default function App() {
         if (c.tables.has("notebooks") || c.tables.has("folders")) void refresh();
         if (c.tables.has("settings"))
           void loadSettings().then((s) => {
+            applyCustomColors({ bg: s.customBg, text: s.customText });
             applyTheme(s.theme);
             applyFont(s.font);
             setSettings(s);
@@ -158,6 +160,7 @@ export default function App() {
         bootStep("Emptying old trash");
         const purged = await purgeExpiredTrash(s.trashRetentionDays);
         if (purged > 0) console.info(`trash: auto-emptied ${purged} notebook(s)`);
+        applyCustomColors({ bg: s.customBg, text: s.customText });
         applyTheme(s.theme);
         applyFont(s.font);
         setSettings(s);

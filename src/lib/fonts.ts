@@ -2,9 +2,8 @@ import { setSetting } from "./db";
 
 /**
  * UI font choices — applied by setting a --font-ui override on the root
- * element (body reads var(--font-ui)). "System" maps back to --font-sans,
- * so theme flavors (Matrix's mono stack) still come through. Stacks are
- * system-installed families only: the app needs no webfont downloads.
+ * element (body reads var(--font-ui)). "System" maps back to --font-sans.
+ * Stacks are system-installed families only: the app needs no webfont downloads.
  */
 export interface FontDef {
   id: string;

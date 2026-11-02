@@ -2,6 +2,11 @@
 <html lang="en" data-theme="brew">
   <head>
     <meta charset="UTF-8" />
+    <!-- Service workers need https; the web app is also served over plain http. -->
+    <script>
+      if (location.protocol === "http:" && /(^|\.)brewlm\.com$/.test(location.hostname))
+        location.replace("https://" + location.host + location.pathname + location.search + location.hash);
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/png" href="/brewlm-logo.png" />
     <!-- The web app (phones): install manifest, Home Screen icon, status bar. -->
@@ -118,7 +123,12 @@
           "error",
           function (e) {
             var t = e.target;
-            if (t && t !== window && (t.src || t.href)) return assetFailed(t.src || t.href);
+            if (t && t !== window && (t.src || t.href)) {
+              var url = t.src || t.href;
+              // Only BrewLM's own files matter; blocked third-party scripts (analytics) don't.
+              if (url.indexOf(location.origin + "/") === 0) assetFailed(url);
+              return;
+            }
             if (e.message) errors.push(e.message);
             if (panel) render();
           },

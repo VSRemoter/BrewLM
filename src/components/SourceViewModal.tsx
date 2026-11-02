@@ -2,6 +2,7 @@ import { Landmark, Link2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { isMediaValue, mediaSrc } from "../lib/blobs";
 import { deleteSource, updateSource } from "../lib/db";
+import { fmtItemStorage, useItemStorage } from "../lib/storage";
 import type { Source } from "../lib/types";
 import { GhostButton, Modal, PrimaryButton } from "./ui";
 
@@ -9,14 +10,19 @@ export default function SourceViewModal({
   source,
   onClose,
   onChanged,
+  showDetails = false,
 }: {
   source: Source;
   onClose: () => void;
   onChanged: () => void;
+  /** Response details setting: show the space the source takes. */
+  showDetails?: boolean;
 }) {
   const [title, setTitle] = useState(source.title);
   const [content, setContent] = useState(source.content);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const storage = useItemStorage("source", source.id, showDetails, source.content);
+  const storageLine = storage ? fmtItemStorage(storage) : "";
 
   const isConstitution = source.type === "context";
   const isImage = source.type === "image" && isMediaValue(source.content);
@@ -76,6 +82,14 @@ export default function SourceViewModal({
             <span className="flex min-w-0 items-center gap-1">
               <Link2 size={10} />
               <span className="truncate">{source.mime}</span>
+            </span>
+          )}
+          {storageLine && (
+            <span
+              className="ml-auto shrink-0"
+              title="Space this source takes, files included; Sync storage is what counts toward your Sync limit"
+            >
+              {storageLine}
             </span>
           )}
         </div>

@@ -9,6 +9,7 @@
  * then the server is asked to sweep files nothing uses any more (sync.ts), so
  * the space is freed within a sync cycle or two.
  */
+import { useEffect, useState } from "react";
 import { platform } from "../platform";
 import { BLOB_PREFIX, blobRefsIn, mediaSrc } from "./blobs";
 import {
@@ -208,6 +209,55 @@ export async function largestItems(limit = 50): Promise<{ items: StorageItem[]; 
   });
   items.sort((a, b) => b.bytes - a.bytes);
   return { items: items.filter((i) => i.bytes > 0).slice(0, limit), synced: !!server };
+}
+
+/** One source's or Studio output's size: on this device, and in Sync (null when not syncing). */
+export async function itemStorage(kind: "source" | "artifact", id: string): Promise<{ device: number; sync: number | null }> {
+  const d = await getDb();
+  const [row] =
+    kind === "source"
+      ? await d.select<{ refs: string; n: number }[]>(
+          "SELECT content AS refs, length(content) + length(text) AS n FROM sources WHERE id = $1",
+          [id]
+        )
+      : await d.select<{ refs: string; n: number }[]>("SELECT data AS refs, length(data) AS n FROM artifacts WHERE id = $1", [id]);
+  if (!row) return { device: 0, sync: null };
+  const files = [...new Set(names(row.refs))];
+  const local = await Promise.all(files.map(localFileSize));
+  const device = row.n + local.reduce((a, b) => a + b, 0);
+  const label = `${kind === "source" ? "sources" : "artifacts"}:${id}`;
+  const server = await syncedSizes(files, [label]).catch(() => null);
+  const sync = server
+    ? files.reduce((n, f) => n + (server.files.get(f) ?? 0), 0) + (server.rows.get(label) ?? 0)
+    : null;
+  return { device, sync };
+}
+
+/**
+ * `itemStorage` for a component, only while `enabled` (the Response details
+ * setting); `version` re-measures after an edit.
+ */
+export function useItemStorage(kind: "source" | "artifact", id: string, enabled: boolean, version?: unknown) {
+  const [size, setSize] = useState<{ device: number; sync: number | null } | null>(null);
+  useEffect(() => {
+    setSize(null);
+    if (!enabled) return;
+    let live = true;
+    itemStorage(kind, id)
+      .then((s) => live && setSize(s))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [kind, id, enabled, version]);
+  return size;
+}
+
+/** "3.2 MB on this device · 3.3 MB Sync storage" (the parts that apply). */
+export function fmtItemStorage(s: { device: number; sync: number | null }): string {
+  return [s.device > 0 && `${formatBytes(s.device)} on this device`, s.sync != null && `${formatBytes(s.sync)} Sync storage`]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** Delete one item everywhere (it syncs like any delete), then free the space it used. */

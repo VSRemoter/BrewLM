@@ -1,13 +1,15 @@
 /** Shared file ingestion: turns dropped/picked files into notebook sources. */
 
+import { putBlob } from "./blobs";
 import { addSource } from "./db";
 import { extractFileText } from "./extractors";
-import { describeImage, transcribeAudio } from "./media";
+import { describeImage, TRANSCRIPT_ONLY, transcribeAudio } from "./media";
 import { indexSource } from "./rag";
+import { loadSettings } from "./settings";
 import { classifyFile, extractPdfText, readFileAsDataUrl } from "./source";
 import type { Source } from "./types";
 
-const MAX_BINARY_BYTES = 8 * 1024 * 1024; // 8 MB for base64-embedded images/audio
+const MAX_BINARY_BYTES = 8 * 1024 * 1024; // 8 MB for originals kept as-is (images, audio that couldn't be compressed)
 
 export interface IngestResult {
   added: Source[];
@@ -21,6 +23,7 @@ export async function ingestFiles(
 ): Promise<IngestResult> {
   const added: Source[] = [];
   const errors: string[] = [];
+  const settings = await loadSettings();
   for (const file of Array.from(files)) {
     const type = classifyFile(file);
     onBusy?.(file.name);
@@ -50,22 +53,35 @@ export async function ingestFiles(
             file.type || null
           )
         );
-      } else {
-        // image / audio / video: the file itself is embedded (small ones) for
-        // preview/playback, and converted to text the model can actually read
-        // — a description + OCR for images, a transcript for audio and video.
-        const media =
-          type === "image" ? await describeImage(file) : await transcribeAudio(file, file.name);
-        if (media.warning) {
-          errors.push(
-            `${file.name}: added, but the AI can't read it yet — ${media.warning}`
-          );
-        }
+      } else if (type === "image") {
+        // The image is kept for preview, and described + OCR'd so the model can read it.
+        const media = await describeImage(file);
+        if (media.warning) errors.push(`${file.name}: added, but the AI can't read it yet — ${media.warning}`);
         const content =
           file.size > MAX_BINARY_BYTES
-            ? `[${type} attached but too large to embed: ${(file.size / 1024 / 1024).toFixed(1)} MB]`
+            ? `[image attached but too large to embed: ${(file.size / 1024 / 1024).toFixed(1)} MB]`
             : await readFileAsDataUrl(file);
         added.push(await addSource(notebookId, type, file.name, content, file.type, media.text));
+      } else {
+        // Audio / video: transcribed for the model. For playback the compressed
+        // soundtrack is kept (video dropped) — unless the user chose transcript
+        // only, in which case it's kept only until a transcript exists to retry from.
+        const media = await transcribeAudio(file, file.name, settings);
+        if (media.warning) errors.push(`${file.name}: added, but the AI can't read it yet — ${media.warning}`);
+        const keep = settings.keepRecordings || !media.text;
+        let content: string;
+        let mime: string | null = file.type;
+        if (keep && media.recording) {
+          content = await putBlob(media.recording.bytes, "m4a");
+          mime = "audio/mp4";
+        } else if (keep && file.size <= MAX_BINARY_BYTES) {
+          content = await readFileAsDataUrl(file);
+        } else if (keep) {
+          content = `[audio attached but too large to embed: ${(file.size / 1024 / 1024).toFixed(1)} MB]`;
+        } else {
+          content = TRANSCRIPT_ONLY;
+        }
+        added.push(await addSource(notebookId, type, file.name, content, mime, media.text));
       }
     } catch (e) {
       errors.push(`Failed to add ${file.name}: ${e instanceof Error ? e.message : String(e)}`);

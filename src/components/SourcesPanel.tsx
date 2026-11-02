@@ -43,12 +43,15 @@ export default function SourcesPanel({
   sources,
   constitutionOn = true,
   onChanged,
+  showDetails = false,
 }: {
   notebookId: string;
   sources: Source[];
   /** /constitution flag — off means the constitution is kept but ignored. */
   constitutionOn?: boolean;
   onChanged: () => void;
+  /** Response details setting: the source viewer shows storage. */
+  showDetails?: boolean;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -376,6 +379,7 @@ export default function SourcesPanel({
           source={viewing}
           onClose={() => setViewing(null)}
           onChanged={onChanged}
+          showDetails={showDetails}
         />
       )}
     </div>

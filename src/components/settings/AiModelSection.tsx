@@ -1,6 +1,7 @@
 import { ExternalLink, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
+import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../lib/media";
 import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
 import {
   DEFAULT_IMAGE_MODEL,
@@ -12,10 +13,12 @@ import {
   loadImageModelList,
   loadModelList,
   loadResearchModelList,
+  loadTranscribeModelList,
   PROVIDER_LABELS,
   saveImageModelList,
   saveModelList,
   saveResearchModelList,
+  saveTranscribeModelList,
 } from "../../lib/settings";
 import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Spinner } from "../ui";
@@ -153,6 +156,127 @@ function LocalServerRows({
         </div>
       </Row>
     </>
+  );
+}
+
+/** One provider's transcription pick: a model id box plus its saved list, "Automatic" on top. */
+function TranscriptionModelRows({
+  provider,
+  settings,
+  patch,
+  showLabel,
+}: {
+  provider: Provider;
+  settings: Settings;
+  patch: (p: Partial<Settings>) => void;
+  showLabel: boolean;
+}) {
+  const model = settings.transcribeModels[provider] ?? "";
+  const setModel = (id: string) =>
+    patch({ transcribeModels: { ...settings.transcribeModels, [provider]: id } });
+  const [list, setList] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    loadTranscribeModelList(provider).then((l) => {
+      if (!cancelled) setList(l);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider]);
+
+  // Flag an id OpenRouter doesn't list as taking audio, so a bad pick is caught here, not on upload.
+  const [audioOk, setAudioOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    acceptsAudio(provider, model).then((ok) => {
+      if (!cancelled) setAudioOk(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, model]);
+
+  const add = () => {
+    const m = model.trim();
+    if (!m || list.includes(m)) return;
+    const next = [...list, m];
+    setList(next);
+    saveTranscribeModelList(provider, next);
+  };
+
+  const remove = (m: string) => {
+    const next = list.filter((x) => x !== m);
+    setList(next);
+    saveTranscribeModelList(provider, next);
+    if (model === m) setModel("");
+  };
+
+  const auto = AUTO_TRANSCRIBE_MODEL[provider] ?? "";
+  return (
+    <>
+      <div className="py-3">
+        {showLabel && <div className="mb-1.5 text-[12px] font-medium text-ink-2">{PROVIDER_LABELS[provider]}</div>}
+        <ModelIdInput
+          value={model}
+          onChange={setModel}
+          onAdd={add}
+          canAdd={!!model.trim() && !list.includes(model.trim())}
+          placeholder={`Automatic (${auto})`}
+          addTitle="Save to your transcription model list"
+        />
+        {audioOk === false && (
+          <p className="mt-2 text-[12px] leading-relaxed text-warn">
+            OpenRouter doesn't list “{model.trim()}” as accepting audio, so recordings will fall back to
+            Automatic.
+          </p>
+        )}
+      </div>
+      <SavedModelList
+        title={`Saved transcription models${showLabel ? ` · ${PROVIDER_LABELS[provider]}` : ""}`}
+        models={list}
+        active={model}
+        onPick={setModel}
+        onRemove={remove}
+        fallback={{
+          label: `Automatic · ${auto}`,
+          active: !model.trim(),
+          onPick: () => setModel(""),
+        }}
+      />
+    </>
+  );
+}
+
+/**
+ * Speech-to-text model for audio/video sources, for each provider that has a
+ * key, in the order they're tried. Empty = Automatic; a pick that fails falls
+ * back to it (media.ts).
+ */
+function TranscriptionModelCard({
+  settings,
+  patch,
+}: {
+  settings: Settings;
+  patch: (p: Partial<Settings>) => void;
+}) {
+  const providers = transcribeProviders(settings);
+  return (
+    <Card>
+      <div className="pt-3">
+        <div className="text-[13px] font-medium text-ink">Transcription model</div>
+        <div className="mt-0.5 pb-3 text-[12px] leading-relaxed text-ink-3">
+          Turns audio and video sources into text the AI can read. It's separate from your chat
+          model because most chat models can't hear audio. Type any model id that accepts audio, or
+          pick a saved one below. If it fails, Automatic is used instead.
+          {providers.length > 1 && ` ${PROVIDER_LABELS[providers[0]]} is tried first; ${PROVIDER_LABELS[providers[1]]} is the backup.`}
+          {providers.length === 0 && " Needs an OpenAI or OpenRouter key; Anthropic models can't take audio."}
+        </div>
+      </div>
+      {providers.map((p) => (
+        <TranscriptionModelRows key={p} provider={p} settings={settings} patch={patch} showLabel={providers.length > 1} />
+      ))}
+    </Card>
   );
 }
 
@@ -589,6 +713,8 @@ export default function AiModelSection({
           />
         </Card>
       )}
+
+      <TranscriptionModelCard settings={settings} patch={patch} />
     </div>
   );
 }

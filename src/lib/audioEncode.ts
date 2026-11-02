@@ -11,10 +11,14 @@
  * file is just bigger.
  */
 import {
+  ALL_FORMATS,
   AudioSample,
   AudioSampleSource,
+  BlobSource,
   BufferTarget,
   canEncodeAudio,
+  Conversion,
+  Input,
   Mp4OutputFormat,
   Output,
   Quality,
@@ -101,4 +105,104 @@ export function decodeWavPcm16(bytes: Uint8Array): { samples: Float32Array; samp
 export async function compressWav(wav: Uint8Array): Promise<Uint8Array | null> {
   const pcm = decodeWavPcm16(wav);
   return pcm ? encodeM4a(pcm.samples, pcm.sampleRate) : null;
+}
+
+/* ------------------------------- recordings -------------------------------- */
+
+/**
+ * Added recordings (lectures, meetings, voice memos, and the soundtrack of
+ * videos) are kept as mono speech AAC: ~0.36 MB per minute, so a 50-minute,
+ * 100 MB video becomes ~18 MB. 44.1 kHz because Mediabunny's conversion picks
+ * HE-AAC at ≤24 kHz, which WebKit encodes badly (see AAC_LC), and Chromium's
+ * AAC encoder only takes 44.1/48 kHz. 48 kbps because macOS's AAC encoder
+ * fails on mono 44.1 kHz below ~40 kbps.
+ */
+const RECORDING_BITRATE = 48_000;
+const RECORDING_SAMPLE_RATE = 44_100;
+/** Mono AAC at or below this is already compact and is kept as-is. */
+const COMPACT_BITRATE = 64_000;
+
+export interface Recording {
+  /** An .m4a file. */
+  bytes: Uint8Array;
+  /** Seconds. */
+  duration: number;
+}
+
+const speechAudio = {
+  numberOfChannels: 1,
+  sampleRate: RECORDING_SAMPLE_RATE,
+  codec: "aac",
+  quality: new Quality({ bitrate: RECORDING_BITRATE }),
+} as const;
+
+async function convert(src: Blob, trim?: { start: number; end: number }): Promise<Uint8Array | null> {
+  const input = new Input({ source: new BlobSource(src), formats: ALL_FORMATS });
+  try {
+    const output = new Output({
+      format: new Mp4OutputFormat({ fastStart: "in-memory" }),
+      target: new BufferTarget(),
+    });
+    const conversion = await Conversion.init({
+      input,
+      output,
+      tracks: "primary",
+      video: { discard: true },
+      audio: speechAudio,
+      trim,
+      showWarnings: false,
+    });
+    if (!conversion.isValid || conversion.utilizedTracks.length === 0) return null;
+    await conversion.execute();
+    const buf = (output.target as BufferTarget).buffer;
+    return buf ? new Uint8Array(buf) : null;
+  } finally {
+    input.dispose();
+  }
+}
+
+/**
+ * Any audio or video file → its soundtrack as mono speech .m4a; the video
+ * track is dropped. Null when the file has no readable soundtrack or this
+ * platform can't decode or encode it (callers then fall back to the original).
+ */
+export async function compressRecording(file: Blob): Promise<Recording | null> {
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  let duration: number;
+  try {
+    const track = await input.getPrimaryAudioTrack();
+    if (!track) return null;
+    duration = await track.computeDuration();
+    // Already small mono AAC (a stored recording being re-transcribed): re-encoding would only lose quality.
+    if (track.codec === "aac" && track.numberOfChannels === 1 && duration > 0 && (file.size * 8) / duration <= COMPACT_BITRATE)
+      return { bytes: new Uint8Array(await file.arrayBuffer()), duration };
+  } catch {
+    return null;
+  } finally {
+    input.dispose();
+  }
+  const supported = await canEncodeAudio("aac", {
+    numberOfChannels: 1,
+    sampleRate: RECORDING_SAMPLE_RATE,
+    bitrate: RECORDING_BITRATE,
+  }).catch(() => false);
+  if (!supported) return null;
+  const bytes = await convert(file).catch((e) => {
+    console.warn("audio: couldn't compress recording", e);
+    return null;
+  });
+  return bytes ? { bytes, duration } : null;
+}
+
+/** Cut a recording into consecutive pieces of at most `seconds` each. */
+export async function splitRecording(rec: Recording, seconds: number): Promise<Uint8Array[]> {
+  if (rec.duration <= seconds) return [rec.bytes];
+  const whole = new Blob([rec.bytes], { type: "audio/mp4" });
+  const pieces: Uint8Array[] = [];
+  for (let start = 0; start < rec.duration; start += seconds) {
+    const piece = await convert(whole, { start, end: Math.min(rec.duration, start + seconds) });
+    if (!piece) throw new Error("couldn't split the recording");
+    pieces.push(piece);
+  }
+  return pieces;
 }
