@@ -3049,6 +3049,7 @@ export default function ChatPanel({
                         e.preventDefault();
                         acceptCommand(c);
                       }}
+                      ref={i === cmdActiveIdx ? keepInView : undefined}
                       onMouseEnter={() => setCmdQuery((q) => (q ? { ...q, active: i } : q))}
                       className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                         i === cmdActiveIdx ? "bg-hover" : ""
@@ -3077,6 +3078,7 @@ export default function ChatPanel({
                       e.preventDefault();
                       acceptModel(m);
                     }}
+                    ref={i === modelActiveIdx ? keepInView : undefined}
                     onMouseEnter={() => setModelQuery((q) => (q ? { ...q, active: i } : q))}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                       i === modelActiveIdx ? "bg-hover" : ""
@@ -3126,6 +3128,7 @@ export default function ChatPanel({
                       e.preventDefault();
                       acceptTheme(t.name);
                     }}
+                    ref={i === themeActiveIdx ? keepInView : undefined}
                     onMouseEnter={() => setThemeQuery((q) => (q ? { ...q, active: i } : q))}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                       i === themeActiveIdx ? "bg-hover" : ""
@@ -3161,6 +3164,7 @@ export default function ChatPanel({
                       e.preventDefault();
                       acceptFont(f.name);
                     }}
+                    ref={i === fontActiveIdx ? keepInView : undefined}
                     onMouseEnter={() => setFontQuery((q) => (q ? { ...q, active: i } : q))}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                       i === fontActiveIdx ? "bg-hover" : ""
@@ -3197,6 +3201,7 @@ export default function ChatPanel({
                       setMoveQuery(null);
                       textareaRef.current?.focus();
                     }}
+                    ref={moveActiveIdx === 0 ? keepInView : undefined}
                     onMouseEnter={() => setMoveQuery((m) => (m ? { ...m, active: 0 } : m))}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                       moveActiveIdx === 0 ? "bg-hover" : ""
@@ -3217,6 +3222,7 @@ export default function ChatPanel({
                         e.preventDefault();
                         acceptMove(f.name);
                       }}
+                      ref={idx === moveActiveIdx ? keepInView : undefined}
                       onMouseEnter={() => setMoveQuery((m) => (m ? { ...m, active: idx } : m))}
                       className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                         idx === moveActiveIdx ? "bg-hover" : ""
@@ -3246,6 +3252,7 @@ export default function ChatPanel({
                       e.preventDefault();
                       acceptMention(item);
                     }}
+                    ref={i === activeIdx ? keepInView : undefined}
                     onMouseEnter={() => setMention((m) => (m ? { ...m, active: i } : m))}
                     className={`flex w-full items-center gap-2.5 px-3 py-2 text-left ${
                       i === activeIdx ? "bg-hover" : ""
@@ -3656,6 +3663,20 @@ function Reasoning({ text, live = false, defaultOpen }: { text: string; live?: b
       )}
     </div>
   );
+}
+
+/**
+ * Ref for the highlighted row of a composer list: keeps it in view as ↑↓
+ * move the highlight past the list's visible part. Scrolls only the list,
+ * never the page around it.
+ */
+function keepInView(row: HTMLElement | null) {
+  const list = row?.parentElement;
+  if (!row || !list) return;
+  const r = row.getBoundingClientRect();
+  const l = list.getBoundingClientRect();
+  if (r.top < l.top) list.scrollTop -= l.top - r.top;
+  else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom;
 }
 
 /** Source title for a saved reply: its first heading or line, markdown stripped. */
