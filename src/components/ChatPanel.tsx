@@ -379,7 +379,7 @@ const COMMANDS: ChatCommand[] = [
   },
   ...(
     [
-      ["balanced", "OpenRouter's default mix, mostly the cheapest provider that's up"],
+      ["default", "OpenRouter's default mix, mostly the cheapest provider that's up"],
       ["cheapest", "Cheapest provider first"],
       ["fastest", "Provider that writes fastest first"],
       ["quickest", "Provider that starts answering soonest first"],
@@ -616,7 +616,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply and at the foot of each Studio output (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
-- \`/provider\` — OpenRouter only: shows which providers may run your model and which one answered last. \`/provider cheapest\`, \`fastest\`, \`quickest\` or \`balanced\` sets the priority for every model; \`/provider private\` skips providers that may train on your prompts and \`/provider zdr\` keeps to zero-data-retention ones (each toggles); \`/provider block <provider>\` never uses one (\`/provider unblock\` undoes). \`/provider pin groq, deepinfra\` tries those first for the current model, \`/provider only groq\` allows nothing else for it, and \`/provider unpin\` clears that. \`/provider off\` goes back to OpenRouter's default for the current model. Also in Settings → AI Model → Provider routing; rules in your OpenRouter account apply too.
+- \`/provider\` — OpenRouter only: shows which providers may run your model and which one answered last. \`/provider cheapest\`, \`fastest\`, \`quickest\` or \`default\` sets the priority for every model; \`/provider private\` skips providers that may train on your prompts and \`/provider zdr\` keeps to zero-data-retention ones (each toggles); \`/provider block <provider>\` never uses one (\`/provider unblock\` undoes). \`/provider pin groq, deepinfra\` tries those first for the current model, \`/provider only groq\` allows nothing else for it, and \`/provider unpin\` clears that. \`/provider off\` goes back to OpenRouter's default for the current model. Also in Settings → AI Model → Provider routing; rules in your OpenRouter account apply too.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = chat replies ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
 - \`/new\` — starts a fresh chat; the current conversation stays saved in the Chats panel.

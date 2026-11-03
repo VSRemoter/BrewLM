@@ -37,7 +37,7 @@ export interface OpenRouterRouting {
 export const DEFAULT_ROUTING: OpenRouterRouting = { sort: "", noTraining: false, zdr: false, ignore: [], pins: {} };
 
 export const SORT_LABELS: Record<RoutingSort, string> = {
-  "": "Balanced",
+  "": "Default",
   price: "Cheapest",
   throughput: "Fastest",
   latency: "Quickest start",

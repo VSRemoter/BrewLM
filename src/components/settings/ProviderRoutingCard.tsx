@@ -153,11 +153,7 @@ export default function ProviderRoutingCard({
             privacy terms.
           </div>
         </div>
-        <Row
-          label="Priority"
-          desc="Balanced is OpenRouter's default: mostly the cheapest provider that's up, spread across a few. Quickest start favors the shortest wait before the first word."
-          alignTop
-        >
+        <Row label="Priority">
           <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
             {(Object.keys(SORT_LABELS) as RoutingSort[]).map((s) => (
               <button

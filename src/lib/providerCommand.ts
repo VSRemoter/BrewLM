@@ -19,8 +19,8 @@ import { loadSettings, patchSettings } from "./settings";
 
 /** What people type → a priority. */
 const SORT_WORDS: Record<string, RoutingSort> = {
-  balanced: "",
   default: "",
+  balanced: "",
   cheapest: "price",
   cheap: "price",
   price: "price",
@@ -52,7 +52,7 @@ function describe(r: OpenRouterRouting, model: string): string {
     `- Privacy: ${privacy.length ? privacy.join(", ") : "OpenRouter's default"}`,
     `- Blocked: ${r.ignore.length ? code(r.ignore) : "none"}`,
     served ? `\nThe last reply from this model came from **${served}**.` : "",
-    "\nChange it with `/provider cheapest`, `fastest`, `quickest` or `balanced`; `/provider pin <provider>` (or `only <provider>`) for this model; `/provider private`, `/provider zdr`, `/provider block <provider>`, or `/provider off`. Also in Settings → AI Model → Provider routing.",
+    "\nChange it with `/provider cheapest`, `fastest`, `quickest` or `default`; `/provider pin <provider>` (or `only <provider>`) for this model; `/provider private`, `/provider zdr`, `/provider block <provider>`, or `/provider off`. Also in Settings → AI Model → Provider routing.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -153,7 +153,7 @@ export async function runProviderCommand(text: string, model: string): Promise<s
   if (verb === "off" || verb === "reset") {
     const others = Object.keys(withPin(r, model, null).pins);
     await save({ ...withPin(r, model, null), sort: "", noTraining: false, zdr: false, ignore: [] });
-    return `Provider routing is back to OpenRouter's default for \`${model}\`: balanced, no privacy filters, nothing blocked or pinned.${
+    return `Provider routing is back to OpenRouter's default for \`${model}\`: default priority, no privacy filters, nothing blocked or pinned.${
       others.length ? ` Pins on other models are kept: ${code(others)}.` : ""
     }`;
   }
