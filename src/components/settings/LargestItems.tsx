@@ -74,8 +74,8 @@ export default function LargestItems() {
           title="Largest items"
           desc={
             synced
-              ? "What takes the most of your Sync storage. Delete something to free space on every device."
-              : "What takes the most space on this device. Delete something to free space."
+              ? "What takes the most of your Sync storage."
+              : "What takes the most space on this device."
           }
         />
         <button

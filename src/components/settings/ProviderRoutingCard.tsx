@@ -150,8 +150,7 @@ export default function ProviderRoutingCard({
           <div className="text-[13px] font-medium text-ink">Provider routing</div>
           <div className="mt-0.5 pb-3 text-[12px] leading-relaxed text-ink-3">
             Most OpenRouter models are run by several providers, each with its own price, speed and
-            privacy terms. These rules decide which one answers. They apply to chat, Studio,
-            research, transcription and gpt-audio voices.
+            privacy terms.
           </div>
         </div>
         <Row

@@ -38,16 +38,13 @@ export default function AboutSection({
       <SectionTitle title="About & Updates" />
 
       <Card>
-        <Row label="BrewLM" desc="Your personal research copilot — local-first, no account, no telemetry.">
+        <Row label="BrewLM">
           <span className="font-mono text-[12.5px] text-ink-2">v{version || "…"}</span>
         </Row>
         {/* The web app is always the latest version: update checks are for the desktop app. */}
         {platform.kind === "desktop" && (
           <>
-            <Row
-              label="Check for updates on launch"
-              desc="One anonymous request to GitHub Releases; compares version numbers only."
-            >
+            <Row label="Check for updates on launch">
               <Toggle
                 label="Check for updates on launch"
                 checked={settings.updateCheckOnLaunch}

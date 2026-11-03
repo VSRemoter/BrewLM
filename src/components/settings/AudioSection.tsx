@@ -303,10 +303,7 @@ export default function AudioSection({
 }) {
   return (
     <div>
-      <SectionTitle
-        title="Audio Voices"
-        desc="Who narrates Audio overviews — independent of the chat provider."
-      />
+      <SectionTitle title="Audio Voices" />
 
       <Card>
         <div className="py-3">
@@ -370,7 +367,7 @@ export default function AudioSection({
                 link="https://openrouter.ai/keys"
                 value={settings.openrouterTtsKey}
                 placeholder="sk-or-v1-…"
-                hint="Leave empty to reuse your OpenRouter chat key. Any OpenRouter text-to-speech model works (e.g. mistralai/voxtral-mini-tts-3-0), as do OpenAI's gpt-audio models."
+                hint="Leave empty to reuse your OpenRouter chat key."
                 onChange={(v) => patch({ openrouterTtsKey: v })}
               />
               <TtsModelPicker provider="openrouter" settings={settings} patch={patch} />

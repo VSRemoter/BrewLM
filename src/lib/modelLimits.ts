@@ -1,7 +1,7 @@
 /**
  * What a cloud model can do, looked up once per session: its context window,
- * how much it may write in one reply, and which reasoning-effort levels it
- * accepts. llm.ts sizes every request from this, so users never pick a token
+ * how much it may write in one reply, which reasoning-effort levels it
+ * accepts, and whether it takes a temperature or adaptive thinking. llm.ts sizes every request from this, so users never pick a token
  * number that the model then rejects.
  */
 import type { Provider } from "./types";
@@ -13,6 +13,10 @@ export interface ModelLimits {
   maxOutput?: number;
   /** Effort levels the model accepts ("low", "medium", "high"); empty = don't send one. */
   efforts: string[];
+  /** Whether it takes a temperature; undefined = the list doesn't say. */
+  temperature?: boolean;
+  /** Claude only: thinking must be asked for as { type: "adaptive" } to run. */
+  adaptiveThinking?: boolean;
 }
 
 /** The fields of OpenRouter's public model list that BrewLM reads. */
@@ -49,10 +53,11 @@ async function openRouterLimits(model: string): Promise<ModelLimits | null> {
     context: positive(m.top_provider?.context_length) ?? positive(m.context_length),
     maxOutput: positive(m.top_provider?.max_completion_tokens),
     efforts: m.supported_parameters?.includes("reasoning") ? STANDARD_EFFORTS : [],
+    temperature: m.supported_parameters?.includes("temperature"),
   };
 }
 
-/** Anthropic's Models API reports both limits and the effort levels each model takes. */
+/** Anthropic's Models API reports the limits, effort levels and thinking modes each model takes. */
 async function anthropicLimits(apiKey: string, model: string): Promise<ModelLimits | null> {
   const res = await fetch(`https://api.anthropic.com/v1/models/${encodeURIComponent(model)}`, {
     headers: {
@@ -68,6 +73,7 @@ async function anthropicLimits(apiKey: string, model: string): Promise<ModelLimi
     context: positive(m?.max_input_tokens),
     maxOutput: positive(m?.max_tokens),
     efforts: effort?.supported ? STANDARD_EFFORTS.filter((level) => effort[level]?.supported) : [],
+    adaptiveThinking: m?.capabilities?.thinking?.types?.adaptive?.supported === true,
   };
 }
 

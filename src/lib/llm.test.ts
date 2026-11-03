@@ -10,7 +10,7 @@ vi.mock("./local", () => ({
   localHeaders: () => ({}),
 }));
 
-import { AUTO_OUTPUT_TOKENS, complete, takesThinking } from "./llm";
+import { AUTO_OUTPUT_TOKENS, complete, supportsTemperature, takesThinking } from "./llm";
 
 /** A streamed reply made of SSE `data:` lines. */
 function sse(...events: unknown[]): Response {
@@ -45,7 +45,20 @@ const CATALOG = {
       top_provider: { context_length: 20_000, max_completion_tokens: 16_000 },
       supported_parameters: ["max_tokens"],
     },
+    { id: "warm/chat", supported_parameters: ["max_tokens", "temperature"] },
+    { id: "anthropic/claude-opus-4.7", supported_parameters: ["max_tokens", "reasoning", "temperature"] },
   ],
+};
+
+const EFFORTS = { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true } };
+/** Models API replies by model id; any other id is a 404. */
+const CLAUDE_MODELS: Record<string, unknown> = {
+  "claude-effort": { max_input_tokens: 1_000_000, max_tokens: 64_000, capabilities: { effort: EFFORTS } },
+  "claude-sonnet-4-6": {
+    max_input_tokens: 1_000_000,
+    max_tokens: 64_000,
+    capabilities: { effort: EFFORTS, thinking: { supported: true, types: { adaptive: { supported: true } } } },
+  },
 };
 
 /** Request bodies sent to the chat endpoints, in order. */
@@ -60,15 +73,10 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify(CATALOG));
-      if (url === "https://api.anthropic.com/v1/models/claude-effort")
-        return new Response(
-          JSON.stringify({
-            max_input_tokens: 1_000_000,
-            max_tokens: 64_000,
-            capabilities: { effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true } } },
-          })
-        );
-      if (url.startsWith("https://api.anthropic.com/v1/models/")) return new Response("{}", { status: 404 });
+      if (url.startsWith("https://api.anthropic.com/v1/models/")) {
+        const model = CLAUDE_MODELS[url.slice("https://api.anthropic.com/v1/models/".length)];
+        return model ? new Response(JSON.stringify(model)) : new Response("{}", { status: 404 });
+      }
       sent.push(JSON.parse(String(init?.body)));
       const reply = replies.shift();
       if (!reply) throw new Error(`unexpected request to ${url}`);
@@ -199,6 +207,58 @@ describe("Anthropic output sizing", () => {
       /32,000-token output allowance/
     );
     expect(sent[1].output_config).toEqual({ effort: "low" });
+  });
+});
+
+describe("Claude thinking", () => {
+  it("turns adaptive thinking on with an effort when the model asks for it", async () => {
+    replies.push(anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-sonnet-4-6", thinking: "high" });
+    expect(sent[0].output_config).toEqual({ effort: "high" });
+    expect(sent[0].thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("leaves thinking to the model on Auto, or when the model doesn't list adaptive thinking", async () => {
+    replies.push(anthropicText("ok"), anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    await ask({ provider: "anthropic", model: "claude-effort", thinking: "high" });
+    expect(sent[0].thinking).toBeUndefined();
+    expect(sent[1].thinking).toBeUndefined();
+  });
+});
+
+describe("Temperature", () => {
+  it("knows which models take one, including Claude models not released yet", () => {
+    for (const model of ["gpt-4o", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-sonnet-4-5-20250929",
+      "claude-opus-4-20250514", "claude-3-7-sonnet-latest", "anthropic/claude-sonnet-4.6", "anthropic/claude-3.7-sonnet:thinking"])
+      expect(supportsTemperature(model), model).toBe(true);
+    for (const model of ["o4-mini", "gpt-5", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-5-5",
+      "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-6", "anthropic/claude-opus-4.7"])
+      expect(supportsTemperature(model), model).toBe(false);
+  });
+
+  it("is sent to Claude models that take it, and left off the rest", async () => {
+    replies.push(anthropicText("ok"), anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-sonnet-4-6", temperature: 0.3 });
+    await ask({ provider: "anthropic", model: "claude-opus-5-5", temperature: 0.3 });
+    expect(sent[0].temperature).toBe(0.3);
+    expect(sent[1].temperature).toBeUndefined();
+  });
+
+  it("is left off while Claude is thinking", async () => {
+    replies.push(anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-sonnet-4-6", temperature: 0.3, thinking: "low" });
+    expect(sent[0].temperature).toBeUndefined();
+    expect(sent[0].thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("follows OpenRouter's list of what each model takes", async () => {
+    replies.push(openAiText("ok"), openAiText("ok"), openAiText("ok"), openAiText("ok"));
+    await ask({ model: "warm/chat", temperature: 0.3 });
+    await ask({ model: "plain/small", temperature: 0.3 });
+    await ask({ model: "anthropic/claude-opus-4.7", temperature: 0.3 });
+    await ask({ model: "not/listed", temperature: 0.3 });
+    expect(sent.map((b) => b.temperature)).toEqual([0.3, undefined, undefined, 0.3]);
   });
 });
 

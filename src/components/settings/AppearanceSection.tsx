@@ -69,10 +69,7 @@ export default function AppearanceSection({
             )}
           </div>
         </Row>
-        <Row
-          label="Smooth scrolling"
-          desc="Glides between mouse-wheel steps instead of jumping. Off uses the system's default scrolling."
-        >
+        <Row label="Smooth scrolling">
           <Toggle
             label="Smooth scrolling"
             checked={settings.smoothScroll}

@@ -19,7 +19,7 @@ import type {
   Settings,
 } from "../../lib/types";
 import { Segmented } from "../ui";
-import { Card, Footnote, Row, SectionTitle } from "./controls";
+import { Card, Row, SectionTitle } from "./controls";
 
 export default function StudioSection({
   settings,
@@ -119,7 +119,7 @@ export default function StudioSection({
 
       <SectionTitle title="Report" />
       <Card>
-        <Row label="Default type" desc="Custom is only useful with a per-report prompt, so it isn't offered here.">
+        <Row label="Default type">
           <Segmented
             options={(Object.keys(REPORT_TYPE_LABELS) as ReportType[])
               .filter((id) => id !== "custom")
@@ -129,7 +129,6 @@ export default function StudioSection({
           />
         </Row>
       </Card>
-      <Footnote>Mind maps have no tunable options.</Footnote>
     </div>
   );
 }

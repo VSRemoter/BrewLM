@@ -387,7 +387,7 @@ export default function AiModelSection({
 
   return (
     <div>
-      <SectionTitle title="AI Model" desc="Provider, key, and the model everything runs on." />
+      <SectionTitle title="AI Model" />
 
       {/* Provider + key + model */}
       <Card>
@@ -515,7 +515,7 @@ export default function AiModelSection({
           desc={
             isLocal
               ? "Models from your server appear below. Type an id if one is missing."
-              : "The model everything runs on — type any id, or pick a saved one below."
+              : "The model everything runs on."
           }
         >
           <div className="flex w-72 gap-1.5">
@@ -583,8 +583,8 @@ export default function AiModelSection({
       </Card>
       {temp != null && !supportsTemperature(settings.model) && (
         <Footnote>
-          “{settings.model}” is a reasoning model and ignores temperature — the setting stays saved
-          for your other models.
+          “{settings.model}” doesn't take a custom temperature, so it's left at the model's default.
+          The setting stays saved for your other models.
         </Footnote>
       )}
 

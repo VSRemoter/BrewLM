@@ -52,9 +52,34 @@ function isReasoningModel(model: string): boolean {
   return /^(openai\/)?(o1|o3|o4|gpt-5)/i.test(model.trim());
 }
 
-/** Reasoning-model families reject sampling params like temperature. */
+/** A Claude model, on Anthropic ("claude-…") or OpenRouter ("anthropic/claude-…"). */
+function isClaude(model: string): boolean {
+  return /^(anthropic\/)?claude-/i.test(model.trim());
+}
+
+/**
+ * Claude models that take a custom temperature: Claude 2 and 3, and Claude 4
+ * up to 4.6. Later ones reject it (or take only the default), so any model
+ * not listed, including ones released later, is sent none.
+ */
+function claudeTakesTemperature(model: string): boolean {
+  const id = model.trim().replace(/^anthropic\//i, "");
+  return /^claude-(?:(?:2|3|instant)[-.]|(?:opus|sonnet|haiku)-4(?:[-.][0-6])?(?:-\d{8})?(?:$|[@:[]))/i.test(id);
+}
+
+/** Reasoning-model families and newer Claude models reject sampling params like temperature. */
 export function supportsTemperature(model: string): boolean {
-  return !isReasoningModel(model);
+  return !isReasoningModel(model) && (!isClaude(model) || claudeTakesTemperature(model));
+}
+
+/**
+ * The temperature to send, or undefined to leave the model's default. A Claude
+ * model that's thinking takes none either.
+ */
+function temperatureFor(opts: StreamOptions, limits: ModelLimits | null, effort: string | undefined): number | undefined {
+  if (opts.temperature == null || !supportsTemperature(opts.model) || limits?.temperature === false) return undefined;
+  if (effort && isClaude(opts.model)) return undefined;
+  return opts.temperature;
 }
 
 /** Whether a model takes a Thinking effort level; null when its limits can't be looked up. */
@@ -226,9 +251,8 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
     body.modalities = ["image", "text"];
   }
-  if (opts.temperature != null && supportsTemperature(opts.model)) {
-    body.temperature = opts.temperature;
-  }
+  const temperature = temperatureFor(opts, limits, effort);
+  if (temperature != null) body.temperature = temperature;
 
   // A reasoning model can spend the whole output allowance thinking and stop
   // ("length") before writing a word. Nothing has been shown yet then, so try
@@ -350,6 +374,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
 
   const limits = await modelLimits("anthropic", opts.apiKey, opts.model);
   const effort = effortFor(opts, limits);
+  const temperature = temperatureFor(opts, limits, effort);
   const body: Record<string, unknown> = {
     model: opts.model,
     // Anthropic requires a cap: the model's own limit, or one every Claude model allows.
@@ -360,9 +385,10 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       limits?.context
     ),
     stream: true,
-    // All Claude models accept temperature; only sent when the user set one.
-    ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+    ...(temperature != null ? { temperature } : {}),
     ...(effort ? { output_config: { effort } } : {}),
+    // Claude 4.6 to 4.8 only think when asked; later models think by default either way.
+    ...(effort && limits?.adaptiveThinking ? { thinking: { type: "adaptive" } } : {}),
     // One ephemeral cache breakpoint at the end of the (large, stable)
     // system prompt: repeat turns re-read the sources at ~10% input cost.
     system: systemText
