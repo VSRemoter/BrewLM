@@ -1374,14 +1374,14 @@ export default function ChatPanel({
       setShowReasoning(on);
       onSettingsChanged();
       const shared = {
-        local: "Local reasoning models (Qwen3, DeepSeek-R1, gpt-oss…) share their full reasoning.",
+        local: "",
         anthropic: "Claude shares a summary of its thinking, not the full reasoning.",
         openrouter: "On OpenRouter, models that share their reasoning show it; some, like OpenAI's, send only a summary or nothing.",
         openai: "OpenAI's API doesn't share its models' reasoning, so replies from it won't have any.",
       }[settings.provider];
       return say(
         on
-          ? `Reasoning now opens above each reply. ${shared}`
+          ? `Reasoning now opens above each reply.${shared ? ` ${shared}` : ""}`
           : "Reasoning now stays folded above each reply; click **Reasoning** to open one."
       );
     }
