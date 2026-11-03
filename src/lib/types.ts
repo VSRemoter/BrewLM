@@ -196,6 +196,8 @@ export interface Settings {
   smoothScroll: boolean;
   /** Token counts + cost under each AI reply (/details toggles). */
   showDetails: boolean;
+  /** Each reply's reasoning starts open above it, not folded (/thinking show|hide). */
+  showReasoning: boolean;
 }
 
 export interface Flashcard {

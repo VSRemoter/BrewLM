@@ -89,6 +89,16 @@ export default function AppearanceSection({
             onChange={(on) => patch({ showDetails: on })}
           />
         </Row>
+        <Row
+          label="Open reasoning"
+          desc="Reasoning models' thinking sits folded above each reply; on, it starts open. /thinking show and /thinking hide in chat switch this too."
+        >
+          <Toggle
+            label="Open reasoning"
+            checked={settings.showReasoning}
+            onChange={(on) => patch({ showReasoning: on })}
+          />
+        </Row>
       </Card>
 
       {/* Theme */}

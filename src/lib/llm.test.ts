@@ -10,7 +10,7 @@ vi.mock("./local", () => ({
   localHeaders: () => ({}),
 }));
 
-import { AUTO_OUTPUT_TOKENS, complete, supportsTemperature, takesThinking } from "./llm";
+import { AUTO_OUTPUT_TOKENS, complete, extractJson, supportsTemperature, takesThinking, ThinkSplitter } from "./llm";
 
 /** A streamed reply made of SSE `data:` lines. */
 function sse(...events: unknown[]): Response {
@@ -57,6 +57,16 @@ const CLAUDE_MODELS: Record<string, unknown> = {
   "claude-sonnet-4-6": {
     max_input_tokens: 1_000_000,
     max_tokens: 64_000,
+    capabilities: { effort: EFFORTS, thinking: { supported: true, types: { adaptive: { supported: true } } } },
+  },
+  "claude-opus-4-7": {
+    max_input_tokens: 1_000_000,
+    max_tokens: 128_000,
+    capabilities: { effort: EFFORTS, thinking: { supported: true, types: { adaptive: { supported: true } } } },
+  },
+  "claude-opus-5-5": {
+    max_input_tokens: 1_000_000,
+    max_tokens: 128_000,
     capabilities: { effort: EFFORTS, thinking: { supported: true, types: { adaptive: { supported: true } } } },
   },
 };
@@ -224,6 +234,121 @@ describe("Claude thinking", () => {
     await ask({ provider: "anthropic", model: "claude-effort", thinking: "high" });
     expect(sent[0].thinking).toBeUndefined();
     expect(sent[1].thinking).toBeUndefined();
+  });
+
+  it("asks for a summary of the thinking from Claude 4.7 on, which otherwise sends it empty", async () => {
+    replies.push(anthropicText("ok"), anthropicText("ok"), anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-opus-4-7", thinking: "high" });
+    await ask({ provider: "anthropic", model: "claude-opus-4-7" });
+    await ask({ provider: "anthropic", model: "claude-opus-5-5" });
+    expect(sent[0].thinking).toEqual({ type: "adaptive", display: "summarized" });
+    // 4.7 on Auto doesn't think, so thinking stays off.
+    expect(sent[1].thinking).toBeUndefined();
+    // Later models think by default; asking only adds the summary.
+    expect(sent[2].thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(sent[2].output_config).toBeUndefined();
+  });
+});
+
+describe("Reasoning", () => {
+  /** Every onReasoning call, in order. */
+  const watch = () => {
+    const seen: string[] = [];
+    return { seen, onReasoning: (r: string) => seen.push(r) };
+  };
+
+  it("reads Claude's thinking deltas apart from the answer", async () => {
+    replies.push(
+      sse(
+        { type: "content_block_start", content_block: { type: "thinking" } },
+        { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Weigh A. " } },
+        { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Then B." } },
+        { type: "content_block_delta", delta: { type: "signature_delta", signature: "sig" } },
+        { type: "content_block_start", content_block: { type: "text" } },
+        { type: "content_block_delta", delta: { type: "text_delta", text: "B it is." } },
+        { type: "message_delta", delta: { stop_reason: "end_turn" } },
+        { type: "message_stop" }
+      )
+    );
+    const w = watch();
+    const out = await ask({ provider: "anthropic", model: "claude-opus-5-5", onReasoning: w.onReasoning });
+    expect(out).toBe("B it is.");
+    expect(w.seen[w.seen.length - 1]).toBe("Weigh A. Then B.");
+  });
+
+  it("reads reasoning fields from local servers and OpenRouter", async () => {
+    replies.push(
+      sse(
+        { choices: [{ delta: { reasoning_content: "llama.cpp " } }] },
+        { choices: [{ delta: { reasoning: "ollama " } }] },
+        // OpenRouter sends both forms; the plain one wins so nothing doubles.
+        { choices: [{ delta: { reasoning: "or ", reasoning_details: [{ type: "reasoning.text", text: "or " }] } }] },
+        { choices: [{ delta: { reasoning_details: [{ type: "reasoning.summary", summary: "sum" }, { type: "reasoning.encrypted", data: "x" }] } }] },
+        { choices: [{ delta: { content: "Answer" } }] },
+        { choices: [{ finish_reason: "stop" }] },
+        "[DONE]"
+      )
+    );
+    const w = watch();
+    expect(await ask({ onReasoning: w.onReasoning })).toBe("Answer");
+    expect(w.seen[w.seen.length - 1]).toBe("llama.cpp ollama or sum");
+  });
+
+  it("splits an inline <think> block out of the answer, even across chunks", async () => {
+    replies.push(
+      sse(
+        { choices: [{ delta: { content: "<thi" } }] },
+        { choices: [{ delta: { content: "nk>Let me see.</th" } }] },
+        { choices: [{ delta: { content: "ink>\n\n" } }] },
+        { choices: [{ delta: { content: "It's 4." } }] },
+        { choices: [{ finish_reason: "stop" }] },
+        "[DONE]"
+      )
+    );
+    const w = watch();
+    expect(await ask({ onReasoning: w.onReasoning })).toBe("It's 4.");
+    expect(w.seen[w.seen.length - 1]).toBe("Let me see.");
+  });
+
+  it("starts the reasoning over when it retries after thinking used everything", async () => {
+    replies.push(
+      sse({ choices: [{ delta: { reasoning: "long..." } }] }, { choices: [{ delta: {}, finish_reason: "length" }] }, "[DONE]"),
+      sse({ choices: [{ delta: { reasoning: "short" } }] }, { choices: [{ delta: { content: "done" } }] }, "[DONE]")
+    );
+    const w = watch();
+    expect(await ask({ thinking: "high", onReasoning: w.onReasoning })).toBe("done");
+    expect(w.seen).toEqual(["long...", "", "short"]);
+  });
+});
+
+describe("ThinkSplitter", () => {
+  const run = (...chunks: string[]) => {
+    const s = new ThinkSplitter();
+    let text = "";
+    let reasoning = "";
+    for (const c of [...chunks.map((c) => s.push(c)), s.flush()]) {
+      text += c.text;
+      reasoning += c.reasoning;
+    }
+    return { text, reasoning };
+  };
+
+  it("leaves a reply that only mentions the tag alone", () => {
+    expect(run("Use ", "<think> tags like this.")).toEqual({ text: "Use <think> tags like this.", reasoning: "" });
+    expect(run("<b>bold</b>")).toEqual({ text: "<b>bold</b>", reasoning: "" });
+  });
+
+  it("takes <thinking> too, and keeps an unfinished block as reasoning", () => {
+    expect(run("  <Thinking>hm</thinking>Yes")).toEqual({ text: "Yes", reasoning: "hm" });
+    expect(run("<think>cut off mid-tho", "ught")).toEqual({ text: "", reasoning: "cut off mid-thought" });
+  });
+});
+
+describe("extractJson", () => {
+  it("skips the reasoning in front of the JSON", () => {
+    expect(extractJson('<think>maybe {"a": 0}?</think>\n{"a": 1}')).toBe('{"a": 1}');
+    // Some DeepSeek-R1 builds put the opening tag in the prompt.
+    expect(extractJson('thinking about [1]...\n</think>\n[2]')).toBe("[2]");
   });
 });
 

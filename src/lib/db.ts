@@ -62,6 +62,13 @@ async function initDb(): Promise<SqlDb> {
       content TEXT NOT NULL,
       created_at INTEGER NOT NULL
     )`);
+  // A reply's reasoning, shown folded above it. Its own table so it stays on
+  // this computer: it isn't synced, and it never goes back to the model.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS message_reasoning (
+      message_id TEXT PRIMARY KEY,
+      text TEXT NOT NULL
+    )`);
   await db.execute(`
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -557,6 +564,7 @@ export async function deleteNotebook(id: string): Promise<void> {
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
   await pruneOrphanImages();
+  await pruneOrphanReasoning();
 }
 
 /**
@@ -565,8 +573,9 @@ export async function deleteNotebook(id: string): Promise<void> {
  * number of notebooks purged.
  */
 export async function purgeExpiredTrash(days: number): Promise<number> {
-  // Also sweeps images orphaned by deletions made outside this module (phone).
+  // Also sweeps images and reasoning orphaned by deletions made outside this module (phone, sync).
   await pruneOrphanImages();
+  await pruneOrphanReasoning();
   if (days <= 0) return 0;
   const cutoff = Date.now() - days * 86_400_000;
   const d = await getDb();
@@ -832,6 +841,27 @@ export async function addMessage(
   return msg;
 }
 
+export async function setMessageReasoning(messageId: string, text: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("INSERT OR REPLACE INTO message_reasoning (message_id, text) VALUES ($1, $2)", [messageId, text]);
+}
+
+/** Reasoning saved with a chat's replies, by message id. */
+export async function listReasoning(chatId: string): Promise<Record<string, string>> {
+  const d = await getDb();
+  const rows = await d.select<{ message_id: string; text: string }[]>(
+    "SELECT r.message_id, r.text FROM message_reasoning r JOIN messages m ON m.id = r.message_id WHERE m.chat_id = $1",
+    [chatId]
+  );
+  return Object.fromEntries(rows.map((r) => [r.message_id, r.text]));
+}
+
+/** Reasoning whose message is gone (deleted here, or by sync from another device). */
+async function pruneOrphanReasoning(): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM message_reasoning WHERE message_id NOT IN (SELECT id FROM messages)");
+}
+
 /* ---------------------------- Image library ---------------------------- */
 
 export interface LibraryImage {
@@ -978,6 +1008,7 @@ export async function deleteChat(id: string): Promise<void> {
   await d.execute("DELETE FROM messages WHERE chat_id = $1", [id]);
   await d.execute("DELETE FROM chats WHERE id = $1", [id]);
   await pruneOrphanImages();
+  await pruneOrphanReasoning();
 }
 
 /* ------------------------------ Artifacts ------------------------------ */
@@ -1085,6 +1116,7 @@ export async function deleteAllChats(notebookId: string): Promise<number> {
   await d.execute("DELETE FROM messages WHERE notebook_id = $1", [notebookId]);
   const res = await d.execute("DELETE FROM chats WHERE notebook_id = $1", [notebookId]);
   await pruneOrphanImages();
+  await pruneOrphanReasoning();
   return res.rowsAffected;
 }
 

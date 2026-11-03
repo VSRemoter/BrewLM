@@ -41,6 +41,11 @@ interface StreamOptions {
   signal?: AbortSignal;
   /** Called once the stream ends with provider-reported token usage (if any). */
   onUsage?: (usage: StreamUsage) => void;
+  /**
+   * Called as the model's reasoning streams in, with all of it so far ("" =
+   * start over, after a retry). Reasoning is never part of the yielded text.
+   */
+  onReasoning?: (reasoning: string) => void;
 }
 
 /**
@@ -173,6 +178,111 @@ function ranOutThinking(model: string, room: number | undefined): Error {
   );
 }
 
+/** Longest tail of `text` that could be the start of `tag` (a tag cut at a chunk edge). */
+function partialTagLength(text: string, tag: string): number {
+  const lower = text.toLowerCase();
+  for (let k = Math.min(tag.length - 1, lower.length); k > 0; k--) {
+    if (lower.endsWith(tag.slice(0, k))) return k;
+  }
+  return 0;
+}
+
+/**
+ * Splits a streamed answer into reasoning and the answer proper, for models
+ * that write their reasoning inline as <think>…</think> (Qwen3, DeepSeek-R1
+ * and others, when the server doesn't separate it). Only a tag at the very
+ * start counts, so a reply that talks about the tag isn't swallowed. A tag cut
+ * at a chunk edge is held back until the next chunk shows what it is.
+ */
+export class ThinkSplitter {
+  private state: "start" | "inside" | "text" = "start";
+  private pending = "";
+  private close = "";
+  /** Just left a think block: drop the blank lines before the answer. */
+  private trimLead = false;
+
+  push(chunk: string): { text: string; reasoning: string } {
+    this.pending += chunk;
+    let reasoning = "";
+    for (;;) {
+      if (this.state === "start") {
+        const lead = this.pending.trimStart().toLowerCase();
+        if (!lead) return { text: "", reasoning };
+        const open = /^<(think|thinking)>/.exec(lead);
+        if (open) {
+          this.state = "inside";
+          this.close = `</${open[1]}>`;
+          this.pending = this.pending.trimStart().slice(open[0].length);
+          continue;
+        }
+        if ("<thinking>".startsWith(lead)) return { text: "", reasoning };
+        this.state = "text";
+        continue;
+      }
+      if (this.state === "inside") {
+        const end = this.pending.toLowerCase().indexOf(this.close);
+        if (end >= 0) {
+          reasoning += this.pending.slice(0, end);
+          this.pending = this.pending.slice(end + this.close.length);
+          this.state = "text";
+          this.trimLead = true;
+          continue;
+        }
+        const keep = partialTagLength(this.pending, this.close);
+        reasoning += this.pending.slice(0, this.pending.length - keep);
+        this.pending = this.pending.slice(this.pending.length - keep);
+        return { text: "", reasoning };
+      }
+      if (this.trimLead) {
+        this.pending = this.pending.trimStart();
+        if (!this.pending) return { text: "", reasoning };
+        this.trimLead = false;
+      }
+      const text = this.pending;
+      this.pending = "";
+      return { text, reasoning };
+    }
+  }
+
+  /** Whatever was held back, once the stream has ended. */
+  flush(): { text: string; reasoning: string } {
+    const rest = this.pending;
+    this.pending = "";
+    return this.state === "inside" ? { text: "", reasoning: rest } : { text: this.trimLead ? rest.trimStart() : rest, reasoning: "" };
+  }
+}
+
+/**
+ * Reasoning in one OpenAI-style delta or message: `reasoning_content`
+ * (llama.cpp, LM Studio, DeepSeek), `reasoning` (Ollama, OpenRouter), or
+ * OpenRouter's `reasoning_details` when that's all a chunk carries.
+ */
+function reasoningOf(part: unknown): string {
+  if (!part || typeof part !== "object") return "";
+  const p = part as Record<string, unknown>;
+  if (typeof p.reasoning_content === "string") return p.reasoning_content;
+  if (typeof p.reasoning === "string") return p.reasoning;
+  if (!Array.isArray(p.reasoning_details)) return "";
+  return p.reasoning_details
+    .map((d) => (d?.type === "reasoning.text" ? d.text : d?.type === "reasoning.summary" ? d.summary : ""))
+    .filter((s): s is string => typeof s === "string")
+    .join("");
+}
+
+/**
+ * The `thinking` field of an Anthropic request. Claude 4.6 to 4.8 only think
+ * when asked (an effort level is set); later models think by default, so
+ * asking changes nothing but `display`: from 4.7 on, thinking text comes back
+ * empty unless a summary is asked for. The raw chain of thought is never sent.
+ */
+function claudeThinking(model: string, limits: ModelLimits | null, effort: string | undefined): Record<string, unknown> {
+  if (!limits?.adaptiveThinking) return {};
+  const claude4 = /claude-(?:opus|sonnet|haiku)-4[-.](\d+)/i.exec(model);
+  if (claude4 && !effort) return {};
+  const summarized = !claude4 || Number(claude4[1]) >= 7;
+  return { thinking: summarized ? { type: "adaptive", display: "summarized" } : { type: "adaptive" } };
+}
+
 /** Non-streaming helper — returns the full completion text. */
 export async function complete(opts: StreamOptions): Promise<string> {
   let out = "";
@@ -294,6 +404,15 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     let servedBy: string | undefined;
     let wroteText = false;
     let finishReason: string | undefined;
+    // Reasoning arrives in its own field, or inline as <think>…</think>.
+    if (retriedThinking) opts.onReasoning?.("");
+    let reasoning = "";
+    const addReasoning = (r: string) => {
+      if (!r) return;
+      reasoning += r;
+      opts.onReasoning?.(reasoning);
+    };
+    const split = new ThinkSplitter();
 
     for await (const payload of sseLines(res.body)) {
       if (payload === "[DONE]") break;
@@ -302,19 +421,22 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
         if (opts.provider === "openrouter" && typeof json.provider === "string") servedBy = json.provider;
         const choice = json.choices?.[0];
         if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
+        addReasoning(reasoningOf(choice?.delta ?? choice?.message));
         const delta = choice?.delta?.content ?? choice?.message?.content;
-        if (typeof delta === "string") {
-          if (delta) {
-            wroteText = true;
-            yield delta;
-          }
-        } else if (Array.isArray(delta)) {
-          // some providers stream content as typed parts
+        // some providers stream content as typed parts
+        const texts = typeof delta === "string" ? [delta] : [];
+        if (Array.isArray(delta)) {
           for (const part of delta) {
-            if (part?.type === "text" && typeof part.text === "string") {
-              if (part.text) wroteText = true;
-              yield part.text;
-            } else pushImage(imagePartUrl(part));
+            if (part?.type === "text" && typeof part.text === "string") texts.push(part.text);
+            else pushImage(imagePartUrl(part));
+          }
+        }
+        for (const t of texts) {
+          const out = split.push(t);
+          addReasoning(out.reasoning);
+          if (out.text) {
+            wroteText = true;
+            yield out.text;
           }
         }
         const imgs = choice?.delta?.images ?? choice?.message?.images;
@@ -333,6 +455,12 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       } catch {
         // partial JSON chunk — ignore
       }
+    }
+    const tail = split.flush();
+    addReasoning(tail.reasoning);
+    if (tail.text) {
+      wroteText = true;
+      yield tail.text;
     }
     if (servedBy) noteServedBy(opts.model, servedBy);
     if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.({ ...usage, servedBy });
@@ -387,8 +515,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
     stream: true,
     ...(temperature != null ? { temperature } : {}),
     ...(effort ? { output_config: { effort } } : {}),
-    // Claude 4.6 to 4.8 only think when asked; later models think by default either way.
-    ...(effort && limits?.adaptiveThinking ? { thinking: { type: "adaptive" } } : {}),
+    ...claudeThinking(opts.model, limits, effort),
     // One ephemeral cache breakpoint at the end of the (large, stable)
     // system prompt: repeat turns re-read the sources at ~10% input cost.
     system: systemText
@@ -425,6 +552,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
     }
     if (!res.body) throw new Error("Empty response body");
 
+    if (retriedThinking) opts.onReasoning?.("");
     const { wroteText, stopReason } = yield* readAnthropicStream(res.body, opts);
     if (stopReason !== "max_tokens" || wroteText) return;
     const low = effortFor(opts, limits, "low");
@@ -445,12 +573,21 @@ async function* readAnthropicStream(
   const usage: StreamUsage = {};
   let wroteText = false;
   let stopReason: string | undefined;
+  let reasoning = "";
   for await (const payload of sseLines(stream)) {
     try {
       const json = JSON.parse(payload);
       if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
         if (json.delta.text) wroteText = true;
         yield json.delta.text as string;
+      } else if (json.type === "content_block_delta" && json.delta?.type === "thinking_delta") {
+        if (typeof json.delta.thinking === "string" && json.delta.thinking) {
+          reasoning += json.delta.thinking;
+          opts.onReasoning?.(reasoning);
+        }
+      } else if (json.type === "content_block_start" && json.content_block?.type === "thinking") {
+        // Interleaved thinking: several blocks in one reply, each its own paragraph.
+        if (reasoning && !reasoning.endsWith("\n\n")) reasoning += "\n\n";
       } else if (json.type === "message_start") {
         const u = json.message?.usage;
         if (u) {
@@ -526,8 +663,18 @@ async function apiError(res: Response): Promise<string> {
   return `API request failed (${res.status}): ${detail || res.statusText}`;
 }
 
+/**
+ * Drop inline reasoning from a finished response: a leading <think>…</think>
+ * block, or everything up to a stray </think> whose opening tag was part of
+ * the prompt template (some DeepSeek-R1 builds).
+ */
+export function stripThinking(text: string): string {
+  return text.replace(/^\s*(?:<(think|thinking)>[\s\S]*?<\/\1>|[\s\S]*?<\/think(?:ing)?>)\s*/i, "");
+}
+
 /** Extract the first complete JSON value from a model response. */
 export function extractJson(text: string): string {
+  text = stripThinking(text);
   // Strip markdown fences if present
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = fenced ? fenced[1] : text;

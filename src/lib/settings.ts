@@ -233,6 +233,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   keepRecordings: (s) => (s.keepRecordings ? "1" : "0"),
   smoothScroll: (s) => (s.smoothScroll ? "1" : "0"),
   showDetails: (s) => (s.showDetails ? "1" : "0"),
+  showReasoning: (s) => (s.showReasoning ? "1" : "0"),
 };
 
 export async function loadSettings(): Promise<Settings> {
@@ -246,7 +247,7 @@ export async function loadSettings(): Promise<Settings> {
     defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
-    keepRecordings, transcribeModels, customBg, customText,
+    keepRecordings, transcribeModels, customBg, customText, showReasoning,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -288,6 +289,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("transcribeModels"),
     getSetting("customBg"),
     getSetting("customText"),
+    getSetting("showReasoning"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -372,6 +374,8 @@ export async function loadSettings(): Promise<Settings> {
     updateCheckOnLaunch: updateCheckOnLaunch !== "0",
     smoothScroll: smoothScroll !== "0",
     showDetails: showDetails !== "0",
+    // Missing key → folded: reasoning is there on a click, out of the way otherwise.
+    showReasoning: showReasoning === "1",
     keepRecordings: keepRecordings !== "0",
   });
 }

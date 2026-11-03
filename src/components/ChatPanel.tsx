@@ -10,6 +10,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FilePlus2,
   FileText,
@@ -46,10 +47,12 @@ import {
   findFolderByName,
   getImage,
   listFolders,
+  listReasoning,
   moveNotebookToFolder,
   renameChat,
   setNotebookConstitutionOn,
   setNotebookGrounded,
+  setMessageReasoning,
   setNotebookStarred,
   setSetting,
   sourceText,
@@ -353,7 +356,7 @@ const COMMANDS: ChatCommand[] = [
   },
   {
     cmd: "/thinking",
-    usage: "/thinking [auto|low|medium|high]",
+    usage: "/thinking [auto|low|medium|high|show|hide]",
     desc: "Show how hard reasoning models think",
     icon: Brain,
     takesArgs: false,
@@ -367,6 +370,13 @@ const COMMANDS: ChatCommand[] = [
       high: "Think longest — best for hard questions, slower and costs more",
       auto: "Each model's own default",
     }[level],
+    icon: Brain,
+    takesArgs: false,
+  })),
+  ...(["show", "hide"] as const).map((mode) => ({
+    cmd: `/thinking ${mode}`,
+    usage: `/thinking ${mode}`,
+    desc: mode === "show" ? "Open each reply's reasoning by default" : "Keep each reply's reasoning folded",
     icon: Brain,
     takesArgs: false,
   })),
@@ -616,6 +626,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply and at the foot of each Studio output (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
 - \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
+- \`/thinking show\` / \`/thinking hide\` — opens or folds the **Reasoning** above each reply by default (click it to open one either way). Local reasoning models show their full reasoning, Claude and some OpenRouter models a summary; OpenAI's own API shares none. Reasoning stays on this computer: it isn't synced and isn't sent back to the model. Also in Settings → Appearance.
 - \`/provider\` — OpenRouter only: shows which providers may run your model and which one answered last. \`/provider cheapest\`, \`fastest\`, \`quickest\` or \`default\` sets the priority for every model; \`/provider private\` skips providers that may train on your prompts and \`/provider zdr\` keeps to zero-data-retention ones (each toggles); \`/provider block <provider>\` never uses one (\`/provider unblock\` undoes). \`/provider pin groq, deepinfra\` tries those first for the current model, \`/provider only groq\` allows nothing else for it, and \`/provider unpin\` clears that. \`/provider off\` goes back to OpenRouter's default for the current model. Also in Settings → AI Model → Provider routing; rules in your OpenRouter account apply too.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
 - \`/constitution [on|off]\` — turns this notebook's **constitution** on or off without deleting it. Off = chat replies ignore it until you turn it back on; your text stays in the Sources panel. No argument flips it. Only works once the notebook has a constitution.
@@ -952,6 +963,17 @@ export default function ChatPanel({
       return text === null ? rest : { ...rest, [id]: text };
     });
   };
+  /** Live reasoning per chat, beside `streams` ("" = none yet). */
+  const [thoughts, setThoughts] = useState<Record<string, string>>({});
+  const streamingReasoning = chatId ? (thoughts[chatId] ?? "") : "";
+  const setStreamingReasoning = (text: string) => {
+    if (!chatId) return;
+    const id = chatId;
+    setThoughts((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return text ? { ...rest, [id]: text } : rest;
+    });
+  };
   const anyStreaming = Object.keys(streams).length > 0;
   // The tab strip's busy dot; a closed tab stops counting.
   useEffect(() => setChatStreaming(notebookId, anyStreaming), [notebookId, anyStreaming]);
@@ -966,6 +988,11 @@ export default function ChatPanel({
   // Mirror of settings.showDetails so /details flips the usage lines instantly.
   const [showDetails, setShowDetails] = useState(settings.showDetails);
   useEffect(() => setShowDetails(settings.showDetails), [settings.showDetails]);
+  /** Reasoning saved with each reply of the open chat, by message id. */
+  const [reasoningByMsg, setReasoningByMsg] = useState<Record<string, string>>({});
+  // Mirror of settings.showReasoning so /thinking show|hide applies instantly.
+  const [showReasoning, setShowReasoning] = useState(settings.showReasoning);
+  useEffect(() => setShowReasoning(settings.showReasoning), [settings.showReasoning]);
   // Mirror of settings.thinking so /thinking and the footer chip update instantly.
   const [thinking, setThinking] = useState(settings.thinking);
   useEffect(() => setThinking(settings.thinking), [settings.thinking]);
@@ -1337,12 +1364,29 @@ export default function ChatPanel({
     setModels(next);
   };
 
-  /** /thinking [level] — show or set the Thinking effort (app-wide, no LLM). */
+  /** /thinking [level|show|hide] — show or set the Thinking effort, or how reasoning is shown (app-wide, no LLM). */
   const runThinkingCommand = async (text: string): Promise<void> => {
     const arg = text.replace(/^\/thinking\s*/i, "").trim().toLowerCase();
     const levels = Object.keys(THINKING_LABELS) as Thinking[];
+    if (arg === "show" || arg === "hide") {
+      const on = arg === "show";
+      await setSetting("showReasoning", on ? "1" : "0");
+      setShowReasoning(on);
+      onSettingsChanged();
+      const shared = {
+        local: "Local reasoning models (Qwen3, DeepSeek-R1, gpt-oss…) share their full reasoning.",
+        anthropic: "Claude shares a summary of its thinking, not the full reasoning.",
+        openrouter: "On OpenRouter, models that share their reasoning show it; some, like OpenAI's, send only a summary or nothing.",
+        openai: "OpenAI's API doesn't share its models' reasoning, so replies from it won't have any.",
+      }[settings.provider];
+      return say(
+        on
+          ? `Reasoning now opens above each reply. ${shared}`
+          : "Reasoning now stays folded above each reply; click **Reasoning** to open one."
+      );
+    }
     if (arg && !levels.includes(arg as Thinking))
-      return say(`\`${arg}\` isn't a thinking level. Use ${levels.map((l) => `\`/thinking ${l}\``).join(", ")}.`);
+      return say(`\`${arg}\` isn't a thinking level. Use ${levels.map((l) => `\`/thinking ${l}\``).join(", ")}, or \`/thinking show\` / \`/thinking hide\` for the reasoning above replies.`);
     const level = (arg || thinking) as Thinking;
     if (arg) {
       await setSetting("thinking", level);
@@ -1357,7 +1401,7 @@ export default function ChatPanel({
     }[level];
     const head = arg
       ? `Thinking effort set to **${THINKING_LABELS[level]}**: ${what}.`
-      : `Thinking effort: **${THINKING_LABELS[level]}** (${what}). Change it with ${levels.filter((l) => l !== level).map((l) => `\`/thinking ${l}\``).join(", ")}.`;
+      : `Thinking effort: **${THINKING_LABELS[level]}** (${what}). Change it with ${levels.filter((l) => l !== level).map((l) => `\`/thinking ${l}\``).join(", ")}. Reasoning above replies is ${showReasoning ? "open (`/thinking hide` folds it)" : "folded (`/thinking show` opens it)"}.`;
     if (level === "auto") return say(head);
     const takes = await takesThinking(settings.provider, keyed, model);
     await say(
@@ -1742,10 +1786,12 @@ export default function ChatPanel({
     if (!chatId) {
       setMsgs([]);
       setUsageByMsg({});
+      setReasoningByMsg({});
       return;
     }
     let cancelled = false;
     setUsageByMsg({});
+    setReasoningByMsg({});
     import("../lib/db").then(({ listMessages }) =>
       // setMsgs matters, not setMessages: messagesRef must follow the switch,
       // or the next send resurrects the previous chat's history.
@@ -1753,6 +1799,9 @@ export default function ChatPanel({
         if (!cancelled) setMsgs(ms);
       })
     );
+    listReasoning(chatId).then((r) => {
+      if (!cancelled) setReasoningByMsg(r);
+    });
     return () => {
       cancelled = true;
     };
@@ -2558,7 +2607,15 @@ export default function ChatPanel({
     ];
 
     let acc = "";
+    let thought = "";
     let usage: StreamUsage | null = null;
+    /** Keep the reply's reasoning beside it (never in the message, so it isn't sent back). */
+    const keepReasoning = async (messageId: string) => {
+      if (!thought.trim()) return;
+      const text = thought.trim();
+      await setMessageReasoning(messageId, text);
+      setReasoningByMsg((prev) => ({ ...prev, [messageId]: text }));
+    };
     try {
       for await (const delta of streamChat({
         provider: settings.provider,
@@ -2573,6 +2630,10 @@ export default function ChatPanel({
           usage = u;
           void recordUsage("chat", settings.provider, settings.model, u);
         },
+        onReasoning: (r) => {
+          thought = r;
+          setStreamingReasoning(r);
+        },
       })) {
         acc += delta;
         setStreaming(acc);
@@ -2584,6 +2645,7 @@ export default function ChatPanel({
         ? await storeGeneratedImages(acc, { notebookId, chatId, prompt: text, model: settings.model })
         : acc;
       const assistantMsg = await addMessage(chatId, notebookId, "assistant", savedText || "(no response)");
+      await keepReasoning(assistantMsg.id);
       streamedIdsRef.current.add(assistantMsg.id);
       if (usage) {
         const u: StreamUsage = usage;
@@ -2599,6 +2661,7 @@ export default function ChatPanel({
         setError(e instanceof Error ? e.message : String(e));
         if (acc) {
           const assistantMsg = await addMessage(chatId, notebookId, "assistant", acc);
+          await keepReasoning(assistantMsg.id);
           streamedIdsRef.current.add(assistantMsg.id);
           setMsgs((prev) => [...prev, assistantMsg]);
         }
@@ -2608,6 +2671,7 @@ export default function ChatPanel({
       abortRef.current.delete(chatId);
       streamingRef.current.delete(chatId);
       setStreaming(null);
+      setStreamingReasoning("");
       textareaRef.current?.focus();
     }
     onChatActivity?.(chatId, isFirst ? (isSummarize ? "Notebook summary" : text) : undefined);
@@ -2877,6 +2941,8 @@ export default function ChatPanel({
                 content={m.content}
                 items={catalog}
                 usage={showDetails ? usageByMsg[m.id] : undefined}
+                reasoning={reasoningByMsg[m.id]}
+                reasoningOpen={showReasoning}
                 onImageAction={streaming === null ? onImageAction : undefined}
                 savedToSources={savedTexts.has(m.content)}
                 onSaveToSources={
@@ -2888,7 +2954,10 @@ export default function ChatPanel({
             ))}
             {streaming !== null && (
               <div className="anim-fade-up mb-5 w-full min-w-0 text-[13.5px] leading-relaxed">
-                {streaming ? <StreamingReply text={streaming} /> : <BrewingStatus />}
+                {streamingReasoning && (
+                  <Reasoning text={streamingReasoning} live={!streaming} defaultOpen={showReasoning} />
+                )}
+                {streaming ? <StreamingReply text={streaming} /> : !streamingReasoning && <BrewingStatus />}
               </div>
             )}
           </div>
@@ -3545,6 +3614,50 @@ function StreamingReply({ text }: { text: string }) {
   return <div ref={ref} className="md" />;
 }
 
+/**
+ * A reply's reasoning, folded above it. Live while the model is still
+ * thinking: the header is the brewing animation and the open view follows
+ * the newest lines.
+ */
+function Reasoning({ text, live = false, defaultOpen }: { text: string; live?: boolean; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  // /thinking show|hide applies to replies already on screen too.
+  useEffect(() => setOpen(defaultOpen), [defaultOpen]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (live && el) el.scrollTop = el.scrollHeight;
+  }, [text, live, open]);
+  return (
+    <div className="mb-2">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={open ? "Hide reasoning" : "Show reasoning"}
+        className="-ml-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-[11.5px] font-medium text-ink-3 transition-colors hover:text-ink-2"
+      >
+        {live ? (
+          <BrewingStatus />
+        ) : (
+          <>
+            <Brain size={11} strokeWidth={1.8} />
+            Reasoning
+          </>
+        )}
+        <ChevronRight size={11} strokeWidth={2} className={`transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div
+          ref={bodyRef}
+          className="mt-1 max-h-72 overflow-y-auto whitespace-pre-wrap break-words border-l-2 border-edge pl-3 text-[12px] leading-relaxed text-ink-3"
+        >
+          {text.trim()}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Source title for a saved reply: its first heading or line, markdown stripped. */
 function replySourceTitle(content: string): string {
   const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -3566,6 +3679,8 @@ function Bubble({
   content,
   items,
   usage,
+  reasoning,
+  reasoningOpen = false,
   onImageAction,
   savedToSources,
   onSaveToSources,
@@ -3576,6 +3691,10 @@ function Bubble({
   content: string;
   items: MentionItem[];
   usage?: ReplyUsage;
+  /** The model's reasoning for this reply, shown folded above it. */
+  reasoning?: string;
+  /** Start the reasoning open (/thinking show). */
+  reasoningOpen?: boolean;
   /** Edit / Remix / More like this on a library picture (absent while busy). */
   onImageAction?: (action: string, id: string, alt: string) => void;
   /** This reply's text is already a source in the notebook. */
@@ -3639,6 +3758,7 @@ function Bubble({
       {/* Replies sit on the page, no bubble, always the full column width
           (wide tables and code scroll sideways inside it). */}
       <div className="w-full min-w-0 text-[13.5px] leading-relaxed">
+        {reasoning && <Reasoning text={reasoning} defaultOpen={reasoningOpen} />}
         <div
           className={`md${onImageAction ? "" : " img-actions-off"}`}
           dangerouslySetInnerHTML={{ __html: html }}
