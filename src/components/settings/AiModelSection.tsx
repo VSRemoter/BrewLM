@@ -5,7 +5,6 @@ import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../
 import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
 import {
   DEFAULT_IMAGE_MODEL,
-  defaultModelFor,
   LOCAL_CONTEXT_OPTIONS,
   LOCAL_PRESETS,
   MAX_OUTPUT_OPTIONS,
@@ -320,9 +319,9 @@ export default function AiModelSection({
     const next = modelList.filter((x) => x !== m);
     setModelList(next);
     saveModelList(provider, next);
-    // If the removed chip was the active model, fall back sensibly.
+    // If the removed chip was the active model, fall back to the next saved one.
     if (settings.model === m) {
-      patch({ model: next[0] ?? defaultModelFor(provider) });
+      patch({ model: next[0] ?? "" });
     }
   };
 
@@ -404,12 +403,12 @@ export default function AiModelSection({
                 <button
                   key={p}
                   onClick={() =>
-                    // Reset to the provider default — model ids are
-                    // provider-namespaced, so another provider's id is invalid.
+                    // Model ids are provider-namespaced, so another provider's
+                    // id is invalid: start empty and let the user pick.
                     patch(
                       p === "local"
                         ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
-                        : { provider: p, model: defaultModelFor(p) }
+                        : { provider: p, model: "" }
                     )
                   }
                   className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${

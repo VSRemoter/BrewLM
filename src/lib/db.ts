@@ -1131,6 +1131,13 @@ export async function deleteArtifacts(notebookId: string, kind?: ArtifactKind): 
 
 /* ------------------------------- Settings ------------------------------ */
 
+/** Whether a setting was ever saved: getSetting reads a missing one as "". */
+export async function hasSetting(key: string): Promise<boolean> {
+  const d = await getDb();
+  const rows = await d.select<{ one: number }[]>("SELECT 1 AS one FROM settings WHERE key = $1", [key]);
+  return rows.length > 0;
+}
+
 export async function getSetting(key: string): Promise<string> {
   const d = await getDb();
   const rows = await d.select<{ value: string }[]>(

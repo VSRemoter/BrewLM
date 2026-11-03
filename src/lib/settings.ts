@@ -1,5 +1,5 @@
 import { platform } from "../platform";
-import { getSetting, setSetting } from "./db";
+import { getSetting, hasSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
 import { isEmbeddingModel, listLocalModels } from "./local";
@@ -300,8 +300,10 @@ export async function loadSettings(): Promise<Settings> {
       openaiKey
       ? "openai"
       : DEFAULT_TTS.ttsProvider;
-  // Repair paths if a broken build persisted shifted values (model ← key, theme ← model).
-  const safeModel = model && !model.startsWith("sk-") ? model : DEFAULT_MODELS[provider];
+  // A fresh install starts on the provider's default model; one the user left
+  // empty (after switching providers) stays empty until they pick one. Also
+  // repairs a key a broken build once saved as the model.
+  const safeModel = model.startsWith("sk-") || (!model && !(await hasSetting("model"))) ? DEFAULT_MODELS[provider] : model;
   const themeIds = new Set(THEMES.map((t) => t.id));
   const themeId = RETIRED_THEMES[theme] ?? theme;
   const safeTheme = themeId && themeIds.has(themeId) ? themeId : DEFAULT_THEME;

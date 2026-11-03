@@ -3521,7 +3521,7 @@ export default function ChatPanel({
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
-            {model} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
+            {model || "no model picked"} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
             {thinking !== "auto" && settings.provider !== "local" && (
               <>
                 {" · "}

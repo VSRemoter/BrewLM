@@ -250,6 +250,14 @@ describe("Claude thinking", () => {
   });
 });
 
+describe("No model picked", () => {
+  it("asks for one instead of sending an empty model id", async () => {
+    await expect(ask({ model: "" })).rejects.toThrow("Pick a model in Settings → AI Model");
+    await expect(ask({ provider: "anthropic", model: "  " })).rejects.toThrow("Pick a model");
+    expect(sent).toHaveLength(0);
+  });
+});
+
 describe("Reasoning", () => {
   /** Every onReasoning call, in order. */
   const watch = () => {

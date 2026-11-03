@@ -110,6 +110,8 @@ export function isAbortError(e: unknown): boolean {
  * Local servers go through the Rust backend instead (no CORS setup needed).
  */
 export async function* streamChat(opts: StreamOptions): AsyncGenerator<string> {
+  if (opts.provider !== "local" && !opts.model.trim())
+    throw new Error("Pick a model in Settings → AI Model, or type one with /model.");
   if (opts.provider === "anthropic") {
     yield* streamAnthropic(opts);
   } else {
