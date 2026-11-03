@@ -371,7 +371,10 @@ textarea {
 }
 .md h1,
 .md h2,
-.md h3 {
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
   font-weight: 600;
   margin: 1em 0 0.5em;
 }
@@ -383,6 +386,18 @@ textarea {
 }
 .md h3 {
   font-size: 1em;
+}
+/* Below ###, steps get smaller and quieter (local models reach for ####). */
+.md h4 {
+  font-size: 0.97em;
+}
+.md h5 {
+  font-size: 0.93em;
+  color: var(--color-ink-2);
+}
+.md h6 {
+  font-size: 0.9em;
+  color: var(--color-ink-2);
 }
 .md ul,
 .md ol {

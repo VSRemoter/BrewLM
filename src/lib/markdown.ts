@@ -193,7 +193,7 @@ export function renderMarkdown(src: string): string {
         html += "</tbody></table></div>";
         continue;
       }
-      const h = t.match(/^(#{1,3})\s+(.*)$/);
+      const h = t.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?$/);
       if (h) {
         flushPara();
         flushList();
