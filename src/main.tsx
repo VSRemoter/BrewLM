@@ -24,10 +24,23 @@ function showFatal(detail: string) {
   document.body.appendChild(el);
 }
 
+/**
+ * Tauri's HTTP plugin frees a response body twice when a stream is cancelled
+ * after the server already closed it (every SSE reply ends with `[DONE]`, then
+ * a cancel): the second free rejects inside the plugin (`void dropBody()`),
+ * where no caller can catch it. The body is gone either way, so it's harmless.
+ */
+const isFreedResource = (reason: unknown) =>
+  /^The resource id \d+ is invalid\.?$/.test(reason instanceof Error ? reason.message : String(reason));
+
 window.addEventListener("error", (e) => showFatal(e.message || "Unknown script error"));
-window.addEventListener("unhandledrejection", (e) =>
-  showFatal(e.reason instanceof Error ? e.reason.message : String(e.reason))
-);
+window.addEventListener("unhandledrejection", (e) => {
+  if (isFreedResource(e.reason)) {
+    e.preventDefault();
+    return;
+  }
+  showFatal(e.reason instanceof Error ? e.reason.message : String(e.reason));
+});
 
 /* ------------------------- App zoom (⌘+ / ⌘- / ⌘0) ------------------------ */
 // Shared store in lib/zoom.ts — Settings → Appearance → Text size drives the
