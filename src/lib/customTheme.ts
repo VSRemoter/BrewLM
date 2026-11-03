@@ -1,10 +1,11 @@
 import { contrast, hexToRgb, isDark, mix, normalizeHex, readable, rgbToHsv } from "./color";
 
 /**
- * The Custom theme: the user picks a background and a text color (any of the
- * 16.7M each) and every other token is derived from that pair — surfaces and
- * borders are blends of the two, labels fade the text toward the background,
- * and anything that would drop below a readable contrast gets nudged until it
+ * The Custom theme: the user picks a background, a text and optionally an
+ * accent color (any of the 16.7M each) and every other token is derived from
+ * them — surfaces and borders are blends of background and text, labels fade
+ * the text toward the background, buttons and links take the accent, and
+ * anything that would drop below a readable contrast gets nudged until it
  * passes. Works for dark and light backgrounds alike.
  */
 
@@ -14,26 +15,29 @@ export const DEFAULT_CUSTOM_TEXT = "#ff6b8f";
 export interface CustomColors {
   bg: string;
   text: string;
+  /** Buttons, links and highlights; empty or missing = the text color. */
+  accent?: string;
 }
 
 const rgbTriplet = (hex: string) => hexToRgb(hex).join(" ");
 
-/** Every Custom token for a pair (keys are CSS custom properties). */
-export function customPalette({ bg, text }: CustomColors): Record<string, string> {
+/** Every Custom token for the picks (keys are CSS custom properties). */
+export function customPalette({ bg, text, accent: accentPick }: CustomColors): Record<string, string> {
+  const pop = accentPick || text;
   const dark = isDark(bg);
   const panel = dark ? mix(bg, text, 0.04) : mix(bg, "#ffffff", 0.7);
   const tone = (t: number) => mix(panel, text, t);
   const hover = tone(dark ? 0.1 : 0.07);
   // Hover rows are the lowest-contrast place text sits, so check against them.
   const ink = readable(text, hover, 4.5);
-  const accent = readable(text, panel, 3);
+  const accent = readable(pop, panel, 3);
   // Button text: the background color when it reads well, else black or white.
   const accentInk =
     contrast(bg, accent) >= 4.5 ? bg : contrast("#000000", accent) >= contrast("#ffffff", accent) ? "#000000" : "#ffffff";
-  const [hue, sat] = rgbToHsv(hexToRgb(text));
-  // Colorful text → links in a brighter take on it; grey/white/black text → classic blue.
+  const [hue, sat] = rgbToHsv(hexToRgb(pop));
+  // Colorful accent → links in a brighter take on it; grey/white/black → classic blue.
   const link = readable(
-    sat >= 0.25 ? mix(text, dark ? "#ffffff" : "#000000", 0.15) : dark ? "#60a5fa" : "#2563eb",
+    sat >= 0.25 ? mix(pop, dark ? "#ffffff" : "#000000", 0.15) : dark ? "#60a5fa" : "#2563eb",
     hover,
     4.5
   );
@@ -82,7 +86,7 @@ export function customPalette({ bg, text }: CustomColors): Record<string, string
           "--color-warn-bg": "#fffbeb",
           "--color-warn-edge": "#fcd34d",
         }),
-    "--custom-glow": rgbTriplet(mix(bg, text, 0.3)),
+    "--custom-glow": rgbTriplet(mix(bg, pop, 0.3)),
     "--custom-dot": rgbTriplet(accent),
   };
 }
@@ -93,7 +97,7 @@ export function customSwatch(colors: CustomColors) {
   return { canvas: p["--color-canvas"], panel: p["--color-panel"], accent: p["--color-accent"], ink: p["--color-ink"] };
 }
 
-let current: CustomColors = { bg: DEFAULT_CUSTOM_BG, text: DEFAULT_CUSTOM_TEXT };
+let current: CustomColors = { bg: DEFAULT_CUSTOM_BG, text: DEFAULT_CUSTOM_TEXT, accent: "" };
 
 export function currentCustomColors(): CustomColors {
   return current;
@@ -104,6 +108,7 @@ export function applyCustomColors(colors: CustomColors): void {
   current = {
     bg: normalizeHex(colors.bg) ?? DEFAULT_CUSTOM_BG,
     text: normalizeHex(colors.text) ?? DEFAULT_CUSTOM_TEXT,
+    accent: normalizeHex(colors.accent ?? "") ?? "",
   };
   let style = document.getElementById("custom-theme") as HTMLStyleElement | null;
   if (!style) {

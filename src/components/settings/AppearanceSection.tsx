@@ -9,6 +9,8 @@ import type { Settings } from "../../lib/types";
 import ColorWheel from "./ColorWheel";
 import { Card, Row, SectionTitle, Slider, Toggle } from "./controls";
 
+const CUSTOM_LABELS: Record<keyof CustomColors, string> = { bg: "Background", text: "Text", accent: "Accent" };
+
 export default function AppearanceSection({
   settings,
   patch,
@@ -24,16 +26,22 @@ export default function AppearanceSection({
   };
 
   // Custom theme: live while dragging the wheel, saved once a pick settles.
-  const [custom, setCustom] = useState<CustomColors>({ bg: settings.customBg, text: settings.customText });
+  const [custom, setCustom] = useState<Required<CustomColors>>({
+    bg: settings.customBg,
+    text: settings.customText,
+    accent: settings.customAccent,
+  });
   const [editing, setEditing] = useState<keyof CustomColors>("bg");
-  const previewCustom = (next: CustomColors) => {
+  const previewCustom = (next: Required<CustomColors>) => {
     setCustom(next);
     applyCustomColors(next);
   };
-  const saveCustom = (next: CustomColors) => {
+  const saveCustom = (next: Required<CustomColors>) => {
     previewCustom(next);
-    patch({ customBg: next.bg, customText: next.text });
+    patch({ customBg: next.bg, customText: next.text, customAccent: next.accent });
   };
+  // An unset accent follows the text, so the wheel starts from the text color.
+  const shown = (k: keyof CustomColors) => custom[k] || custom.text;
 
   const pickFont = (id: string) => {
     patch({ font: id });
@@ -166,7 +174,7 @@ export default function AppearanceSection({
           <SectionTitle title="Custom colors" />
           <div className="mb-6 rounded-2xl border border-edge bg-panel p-4">
             <div className="mb-4 flex flex-wrap items-center gap-2">
-              {(["bg", "text"] as const).map((k) => (
+              {(["bg", "text", "accent"] as const).map((k) => (
                 <button
                   key={k}
                   onClick={() => setEditing(k)}
@@ -175,13 +183,15 @@ export default function AppearanceSection({
                     editing === k ? "border-accent bg-hover font-semibold" : "border-edge hover:border-ink-3"
                   }`}
                 >
-                  <span className="h-4 w-4 rounded border border-edge" style={{ background: custom[k] }} />
-                  {k === "bg" ? "Background" : "Text"}
-                  <span className="font-mono uppercase text-ink-3">{custom[k]}</span>
+                  <span className="h-4 w-4 rounded border border-edge" style={{ background: shown(k) }} />
+                  {CUSTOM_LABELS[k]}
+                  <span className={`text-ink-3 ${custom[k] ? "font-mono uppercase" : ""}`}>
+                    {custom[k] || "Same as text"}
+                  </span>
                 </button>
               ))}
               <button
-                onClick={() => saveCustom({ bg: custom.text, text: custom.bg })}
+                onClick={() => saveCustom({ ...custom, bg: custom.text, text: custom.bg })}
                 title="Swap background and text"
                 aria-label="Swap background and text"
                 className="flex items-center self-stretch rounded-lg border border-edge px-2.5 hover:border-ink-3"
@@ -191,10 +201,18 @@ export default function AppearanceSection({
             </div>
             <ColorWheel
               key={editing}
-              value={custom[editing]}
+              value={shown(editing)}
               onChange={(hex) => previewCustom({ ...custom, [editing]: hex })}
               onCommit={(hex) => saveCustom({ ...custom, [editing]: hex })}
             />
+            {editing === "accent" && custom.accent && (
+              <button
+                onClick={() => saveCustom({ ...custom, accent: "" })}
+                className="mt-3 text-[12px] text-link hover:underline"
+              >
+                Same as text
+              </button>
+            )}
           </div>
         </>
       )}

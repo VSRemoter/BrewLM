@@ -34,6 +34,27 @@ describe("customPalette", () => {
     expect(p["--color-accent"]).toBe("#22e05c");
   });
 
+  it.each(PAIRS)("keeps buttons and links readable with a separate accent on %s", (bg, text) => {
+    for (const accent of ["#ff8a1f", "#000000", "#ffffff", bg]) {
+      const p = customPalette({ bg, text, accent });
+      expect(contrast(p["--color-accent"], p["--color-panel"])).toBeGreaterThanOrEqual(3);
+      expect(contrast(p["--color-accent-ink"], p["--color-accent"])).toBeGreaterThanOrEqual(3);
+      expect(contrast(p["--color-link"], p["--color-hover"])).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("uses the accent for buttons and keeps the text as picked", () => {
+    const p = customPalette({ bg: "#000000", text: "#e8e8e8", accent: "#ff8a1f" });
+    expect(p["--color-ink"]).toBe("#e8e8e8");
+    expect(p["--color-accent"]).toBe("#ff8a1f");
+  });
+
+  it("treats an empty accent as the text color", () => {
+    const pair = { bg: DEFAULT_CUSTOM_BG, text: DEFAULT_CUSTOM_TEXT };
+    expect(customPalette({ ...pair, accent: "" })).toEqual(customPalette(pair));
+    expect(customPalette({ ...pair, accent: DEFAULT_CUSTOM_TEXT })).toEqual(customPalette(pair));
+  });
+
   it("follows the background for light or dark mode", () => {
     expect(customPalette({ bg: "#000000", text: "#ffffff" })["color-scheme"]).toBe("dark");
     expect(customPalette({ bg: "#ffffff", text: "#000000" })["color-scheme"]).toBe("light");

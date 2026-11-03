@@ -150,6 +150,8 @@ export interface Settings {
   /** The Custom theme's background and text picks, "#rrggbb" each. */
   customBg: string;
   customText: string;
+  /** The Custom theme's accent, "#rrggbb"; "" = the same as the text. */
+  customAccent: string;
   /** Text-to-speech for studio audio. Independent of the chat provider. */
   ttsProvider: TtsProvider;
   /** Dedicated TTS key for OpenAI; falls back to openaiKey when empty. */

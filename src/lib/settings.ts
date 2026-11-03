@@ -205,6 +205,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   font: (s) => s.font,
   customBg: (s) => s.customBg,
   customText: (s) => s.customText,
+  customAccent: (s) => s.customAccent,
   ttsProvider: (s) => s.ttsProvider,
   openaiTtsKey: (s) => s.openaiTtsKey,
   openrouterTtsKey: (s) => s.openrouterTtsKey,
@@ -247,7 +248,7 @@ export async function loadSettings(): Promise<Settings> {
     defReportType, trashRetentionDays, updateCheckOnLaunch, imageModel, smoothScroll, showDetails,
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
-    keepRecordings, transcribeModels, customBg, customText, showReasoning,
+    keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -289,6 +290,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("transcribeModels"),
     getSetting("customBg"),
     getSetting("customText"),
+    getSetting("customAccent"),
     getSetting("showReasoning"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
@@ -348,6 +350,7 @@ export async function loadSettings(): Promise<Settings> {
     font: safeFont,
     customBg: normalizeHex(customBg) ?? DEFAULT_CUSTOM_BG,
     customText: normalizeHex(customText) ?? DEFAULT_CUSTOM_TEXT,
+    customAccent: normalizeHex(customAccent) ?? "",
     ttsProvider: ttsProv,
     openaiTtsKey: openaiTtsKey || DEFAULT_TTS.openaiTtsKey,
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,

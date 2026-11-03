@@ -130,7 +130,7 @@ export default function App() {
         if (c.tables.has("notebooks") || c.tables.has("folders")) void refresh();
         if (c.tables.has("settings"))
           void loadSettings().then((s) => {
-            applyCustomColors({ bg: s.customBg, text: s.customText });
+            applyCustomColors({ bg: s.customBg, text: s.customText, accent: s.customAccent });
             applyTheme(s.theme);
             applyFont(s.font);
             setSettings(s);
@@ -160,7 +160,7 @@ export default function App() {
         bootStep("Emptying old trash");
         const purged = await purgeExpiredTrash(s.trashRetentionDays);
         if (purged > 0) console.info(`trash: auto-emptied ${purged} notebook(s)`);
-        applyCustomColors({ bg: s.customBg, text: s.customText });
+        applyCustomColors({ bg: s.customBg, text: s.customText, accent: s.customAccent });
         applyTheme(s.theme);
         applyFont(s.font);
         setSettings(s);
