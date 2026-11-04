@@ -12,6 +12,7 @@
  *   GET    /v1/billing/done          "return to BrewLM" page
  *   POST   /v1/webhooks/polar        subscription updates from Polar
  *   POST   /v1/fetch                 { url, method?, headers?, body? } → the page   (fetch.ts; web app)
+ *   /v1/shares…                      shared notebook links (shares.ts)
  *
  * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
@@ -41,6 +42,7 @@
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
 import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
+import { sharedBytes, shareRoutes } from "./shares";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
 export { Vault };
@@ -102,7 +104,8 @@ async function vaultCaller(req: Request, env: Env, vault: string): Promise<Calle
   if (user.id !== vault) return fail(403, "not your vault");
   if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
   const ent = await entitlement(env, user);
-  return { canWrite: ent.canSync, limitBytes: ent.limitBytes };
+  // Shared links use the same storage as the library.
+  return { canWrite: ent.canSync, limitBytes: Math.max(0, ent.limitBytes - (await sharedBytes(env, user.id))) };
 }
 
 /** The web app's page fetches count against an account with an active trial or plan. */
@@ -159,7 +162,8 @@ async function accountRoutes(req: Request, env: Env, path: string): Promise<Resp
 async function me(env: Env, user: User): Promise<Response> {
   const ent = await entitlement(env, user);
   const usage = await env.VAULT.get(env.VAULT.idFromName(user.id)).usage();
-  return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total });
+  const shared = await sharedBytes(env, user.id);
+  return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total + shared, sharedBytes: shared });
 }
 
 /** The request's origin if CORS_ORIGINS allows it. */
@@ -178,7 +182,7 @@ export default {
         status: 204,
         headers: {
           "access-control-allow-origin": origin,
-          "access-control-allow-methods": "GET, POST, PUT, DELETE",
+          "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE",
           "access-control-allow-headers": "authorization, content-type",
           "access-control-max-age": "86400",
           vary: "Origin",
@@ -189,7 +193,7 @@ export default {
     if (!origin) return res;
     const out = new Response(res.body, res);
     out.headers.set("access-control-allow-origin", origin);
-    out.headers.set("access-control-expose-headers", "x-final-url, x-brewlm-fetch");
+    out.headers.set("access-control-expose-headers", "x-final-url, x-brewlm-fetch, x-share-version");
     out.headers.append("vary", "Origin");
     return out;
   },
@@ -199,6 +203,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const account = await accountRoutes(req, env, url.pathname);
   if (account) return account;
+  const shared = await shareRoutes(req, env, url.pathname);
+  if (shared) return shared;
   if (url.pathname === "/v1/fetch") {
     if (req.method !== "POST") return fetchFail(405, "method not allowed");
     const who = await fetchCaller(req, env);
