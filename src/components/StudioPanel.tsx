@@ -191,6 +191,8 @@ const StudioPanel = forwardRef<
   const [reviseAudio, setReviseAudio] = useState(false);
   /** Which modal action is busy (disables both buttons; shows the spinner). */
   const [reviseBusy, setReviseBusy] = useState<"new" | "replace" | null>(null);
+  /** Aborts the running revision (the modal's Cancel button). */
+  const reviseCtrlRef = useRef<AbortController | null>(null);
   // A job ending (saved, failed or cancelled) refreshes the lists — also when
   // it was started before the user left this notebook and came back.
   const jobIdsRef = useRef<string[]>([]);
@@ -226,11 +228,11 @@ const StudioPanel = forwardRef<
   const groundedSystem = async (
     scoped: Source[],
     query: string,
-    opts: { exhaustive?: boolean; onPhase?: (phase: string) => void } = {}
+    opts: { exhaustive?: boolean; onPhase?: (phase: string) => void; signal?: AbortSignal } = {}
   ): Promise<string> => {
     await ensureIndexed(scoped, settings);
     if (opts.exhaustive && sourceChars(scoped) > MAP_REDUCE_THRESHOLD) {
-      const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase);
+      const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase, opts.signal);
       return condensedSystemPrompt(notes);
     }
     const budget = contextBudget(settings);
@@ -296,7 +298,7 @@ const StudioPanel = forwardRef<
       const raw = await complete({
         ...llmRequest(job.signal, meter),
         messages: [
-          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true, onPhase: job.setPhase }) },
+          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true, onPhase: job.setPhase, signal: job.signal }) },
           { role: "user", content: prompt },
         ],
       });
@@ -373,7 +375,7 @@ const StudioPanel = forwardRef<
       const scoped = scopedSources(sourceIds);
       // Bigger than a context window: groundedSystem runs the cached
       // whole-notebook condensation so the report covers EVERY source.
-      const system = await groundedSystem(scoped, prompt, { exhaustive: true, onPhase: job.setPhase });
+      const system = await groundedSystem(scoped, prompt, { exhaustive: true, onPhase: job.setPhase, signal: job.signal });
       job.setPhase(`Writing ${label.toLowerCase()}…`);
       const raw = await complete({
         ...llmRequest(job.signal, meter),
@@ -440,6 +442,7 @@ const StudioPanel = forwardRef<
       const system = await groundedSystem(scopedSources(opts.sourceIds), opts.topic || prompt, {
         exhaustive: true,
         onPhase: job.setPhase,
+        signal: job.signal,
       });
       job.setPhase("Planning the storyboard…");
       const storyboard = (
@@ -540,7 +543,7 @@ const StudioPanel = forwardRef<
           complete({
             ...llmRequest(job.signal, meter),
             messages: [
-              { role: "system", content: await groundedSystem(scoped, focus, { exhaustive: true, onPhase: job.setPhase }) },
+              { role: "system", content: await groundedSystem(scoped, focus, { exhaustive: true, onPhase: job.setPhase, signal: job.signal }) },
               { role: "user", content: prompt },
             ],
           }),
@@ -703,7 +706,9 @@ const StudioPanel = forwardRef<
     reAudio: boolean
   ) => {
     setReviseBusy(replace ? "replace" : "new");
+    setError(null);
     const ctrl = new AbortController();
+    reviseCtrlRef.current = ctrl;
     const meter = newUsageMeter();
     try {
       const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`;
@@ -743,6 +748,7 @@ const StudioPanel = forwardRef<
             audio = result.audio;
             ttsNote = result.note;
           } catch (e) {
+            if (isAbortError(e) || ctrl.signal.aborted) throw e;
             ttsNote = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
           }
         } else {
@@ -775,6 +781,7 @@ const StudioPanel = forwardRef<
       }
 
       const title = replace ? a.title : `${a.title} (revised)`;
+      throwIfCancelled(ctrl.signal);
       if (replace) {
         await updateArtifact(a.id, data, addOutputUsage(parseOutputUsage(a.usage), meterTotal(meter)));
       } else {
@@ -784,8 +791,11 @@ const StudioPanel = forwardRef<
       setRevising(null);
       setReviseNote("");
     } catch (e) {
-      setError(`Revision failed: ${e instanceof Error ? e.message : String(e)}`);
+      // Cancelled: quiet, and the modal stays open with the instruction kept.
+      if (!isAbortError(e) && !ctrl.signal.aborted)
+        setError(`Revision failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      if (reviseCtrlRef.current === ctrl) reviseCtrlRef.current = null;
       setReviseBusy(null);
     }
   };
@@ -1256,6 +1266,7 @@ const StudioPanel = forwardRef<
           reAudio={reviseAudio}
           onReAudioChange={setReviseAudio}
           busy={reviseBusy}
+          onCancel={() => reviseCtrlRef.current?.abort()}
           onClose={() => {
             if (reviseBusy !== null) return;
             void settleRename(revising, reviseTitle);
@@ -1408,6 +1419,7 @@ function ReviseModal({
   reAudio,
   onReAudioChange,
   busy,
+  onCancel,
   onClose,
   onRun,
 }: {
@@ -1419,6 +1431,8 @@ function ReviseModal({
   reAudio: boolean;
   onReAudioChange: (v: boolean) => void;
   busy: "new" | "replace" | null;
+  /** Stops the running revision; nothing is saved. */
+  onCancel: () => void;
   onClose: () => void;
   onRun: (replace: boolean) => void;
 }) {
@@ -1475,6 +1489,14 @@ function ReviseModal({
           </label>
         )}
         <div className="flex items-center justify-end gap-2">
+          {busy !== null && (
+            <button
+              onClick={onCancel}
+              className="mr-auto text-[12px] text-ink-3 hover:text-ink"
+            >
+              Cancel
+            </button>
+          )}
           <GhostButton
             onClick={() => onRun(false)}
             disabled={busy !== null || !note.trim()}

@@ -70,7 +70,28 @@ export function startJobRunner(): void {
   console.info("MOBILE_JOB_RUNNER_STARTED");
   const tick = () => void drainOnce().catch((e) => console.warn("job runner:", e));
   timer = window.setInterval(tick, POLL_MS);
-  tick();
+  // Fail anything the last run left mid-flight before draining, so the
+  // first drain can't race it.
+  busy = true;
+  void failInterruptedJobs()
+    .catch((e) => console.warn("job runner:", e))
+    .finally(() => {
+      busy = false;
+      tick();
+    });
+}
+
+/**
+ * A job still `running` at boot was cut off by a crash or quit — nothing is
+ * working on it, and the drain loop only picks up `pending` ones. Fail it so
+ * the phone stops showing it as in progress.
+ */
+async function failInterruptedJobs(): Promise<void> {
+  const d = await getDb();
+  await d.execute(
+    "UPDATE jobs SET status = 'error', result = $1, progress = '', updated_at = $2 WHERE status = 'running'",
+    ["BrewLM closed before this finished — try again.", Date.now()]
+  );
 }
 
 export function stopJobRunner(): void {

@@ -518,7 +518,8 @@ async function condenseTo(
   items: CondenseItem[],
   settings: Settings,
   focus: string,
-  targetChars: number
+  targetChars: number,
+  signal?: AbortSignal
 ): Promise<string> {
   const goal = focus || "a comprehensive, detailed representation of the full notebook material";
   let notes = items;
@@ -528,6 +529,7 @@ async function condenseTo(
   const acc = newUsageAccumulator();
   try {
     for (let pass = 0; pass < 4; pass++) {
+      throwIfAborted(signal);
       const joined = notes.map((n) => `### ${n.label}\n${n.text}`).join("\n\n");
       if (joined.length <= targetChars) return joined;
 
@@ -562,6 +564,7 @@ async function condenseTo(
             // cap left it no room to write, failing the whole podcast or report.
             thinking: settings.thinking,
             maxOutput: settings.maxOutput,
+            signal,
             onUsage: (u) => addUsage(acc, u),
             messages: [
               {
@@ -594,7 +597,8 @@ export async function condenseSources(
   sources: Source[],
   settings: Settings,
   focus: string,
-  onPhase?: (phase: string) => void
+  onPhase?: (phase: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const textual = sources.filter(isRetrievable).slice(0, 12);
   const groupCap = contextBudget(settings).condenseGroup;
@@ -618,7 +622,7 @@ export async function condenseSources(
     if (cur) items.push({ label: src.title, text: cur });
   }
   onPhase?.(`Condensing ${textual.length} sources (full coverage)…`);
-  return condenseTo(items, settings, focus, Math.min(28_000, contextBudget(settings).sources));
+  return condenseTo(items, settings, focus, Math.min(28_000, contextBudget(settings).sources), signal);
 }
 
 /** Changes whenever a source is added, removed, or its content edited. */
@@ -636,35 +640,71 @@ function notebookSignature(sources: Source[]): string {
  * Studio tool (report, flashcards, quiz, mindmap, audio) then reuses the
  * same notes until any source changes.
  */
-/** Condensations in progress, so parallel Studio jobs share one pass instead of each running it. */
-const condensing = new Map<string, Promise<string>>();
+/**
+ * Condensations in progress, so parallel Studio jobs share one pass instead of
+ * each running it. `waiters` counts the jobs still wanting it: the pass stops
+ * only when the last of them is cancelled.
+ */
+const condensing = new Map<string, { work: Promise<string>; ctrl: AbortController; waiters: number }>();
 
+/** `signal` cancels this caller's wait; the shared pass stops once no caller is left. */
 export async function condenseNotebook(
   notebookId: string,
   sources: Source[],
   settings: Settings,
-  onPhase?: (phase: string) => void
+  onPhase?: (phase: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
+  throwIfAborted(signal);
   const key = `${notebookId}:${notebookSignature(sources)}`;
-  const running = condensing.get(key);
-  if (running) {
+  let run = condensing.get(key);
+  if (run) {
     onPhase?.("Waiting for the notebook summary another tool is building…");
-    return running;
+  } else {
+    const ctrl = new AbortController();
+    const started = { work: condenseNotebookOnce(notebookId, sources, settings, onPhase, ctrl.signal), ctrl, waiters: 0 };
+    condensing.set(key, started);
+    void started.work
+      .catch(() => {})
+      .finally(() => {
+        if (condensing.get(key) === started) condensing.delete(key);
+      });
+    run = started;
   }
-  const work = condenseNotebookOnce(notebookId, sources, settings, onPhase);
-  condensing.set(key, work);
+  const mine = run;
+  mine.waiters++;
   try {
-    return await work;
+    return await untilAborted(mine.work, signal);
   } finally {
-    condensing.delete(key);
+    // Nobody left to use it: stop paying for it, and let the next job start fresh.
+    if (--mine.waiters === 0) {
+      mine.ctrl.abort();
+      if (condensing.get(key) === mine) condensing.delete(key);
+    }
   }
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+/** `work`, or an AbortError as soon as `signal` fires (the work itself carries on). */
+function untilAborted<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 async function condenseNotebookOnce(
   notebookId: string,
   sources: Source[],
   settings: Settings,
-  onPhase?: (phase: string) => void
+  onPhase?: (phase: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const sig = notebookSignature(sources);
   const cacheKey = `condense.${notebookId}`;
@@ -679,7 +719,7 @@ async function condenseNotebookOnce(
   } catch {
     /* cache miss or corrupt entry — recompute */
   }
-  const notes = await condenseSources(sources, settings, "", onPhase);
+  const notes = await condenseSources(sources, settings, "", onPhase, signal);
   try {
     await setSetting(cacheKey, JSON.stringify({ sig, notes }));
   } catch {
