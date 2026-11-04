@@ -104,7 +104,8 @@ export interface ContextBudget {
 
 /** Cloud models: generous windows, tuned for cost rather than fit. */
 export const CLOUD_BUDGET: ContextBudget = {
-  sources: 30_000,
+  // ~57k tokens: enough to carry whole lessons/sections, not just a few passages.
+  sources: 200_000,
   perSource: 6000,
   constitution: 6000,
   mentions: 16_000,

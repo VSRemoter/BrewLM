@@ -686,7 +686,7 @@ API keys, sources, chats and artifacts all live in a local database on your mach
  * the most relevant slices of ALL sources for this message instead of a blind
  * first-N-characters prefix of the first few sources — this is what lets a
  * 400-page PDF or a notebook full of files fit the context budget meaningfully
- * (30k chars on cloud models, sized to the context window on local ones).
+ * (200k chars on cloud models, sized to the context window on local ones).
  */
 export function buildSystemPrompt(
   sources: Source[],
