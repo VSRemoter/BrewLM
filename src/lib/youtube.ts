@@ -46,6 +46,28 @@ export function youTubeId(raw: string): string | null {
 
 export const isYouTubeUrl = (url: string) => youTubeId(url) !== null;
 
+/**
+ * Ids of YouTube videos a web page embeds as its own content — player
+ * iframes, lite-youtube elements, og:video tags and JSON-LD embed URLs, in
+ * page order. Plain links and thumbnails (other videos the page merely points
+ * to) don't count. Capped so a gallery page doesn't pull dozens of transcripts.
+ */
+export function embeddedYouTubeIds(html: string, max = 3): string[] {
+  const ids: string[] = [];
+  const add = (id: string | undefined) => {
+    if (id && /^[\w-]{11}$/.test(id) && !ids.includes(id)) ids.push(id);
+  };
+  const patterns = [
+    /youtube(?:-nocookie)?\.com\\?\/embed\\?\/([\w-]{11})/gi,
+    /<lite-youtube[^>]*\bvideoid=["']?([\w-]{11})/gi,
+    /<meta[^>]+(?:og:video(?::url|:secure_url)?|twitter:player)["'][^>]*content=["'][^"']*?(?:v=|youtu\.be\/|\/embed\/)([\w-]{11})/gi,
+  ];
+  const hits: { at: number; id: string }[] = [];
+  for (const re of patterns) for (const m of html.matchAll(re)) hits.push({ at: m.index ?? 0, id: m[1] });
+  hits.sort((a, b) => a.at - b.at).forEach((h) => add(h.id));
+  return ids.slice(0, max);
+}
+
 interface CaptionTrack {
   baseUrl: string;
   languageCode: string;
@@ -64,7 +86,7 @@ interface PlayerResponse {
   captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } };
 }
 
-function clock(seconds: number): string {
+export function clock(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -155,29 +177,12 @@ function pickTrack(tracks: CaptionTrack[]): CaptionTrack | null {
   );
 }
 
-/** Timed-text XML (format 1 `<text start>` or srv3 `<p t>`) → timestamped paragraphs. */
-async function fetchTrackText(track: CaptionTrack): Promise<string> {
-  const url = new URL(track.baseUrl);
-  url.searchParams.delete("fmt");
-  const res = await fetchWebPage(url.toString(), {
-    method: "GET",
-    headers: { "User-Agent": BROWSER_UA },
-  });
-  if (!res.ok) return "";
-  const xml = await res.text();
-  if (!xml.trim()) return "";
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-
-  const cues: { at: number; text: string }[] = [];
-  for (const el of Array.from(doc.getElementsByTagName("text"))) {
-    cues.push({ at: Number(el.getAttribute("start") ?? 0), text: el.textContent ?? "" });
-  }
-  if (cues.length === 0) {
-    for (const el of Array.from(doc.getElementsByTagName("p"))) {
-      cues.push({ at: Number(el.getAttribute("t") ?? 0) / 1000, text: el.textContent ?? "" });
-    }
-  }
-
+/**
+ * Timed caption cues → timestamped paragraphs, one at least every
+ * PARAGRAPH_SECONDS (on a sentence end when there is one). Shared by YouTube,
+ * Vimeo and plain caption files (captions.ts).
+ */
+export function cuesToParagraphs(cues: { at: number; text: string }[]): string {
   const paras: string[] = [];
   let cur = "";
   let curStart = 0;
@@ -202,6 +207,32 @@ async function fetchTrackText(track: CaptionTrack): Promise<string> {
   }
   if (cur) paras.push(`[${clock(curStart)}] ${cur}`);
   return paras.join("\n\n");
+}
+
+/** Timed-text XML (format 1 `<text start>` or srv3 `<p t>`) → timestamped paragraphs. */
+async function fetchTrackText(track: CaptionTrack): Promise<string> {
+  const url = new URL(track.baseUrl);
+  url.searchParams.delete("fmt");
+  const res = await fetchWebPage(url.toString(), {
+    method: "GET",
+    headers: { "User-Agent": BROWSER_UA },
+  });
+  if (!res.ok) return "";
+  const xml = await res.text();
+  if (!xml.trim()) return "";
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+
+  const cues: { at: number; text: string }[] = [];
+  for (const el of Array.from(doc.getElementsByTagName("text"))) {
+    cues.push({ at: Number(el.getAttribute("start") ?? 0), text: el.textContent ?? "" });
+  }
+  if (cues.length === 0) {
+    for (const el of Array.from(doc.getElementsByTagName("p"))) {
+      cues.push({ at: Number(el.getAttribute("t") ?? 0) / 1000, text: el.textContent ?? "" });
+    }
+  }
+
+  return cuesToParagraphs(cues);
 }
 
 /**

@@ -1,10 +1,11 @@
-import { fetchWebPage } from "./webFetch";
+import { fetchWebPage, gunzipIfCompressed } from "./webFetch";
 // WKWebView (and older Safari) may lack ES2024 APIs the modern pdf.js build
 // uses (Promise.withResolvers, async helpers) — the legacy build is transpiled
 // for exactly these environments.
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { SourceType } from "./types";
 import { extractFileText, MAX_SOURCE_CHARS } from "./extractors";
+import { fetchVimeoTranscript, pageVideoTranscripts, vimeoRef } from "./captions";
 import { fetchYouTubeTranscript, isYouTubeUrl } from "./youtube";
 
 // Belt-and-braces for environments without ES2024 Promise.withResolvers.
@@ -187,6 +188,8 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
   // Video pages are player boilerplate as HTML; read the transcript instead.
   if (isYouTubeUrl(parsed.toString()))
     return { ...(await fetchYouTubeTranscript(parsed.toString())), finalUrl: parsed.toString() };
+  const vimeo = vimeoRef(parsed.toString());
+  if (vimeo) return { ...(await fetchVimeoTranscript(vimeo)), finalUrl: parsed.toString() };
 
   const res = await fetchWebPage(parsed.toString(), {
     method: "GET",
@@ -201,10 +204,12 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
 
   const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
   const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "") || parsed.hostname;
+  // The body, unpacked if the site gzipped it without saying so in its headers.
+  const body = async () => gunzipIfCompressed(new Uint8Array(await res.arrayBuffer()));
 
   // Linked PDFs: extract their text like an uploaded PDF, not as raw bytes.
   if (contentType.includes("pdf") || /\.pdf$/i.test(parsed.pathname)) {
-    const text = await extractPdfBytes(new Uint8Array(await res.arrayBuffer()));
+    const text = await extractPdfBytes(await body());
     if (text.trim().length < 200)
       throw new Error("That PDF has almost no extractable text (it looks scanned/image-only). Download it, run OCR, then add the file.");
     return { title: fileName, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
@@ -213,27 +218,27 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     throw new Error("That link points to a media file, not a web page — download it and add it with the upload button so the AI can read it.");
   // Linked documents (.docx/.xlsx/.pptx/.epub/.rtf…): same extractor as uploads.
   if (/octet-stream|zip|officedocument|msword|ms-excel|ms-powerpoint|epub|rtf/.test(contentType)) {
-    const bytes = await res.arrayBuffer();
-    const { text } = await extractFileText(new File([bytes], fileName, { type: contentType }));
+    const bytes = await body();
+    const { text } = await extractFileText(new File([bytes as BlobPart], fileName, { type: contentType }));
     if (!text.trim()) throw new Error("That file was downloaded but has no readable text.");
     return { title: fileName, text, finalUrl };
   }
 
-  const bytes = new Uint8Array(await res.arrayBuffer());
+  const bytes = await body();
   if (!contentType.includes("html")) {
     // Plain text, CSV, JSON… or a file behind an unexpected content type. The
     // file extractor decodes text and rejects binaries, so a link's raw bytes
     // are never stored as a source.
     let text: string;
     try {
-      ({ text } = await extractFileText(new File([bytes], fileName, { type: contentType })));
+      ({ text } = await extractFileText(new File([bytes as BlobPart], fileName, { type: contentType })));
     } catch (e) {
       throw new Error(`That link isn't a page BrewLM can read — ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!text.trim()) throw new Error("The link loaded but no readable text was found.");
     return { title: parsed.hostname, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
   }
-  const raw = new TextDecoder().decode(bytes);
+  const raw = decodeHtml(bytes, contentType);
 
   const doc = new DOMParser().parseFromString(raw, "text/html");
   doc.querySelectorAll("script,style,noscript,svg,iframe,nav,footer,header,form,aside").forEach((el) => el.remove());
@@ -241,10 +246,59 @@ export async function fetchLinkContent(url: string): Promise<{ title: string; te
     doc.querySelector("title")?.textContent?.trim() ||
     parsed.hostname;
   const text = doc.body ? htmlToText(doc.body) : "";
-  if (!text) throw new Error("The page loaded but no readable text was found.");
-  if (text.length < 400 && SHELL_PAGE_RE.test(text))
+  // A page built around a video (a lesson, a lecture, a talk) says little in
+  // its own text — the video is the content, so read its transcripts too.
+  const videos = await pageVideoTranscripts(raw, finalUrl);
+  if (!text && !videos) throw new Error("The page loaded but no readable text was found.");
+  if (!videos && text.length < 400 && SHELL_PAGE_RE.test(text))
     throw new Error("That page only shows its content in a browser with JavaScript or after signing in, so BrewLM can't read it. Copy the text and add it with Paste text instead.");
-  return { title: `${title}`, text: text.slice(0, MAX_SOURCE_CHARS), finalUrl };
+  return { title: `${title}`, text: (text + videos).trim().slice(0, MAX_SOURCE_CHARS), finalUrl };
+}
+
+
+/** Share of U+FFFD replacement characters in (the start of) a decoded text. */
+function replacementShare(text: string): number {
+  const sample = text.slice(0, 50_000);
+  if (!sample) return 0;
+  let bad = 0;
+  for (const ch of sample) if (ch === "\uFFFD") bad++;
+  return bad / sample.length;
+}
+
+/** Whether bytes look binary (compressed, an image…): text in any charset has almost no control bytes besides tab and newlines. */
+function looksBinary(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 50_000);
+  if (!n) return false;
+  let ctrl = 0;
+  for (let i = 0; i < n; i++) {
+    const b = bytes[i];
+    if ((b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d && b !== 0x0c) || b === 0x7f) ctrl++;
+  }
+  return ctrl / n > 0.01;
+}
+
+/**
+ * HTML bytes → text in the page's declared charset (Content-Type, else a
+ * <meta charset>), UTF-8 by default. An undeclared legacy page that doesn't
+ * decode as UTF-8 is read as Windows-1252. Binary bytes sent as text/html
+ * (compressed data, a file) are refused rather than saved as gibberish.
+ */
+export function decodeHtml(bytes: Uint8Array, contentType: string): string {
+  if (looksBinary(bytes))
+    throw new Error("That site sent its page in a form BrewLM couldn't read (it came back as binary data, not text). Try adding it again, or copy the page's text and add it with Paste text.");
+  const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
+  const declared =
+    /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1] ??
+    /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(head)?.[1];
+  let decoder: TextDecoder;
+  try {
+    decoder = new TextDecoder(declared ?? "utf-8");
+  } catch {
+    decoder = new TextDecoder("utf-8");
+  }
+  const text = decoder.decode(bytes);
+  if (!declared && replacementShare(text) > 0.002) return new TextDecoder("windows-1252").decode(bytes);
+  return text;
 }
 
 export function sourcePreview(content: string, max = 90): string {

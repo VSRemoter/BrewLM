@@ -24,7 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-tauri-plugin-http = "2"
+# unsafe-headers: lets webFetch.ts drop the Origin header the plugin adds by
+# default — YouTube's player API answers 403 to any request carrying one.
+tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 tauri-plugin-store = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 axum = "0.8"
