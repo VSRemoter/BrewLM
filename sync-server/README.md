@@ -118,3 +118,11 @@ http(s) addresses only, 25 MB, 120 an hour per account). Files nothing
 points to any more are deleted when an up-to-date device sends the list of
 files it uses (`blobs/sweep`), right after a delete and every few hours.
 Still to come: live updates (WebSocket).
+
+## License
+
+This server is released under the GNU Affero General Public License v3.0
+(AGPL-3.0-only); see `LICENSE`. If you run a modified copy where others can
+reach it over a network, you must offer them its source. Versions before this
+change were released under Apache 2.0. The rest of BrewLM (the app and its
+sync client) is Apache 2.0; see the root `LICENSE`.

@@ -194,7 +194,9 @@ Type `/` in chat to open the palette with autocomplete.
 
 ## License
 
-BrewLM is released under the **Apache License 2.0**. See `LICENSE` for the full text. Drawings are powered by [Excalidraw](https://github.com/excalidraw/excalidraw) (MIT).
+BrewLM is released under the **Apache License 2.0**. See `LICENSE` for the full text.
+
+The BrewLM Sync server in `sync-server/` is the exception: from this commit on it is released under the **GNU Affero General Public License v3.0** (see `sync-server/LICENSE`). If you run a modified copy as a service, you must offer its source to the people using it. Earlier versions of `sync-server/` remain available under Apache 2.0. The desktop app, web app, and their sync client code stay Apache 2.0. Drawings are powered by [Excalidraw](https://github.com/excalidraw/excalidraw) (MIT).
 
 ---
 
