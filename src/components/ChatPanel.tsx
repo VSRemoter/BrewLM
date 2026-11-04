@@ -12,9 +12,11 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   FilePlus2,
   FileText,
   FolderClosed,
+  Globe,
   GraduationCap,
   Image,
   ImagePlus,
@@ -92,7 +94,15 @@ import {
   supportedAspectRatios,
 } from "../lib/imageApi";
 import { ensureIndexed, isRetrievable, rankChunks, type RetrievedChunk } from "../lib/rag";
-import { webAnswer } from "../lib/research";
+import { fetchSources, webAnswer } from "../lib/research";
+import {
+  encodeFetchMessage,
+  parseFetchMessage,
+  siteOf,
+  stripFetchMarker,
+  urlKey,
+  type FetchList,
+} from "../lib/fetchList";
 import {
   activeKey,
   builtInVoices,
@@ -442,6 +452,13 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: true,
   },
   {
+    cmd: "/fetch",
+    usage: "/fetch <what you want to learn>",
+    desc: "Find web sources to learn from — open them, add the ones you want",
+    icon: Globe,
+    takesArgs: true,
+  },
+  {
     cmd: "/image",
     usage: "/image [16:9] <prompt>",
     desc: "Generate a picture with your image model — no chat context sent",
@@ -648,6 +665,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`. Short ≈ 5 minutes, Standard ≈ 10, Long ≈ 20; longer episodes are planned first and written part by part, so they take a little longer to make.
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
+- \`/fetch <what you want to learn>\` — searches the web for sources to learn from and lists them as cards, e.g. \`/fetch "Attention Is All You Need"\`. Click a title to open it in your browser, **Add** to save it to Sources (or **Add all**); anything you don't add is ignored. Uses your Research model's web search, billed per query.
 - \`/search <query>\` — one-shot web answer, right here in chat, with numbered source links. Your provider bills web searches per query, so this only runs when you ask; for a deep multi-source dossier use \`/research\` instead.
 - \`/image [ratio] <prompt>\` — generates a picture with your **Image model** (Settings → AI Model), e.g. \`/image 16:9 a watercolor fox in snow\`. Only your prompt is sent — no sources or chat history — so you pay just for the image (about $0.03 with the default model). Needs an OpenRouter key. Later chat turns see a one-line description of the image, never the pixels. If your selected model is itself an image model (e.g. via \`/model qwen/qwen-image-2.1-turbo\`), \`/image\` uses it, and plain messages generate images too — a message right after a picture edits that picture (start with \`/image\` for a fresh one).
 - \`/edit <change>\` — changes the latest picture, e.g. \`/edit make the sky stormy\`. \`/remix <idea>\` makes a new picture inspired by it, and \`/more\` reruns its prompt for another take. Hover any generated picture for **Edit**, **Remix** and **More like this** on that specific one. Only that single picture (downscaled) and your words are sent — never the chat or sources. Editing needs an image model that accepts a reference picture; BrewLM tells you if yours can't.
@@ -835,7 +853,7 @@ export function selectChatHistory(all: ChatMessage[], maxChars = CLOUD_BUDGET.hi
     const m = capped[i];
     // Measure what the model will actually receive: image embeds are stripped
     // before sending, so their base64 must not eat the budget.
-    const size = stripHistoryImages(m.content).length;
+    const size = stripFetchMarker(stripHistoryImages(m.content)).length;
     if (kept.length > 0 && size > budget) break;
     kept.unshift(m);
     budget -= size;
@@ -1107,6 +1125,11 @@ export default function ChatPanel({
   /** Text sources' bodies — a reply already saved to Sources shows as saved. */
   const savedTexts = useMemo(
     () => new Set(sources.filter((s) => s.type === "text").map((s) => s.content)),
+    [sources]
+  );
+  /** Link sources' URLs (stored in `mime`) — a /fetch card already added shows as added. */
+  const linkKeys = useMemo(
+    () => new Set(sources.filter((s) => s.type === "link" && s.mime).map((s) => urlKey(s.mime!))),
     [sources]
   );
   const mentionHits = useMemo(() => {
@@ -2421,6 +2444,45 @@ export default function ChatPanel({
       return;
     }
 
+    // /fetch <request> — find web sources to learn from; the reply is a list of
+    // cards the user opens and adds one by one (provider search, billed per query).
+    if (/^\/fetch(\s|$)/i.test(text)) {
+      const request = stripOuterQuotes(text.replace(/^\/fetch\s*/i, "").trim());
+      if (!request) {
+        await say(
+          "What do you want to learn about? e.g. `/fetch \"Attention Is All You Need\"` or `/fetch how transformers work in LLMs`. I'll find sources you can open and add to this notebook."
+        );
+        onChatActivity?.(chatId, isFirst ? text : undefined);
+        textareaRef.current?.focus();
+        return;
+      }
+      streamingRef.current.add(chatId);
+      setStreaming("");
+      const ctrl = new AbortController();
+      abortRef.current.set(chatId, ctrl);
+      try {
+        const items = await fetchSources({ request, settings, signal: ctrl.signal });
+        if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        const body =
+          items.length > 0
+            ? encodeFetchMessage({ query: request, items })
+            : `I couldn't find sources for “${request}”. Your provider's web search may have come back empty — try rephrasing, or use \`/url <link>\` to add a page you already know.`;
+        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
+        setMsgs((prev) => [...prev, replyMsg]);
+      } catch (e) {
+        if (!(isAbortError(e) || ctrl.signal.aborted)) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        abortRef.current.delete(chatId);
+        streamingRef.current.delete(chatId);
+        setStreaming(null);
+        textareaRef.current?.focus();
+      }
+      onChatActivity?.(chatId, isFirst ? `Fetch: ${request}` : undefined);
+      return;
+    }
+
     // /search <query> — one-shot web answer with cited links (provider search,
     // billed per query — that's why it's a command, not a background toggle).
     if (/^\/search(\s|$)/i.test(text)) {
@@ -2598,11 +2660,11 @@ export default function ChatPanel({
         // Image embeds in past turns stay on screen but leave the context
         // (multi-hundred-KB base64 re-sent per turn = silent token burn).
         // The visible bubble says "/summarize"; the model gets the real prompt.
-        content: stripHistoryImages(
+        content: stripFetchMarker(stripHistoryImages(
           isSummarize && i === arr.length - 1 && m.role === "user"
             ? `Write a clear, well-structured summary of this whole notebook: the core ideas, why they matter, and the key details worth remembering. Cover every source.`
             : m.content
-        ),
+        )),
       })),
     ];
 
@@ -2945,6 +3007,8 @@ export default function ChatPanel({
                 reasoningOpen={showReasoning}
                 onImageAction={streaming === null ? onImageAction : undefined}
                 savedToSources={savedTexts.has(m.content)}
+                linkKeys={linkKeys}
+                onAddLink={onAddLink}
                 onSaveToSources={
                   m.role === "assistant" && m.content.trim()
                     ? () => onAddNote(m.content, replySourceTitle(m.content)).then(() => {})
@@ -3704,6 +3768,8 @@ function Bubble({
   reasoningOpen = false,
   onImageAction,
   savedToSources,
+  linkKeys,
+  onAddLink,
   onSaveToSources,
 }: {
   /** Entrance fade; off for a reply that just finished streaming in place. */
@@ -3720,6 +3786,10 @@ function Bubble({
   onImageAction?: (action: string, id: string, alt: string) => void;
   /** This reply's text is already a source in the notebook. */
   savedToSources?: boolean;
+  /** urlKey of every link source in the notebook, so /fetch cards show what's added. */
+  linkKeys?: Set<string>;
+  /** Save a page as a link source (/fetch cards). */
+  onAddLink?: (url: string) => Promise<Source>;
   /** Save this reply as a text source (assistant replies only). */
   onSaveToSources?: () => Promise<void>;
 }) {
@@ -3743,6 +3813,14 @@ function Bubble({
     () => (role === "assistant" ? withLibraryImages(renderMarkdown(content)) : ""),
     [role, content, imgTick] // imgTick: re-run once library URLs resolve
   );
+  const fetchList = useMemo(() => (role === "assistant" ? parseFetchMessage(content) : null), [role, content]);
+  if (fetchList) {
+    return (
+      <div className={`${animate ? "anim-fade-up " : ""}mb-5 w-full min-w-0`}>
+        <FetchResults list={fetchList} linkKeys={linkKeys} onAddLink={onAddLink} />
+      </div>
+    );
+  }
   if (role === "user") {
     return (
       <div className="anim-fade-up mb-5 flex justify-end">
@@ -3827,6 +3905,133 @@ function Bubble({
           {savedToSources ? "Saved to Sources" : saveState === "error" ? "Couldn't save" : "Save to Sources"}
         </button>
       )}
+    </div>
+  );
+}
+
+type FetchAddState = "adding" | "added" | { error: string };
+
+/** A /fetch reply: source cards to open in the browser and add to the notebook. */
+function FetchResults({
+  list,
+  linkKeys,
+  onAddLink,
+}: {
+  list: FetchList;
+  linkKeys?: Set<string>;
+  onAddLink?: (url: string) => Promise<Source>;
+}) {
+  const [state, setState] = useState<Record<string, FetchAddState>>({});
+  const [addingAll, setAddingAll] = useState(false);
+  const isAdded = (url: string) => state[url] === "added" || !!linkKeys?.has(urlKey(url));
+  const add = async (url: string) => {
+    if (!onAddLink || isAdded(url) || state[url] === "adding") return;
+    setState((p) => ({ ...p, [url]: "adding" }));
+    try {
+      await onAddLink(url);
+      setState((p) => ({ ...p, [url]: "added" }));
+    } catch (e) {
+      setState((p) => ({ ...p, [url]: { error: e instanceof Error ? e.message : String(e) } }));
+    }
+  };
+  const remaining = list.items.filter((it) => !isAdded(it.url));
+  const addAll = async () => {
+    if (addingAll) return;
+    setAddingAll(true);
+    const queue = remaining.map((it) => it.url);
+    // A few pages at a time: quicker than one by one, gentle on slow sites.
+    await Promise.all(
+      Array.from({ length: Math.min(3, queue.length) }, async () => {
+        for (let url = queue.shift(); url; url = queue.shift()) await add(url);
+      })
+    );
+    setAddingAll(false);
+  };
+  const open = (url: string) => void platform.openUrl(url).catch(() => {});
+  const addedCount = list.items.length - remaining.length;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-edge bg-panel">
+      <div className="flex items-center gap-2 border-b border-edge-soft px-3.5 py-2.5">
+        <Globe size={14} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-semibold" title={list.query}>
+            Sources for “{list.query}”
+          </div>
+          <div className="text-[11px] text-ink-3">
+            {list.items.length} found{addedCount > 0 ? ` · ${addedCount} added` : ""}
+          </div>
+        </div>
+        {onAddLink && remaining.length > 1 && (
+          <button
+            onClick={addAll}
+            disabled={addingAll}
+            className="flex shrink-0 items-center gap-1 rounded-lg border border-edge px-2.5 py-1 text-[11.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-60"
+          >
+            {addingAll ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} strokeWidth={2} />}
+            Add all
+          </button>
+        )}
+      </div>
+      <ul className="divide-y divide-edge-soft">
+        {list.items.map((it) => {
+          const st = state[it.url];
+          const added = isAdded(it.url);
+          const err = typeof st === "object" ? st.error : null;
+          return (
+            <li key={it.url} className="flex items-start gap-3 px-3.5 py-3">
+              <div className="min-w-0 flex-1">
+                <button
+                  onClick={() => open(it.url)}
+                  title={`Open ${it.url}`}
+                  className="group/link flex max-w-full items-start gap-1 text-left text-[13px] font-medium leading-snug hover:underline"
+                >
+                  <span className="min-w-0 break-words">{it.title}</span>
+                  <ExternalLink
+                    size={11}
+                    strokeWidth={2}
+                    className="mt-[3px] shrink-0 text-ink-3 opacity-60 group-hover/link:opacity-100"
+                  />
+                </button>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-ink-3">
+                  <span className="truncate">{siteOf(it.url)}</span>
+                  {it.kind !== "other" && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span className="capitalize">{it.kind}</span>
+                    </>
+                  )}
+                </div>
+                {it.why && <p className="mt-1 text-[12px] leading-snug text-ink-2">{it.why}</p>}
+                {err && <p className="mt-1 text-[11px] leading-snug text-danger">Couldn't add: {err}</p>}
+              </div>
+              {onAddLink && (
+                <button
+                  onClick={() => add(it.url)}
+                  disabled={added || st === "adding"}
+                  aria-label={added ? "Added to Sources" : "Add to Sources"}
+                  className={`mt-0.5 flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
+                    added
+                      ? "text-ok"
+                      : err
+                        ? "border border-danger-edge text-danger hover:bg-hover"
+                        : "border border-edge text-ink-2 hover:bg-hover hover:text-ink disabled:opacity-60"
+                  }`}
+                >
+                  {added ? (
+                    <Check size={12} strokeWidth={2.2} />
+                  ) : st === "adding" ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Plus size={12} strokeWidth={2} />
+                  )}
+                  {added ? "Added" : st === "adding" ? "Adding" : err ? "Retry" : "Add"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

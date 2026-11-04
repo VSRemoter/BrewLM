@@ -1,6 +1,7 @@
 import { complete, extractJson, type StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
 import { activeKey, researchModelFor } from "./settings";
+import { buildFetchItems, FETCH_MAX, type FetchItem } from "./fetchList";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
 import { recordUsage, type UsageSink } from "./usage";
@@ -219,6 +220,18 @@ export interface WebAnswerOutcome {
   hits: WebHit[];
 }
 
+/** Knobs for the one-shot calls; /search uses the defaults, /fetch wants more results. */
+interface AnswerOpts {
+  /** Most links kept from the citations (default 8). */
+  cap?: number;
+  /** Anthropic: web searches the model may run (default 5). */
+  searches?: number;
+  /** OpenRouter: results the web plugin returns (default 5). */
+  webResults?: number;
+  /** Anthropic: how text blocks are glued (citations split one answer into many). */
+  joinText?: string;
+}
+
 function dedupeHits(hits: WebHit[], cap = 8): WebHit[] {
   const seen = new Set<string>();
   const out: WebHit[] = [];
@@ -238,7 +251,8 @@ async function answerAnthropic(
   apiKey: string,
   model: string,
   system: string | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts: AnswerOpts = {}
 ): Promise<WebAnswerOutcome> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -252,7 +266,7 @@ async function answerAnthropic(
       model,
       max_tokens: 2048,
       system: system || undefined,
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: opts.searches ?? 5 }],
       messages: [{ role: "user", content: query }],
     }),
     signal,
@@ -279,7 +293,7 @@ async function answerAnthropic(
       }
     }
   }
-  return { text: texts.join("\n\n").trim(), hits: dedupeHits(hits) };
+  return { text: texts.join(opts.joinText ?? "\n\n").trim(), hits: dedupeHits(hits, opts.cap) };
 }
 
 /** OpenAI: the search-preview chat model answers with url_citation annotations. */
@@ -287,7 +301,8 @@ async function answerOpenAI(
   query: string,
   apiKey: string,
   system: string | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts: AnswerOpts = {}
 ): Promise<WebAnswerOutcome> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -310,7 +325,7 @@ async function answerOpenAI(
   const msg = json.choices?.[0]?.message;
   return {
     text: String(msg?.content ?? "").trim(),
-    hits: dedupeHits(collectCitations(msg?.annotations)),
+    hits: dedupeHits(collectCitations(msg?.annotations), opts.cap),
   };
 }
 
@@ -320,7 +335,8 @@ async function answerOpenRouter(
   apiKey: string,
   model: string,
   system: string | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts: AnswerOpts = {}
 ): Promise<WebAnswerOutcome> {
   const provider = await openRouterPrefs(model);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -334,7 +350,7 @@ async function answerOpenRouter(
     body: JSON.stringify({
       model,
       ...(provider ? { provider } : {}),
-      plugins: [{ id: "web", max_results: 5 }],
+      plugins: [{ id: "web", max_results: opts.webResults ?? 5 }],
       messages: [
         ...(system ? [{ role: "system", content: system }] : []),
         { role: "user", content: query },
@@ -348,7 +364,7 @@ async function answerOpenRouter(
   const msg = json.choices?.[0]?.message;
   return {
     text: String(msg?.content ?? "").trim(),
-    hits: dedupeHits(collectCitations(msg?.annotations)),
+    hits: dedupeHits(collectCitations(msg?.annotations), opts.cap),
   };
 }
 
@@ -375,6 +391,46 @@ export async function webAnswer(opts: {
   if (settings.provider === "local")
     throw new Error("Web search isn't available with a local model. It runs through a cloud provider's search, so switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use /search.");
   throw new Error("Add an API key in Settings first — web search runs through your provider.");
+}
+
+/* ------------------------ source finding (/fetch) ------------------------ */
+
+/**
+ * Web sources worth adding to the notebook for a learning request (`/fetch`).
+ * One search round on the research model; the model picks and describes the
+ * best results, and only links the search really returned are kept.
+ */
+export async function fetchSources(opts: {
+  request: string;
+  settings: Settings;
+  signal?: AbortSignal;
+}): Promise<FetchItem[]> {
+  const { request, settings, signal } = opts;
+  const prompt = `Someone wants web sources to learn from. Their request: "${request.trim()}"
+
+Search the web and pick the ${FETCH_MAX - 4}–${FETCH_MAX} most useful sources for it. Aim for a mix: the primary source when there is one (e.g. the original paper or official docs), clear explainers and tutorials, solid reference pages, and good videos or courses when they exist. Prefer substantive, trustworthy pages; skip SEO filler, forums with no real answer, and paywalled or login-only pages.
+
+Reply with ONLY a JSON array, no other text:
+[{"title": "page title", "url": "https://...", "kind": "paper|article|tutorial|video|docs|course|reference|other", "why": "one short sentence on what this source gives the learner"}]
+Use only URLs that appeared in your search results, exactly as they appeared.`;
+  const knobs: AnswerOpts = { cap: 40, searches: 4, webResults: 10, joinText: "" };
+  let out: WebAnswerOutcome;
+  if (settings.provider === "anthropic" && settings.anthropicKey)
+    out = await answerAnthropic(prompt, settings.anthropicKey, researchModelFor(settings), undefined, signal, knobs);
+  else if (settings.provider === "openai" && settings.openaiKey)
+    out = await answerOpenAI(prompt, settings.openaiKey, undefined, signal, knobs);
+  else if (settings.provider === "openrouter" && settings.openrouterKey)
+    out = await answerOpenRouter(prompt, settings.openrouterKey, researchModelFor(settings), undefined, signal, knobs);
+  else if (settings.provider === "local")
+    throw new Error("/fetch searches the web, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use it.");
+  else throw new Error("Add an API key in Settings first — /fetch searches the web through your provider.");
+  let picked: unknown = null;
+  try {
+    picked = JSON.parse(extractJson(out.text));
+  } catch {
+    /* no usable JSON — fall back to the raw search results */
+  }
+  return buildFetchItems(picked, out.hits);
 }
 
 /* ------------------------------- pipeline ------------------------------- */

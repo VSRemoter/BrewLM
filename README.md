@@ -36,6 +36,7 @@ BrewLM turns your own materials — PDFs, web pages, YouTube videos, notes, imag
 - **Save to Sources**: hover any AI reply and save it as a source with one click, so a great answer becomes part of the notebook.
 - **@mention** sources or Studio outputs mid-prompt to focus the context; mentions persist across follow-ups.
 - **/ground** toggles source grounding per notebook — off means free-form answers from the model's own knowledge (no sources sent, no retrieval cost).
+- **/fetch <what you want to learn>** — finds web sources to learn from and lists them as cards: open any in your browser, add the ones you want to Sources (or Add all), ignore the rest.
 - **/search <query>** — one-shot web answer inline with numbered source links (provider web search, billed per query).
 - **Cost visibility**: prompt caching (Anthropic cache breakpoints, OpenRouter/OpenAI usage accounting) keeps repeated notebook context cheap, and `/details` shows tokens and cost under every reply.
 - Rich replies: Markdown, LaTeX math, Mermaid diagrams, inline SVG, and wide tables that spread past the chat column and scroll instead of overflowing.
@@ -167,6 +168,7 @@ Type `/` in chat to open the palette with autocomplete.
 | Command | What it does |
 |---|---|
 | `/summarize` | Summarize the whole notebook here in chat |
+| `/fetch <what you want to learn>` | Find web sources to learn from; open them, add the ones you want to Sources |
 | `/search <query>` | One-shot web answer with numbered source links (billed per query) |
 | `/image [16:9] <prompt>` | Generate a picture with your image model — no chat context sent |
 | `/edit <change>` · `/remix <idea>` · `/more` | Change, riff on, or rerun the latest picture |
