@@ -28,15 +28,15 @@ import SyncSection, { useSyncStatus } from "./SyncSection";
 import UsageSection from "./UsageSection";
 
 const SECTIONS = [
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "ai", label: "AI Model", icon: Sparkles },
-  { id: "studio", label: "Studio Defaults", icon: Wand2 },
-  { id: "audio", label: "Audio Voices", icon: AudioLines },
-  { id: "usage", label: "Usage & Cost", icon: BarChart3 },
-  { id: "data", label: "Data & Storage", icon: Database },
-  { id: "phone", label: "Phone Pairing", icon: Smartphone },
-  { id: "sync", label: "Sync", icon: RefreshCw },
-  { id: "about", label: "About & Updates", icon: Info },
+  { id: "appearance", label: "Appearance", icon: Palette, group: 0 },
+  { id: "ai", label: "AI Model", icon: Sparkles, group: 1 },
+  { id: "studio", label: "Studio Defaults", icon: Wand2, group: 1 },
+  { id: "audio", label: "Audio Voices", icon: AudioLines, group: 1 },
+  { id: "usage", label: "Usage & Cost", icon: BarChart3, group: 1 },
+  { id: "data", label: "Data & Storage", icon: Database, group: 2 },
+  { id: "phone", label: "Phone Pairing", icon: Smartphone, group: 2 },
+  { id: "sync", label: "Sync", icon: RefreshCw, group: 2 },
+  { id: "about", label: "About & Updates", icon: Info, group: 3 },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -98,12 +98,15 @@ export default function SettingsPage({
             {SECTIONS.filter(
               // Phone Pairing serves the library from this computer: desktop only.
               (s) => (s.id !== "sync" || syncAvailable) && (s.id !== "phone" || platform.kind === "desktop")
-            ).map((s) => {
+            ).map((s, i, list) => {
               const Icon = s.icon;
               const active = section === s.id;
+              // A thin divider wherever the group changes: look, AI, your data, about.
+              const divider = i > 0 && list[i - 1].group !== s.group;
               return (
+                <div key={s.id}>
+                {divider && <div className={`mx-3 border-t border-edge-soft ${phone ? "my-2" : "my-2.5"}`} />}
                 <button
-                  key={s.id}
                   onClick={() => {
                     setSection(s.id);
                     setListOpen(false);
@@ -120,6 +123,7 @@ export default function SettingsPage({
                   <span className="flex-1">{s.label}</span>
                   {phone && <ChevronRight size={16} className="text-ink-3" />}
                 </button>
+                </div>
               );
             })}
           </nav>
