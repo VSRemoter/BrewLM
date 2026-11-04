@@ -6,7 +6,7 @@ import { applyCustomColors, customSwatch, type CustomColors } from "../../lib/cu
 import { setSmoothScroll } from "../../lib/smoothScroll";
 import { getZoom, setZoom } from "../../lib/zoom";
 import type { Settings } from "../../lib/types";
-import ColorWheel from "./ColorWheel";
+import ColorField from "./ColorField";
 import { Card, Row, SectionTitle, Slider, Toggle } from "./controls";
 
 const CUSTOM_LABELS: Record<keyof CustomColors, string> = { bg: "Background", text: "Text", accent: "Accent" };
@@ -25,13 +25,12 @@ export default function AppearanceSection({
     chooseTheme(id); // applies to the DOM immediately and persists
   };
 
-  // Custom theme: live while dragging the wheel, saved once a pick settles.
+  // Custom theme: live while dragging in the picker, saved once a pick settles.
   const [custom, setCustom] = useState<Required<CustomColors>>({
     bg: settings.customBg,
     text: settings.customText,
     accent: settings.customAccent,
   });
-  const [editing, setEditing] = useState<keyof CustomColors>("bg");
   const previewCustom = (next: Required<CustomColors>) => {
     setCustom(next);
     applyCustomColors(next);
@@ -40,8 +39,6 @@ export default function AppearanceSection({
     previewCustom(next);
     patch({ customBg: next.bg, customText: next.text, customAccent: next.accent });
   };
-  // An unset accent follows the text, so the wheel starts from the text color.
-  const shown = (k: keyof CustomColors) => custom[k] || custom.text;
 
   const pickFont = (id: string) => {
     patch({ font: id });
@@ -168,52 +165,35 @@ export default function AppearanceSection({
         })}
       </div>
 
-      {/* Custom theme's two colors — only while that theme is on */}
+      {/* Custom theme's colors — only while that theme is on */}
       {settings.theme === "custom" && (
         <>
-          <SectionTitle title="Custom colors" />
-          <div className="mb-6 rounded-2xl border border-edge bg-panel p-4">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              {(["bg", "text", "accent"] as const).map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setEditing(k)}
-                  aria-pressed={editing === k}
-                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${
-                    editing === k ? "border-accent bg-hover font-semibold" : "border-edge hover:border-ink-3"
-                  }`}
-                >
-                  <span className="h-4 w-4 rounded border border-edge" style={{ background: shown(k) }} />
-                  {CUSTOM_LABELS[k]}
-                  <span className={`text-ink-3 ${custom[k] ? "font-mono uppercase" : ""}`}>
-                    {custom[k] || "Same as text"}
-                  </span>
-                </button>
-              ))}
-              <button
-                onClick={() => saveCustom({ ...custom, bg: custom.text, text: custom.bg })}
-                title="Swap background and text"
-                aria-label="Swap background and text"
-                className="flex items-center self-stretch rounded-lg border border-edge px-2.5 hover:border-ink-3"
-              >
-                <ArrowLeftRight size={13} />
-              </button>
-            </div>
-            <ColorWheel
-              key={editing}
-              value={shown(editing)}
-              onChange={(hex) => previewCustom({ ...custom, [editing]: hex })}
-              onCommit={(hex) => saveCustom({ ...custom, [editing]: hex })}
-            />
-            {editing === "accent" && custom.accent && (
-              <button
-                onClick={() => saveCustom({ ...custom, accent: "" })}
-                className="mt-3 text-[12px] text-link hover:underline"
-              >
-                Same as text
-              </button>
-            )}
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-[17px] font-semibold tracking-tight text-ink">Custom colors</h2>
+            <button
+              onClick={() => saveCustom({ ...custom, bg: custom.text, text: custom.bg })}
+              title="Swap background and text"
+              aria-label="Swap background and text"
+              className="rounded-md p-1.5 text-ink-3 hover:bg-hover hover:text-ink"
+            >
+              <ArrowLeftRight size={14} />
+            </button>
           </div>
+          <Card>
+            {(["bg", "text", "accent"] as const).map((k) => (
+              <Row key={k} label={CUSTOM_LABELS[k]}>
+                <ColorField
+                  label={CUSTOM_LABELS[k]}
+                  value={custom[k]}
+                  fallback={custom.text}
+                  placeholder={k === "accent" ? "Same as text" : undefined}
+                  onChange={(hex) => previewCustom({ ...custom, [k]: hex })}
+                  onCommit={(hex) => saveCustom({ ...custom, [k]: hex })}
+                  onClear={k === "accent" ? () => saveCustom({ ...custom, accent: "" }) : undefined}
+                />
+              </Row>
+            ))}
+          </Card>
         </>
       )}
 
