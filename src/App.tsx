@@ -13,8 +13,8 @@ import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
 import { migrateMedia } from "./lib/mediaMigration";
 import { onRemoteChanges, startSync } from "./lib/sync";
+import { cloneNotebook } from "./lib/share";
 import {
-  cloneNotebook,
   createFolder,
   createNotebook,
   deleteFolder,

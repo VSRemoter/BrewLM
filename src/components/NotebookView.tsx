@@ -10,7 +10,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import {
   addMessage,
   addSource,
-  cloneNotebook,
   createChat,
   ensureChat,
   deleteAllChats,
@@ -27,6 +26,7 @@ import {
   setNotebookChatBgDim,
   touchChat,
 } from "../lib/db";
+import { cloneNotebook } from "../lib/share";
 import { ingestFiles } from "../lib/ingest";
 import { fetchLinkContent } from "../lib/source";
 import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
