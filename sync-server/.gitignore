@@ -1,3 +1,5 @@
 node_modules/
 .wrangler/
 .dev.vars
+# The live ADMIN_TOKEN (take-downs of reported shared links); move it to a password manager.
+.admin-token
