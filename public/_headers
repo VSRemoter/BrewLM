@@ -10,15 +10,16 @@
 # The app's page, at "/" and at shared links (/s/*, see _redirects). It shows
 # other people's notebooks and fetched web pages, so scripts may come only
 # from the app's own files and the two inline scripts in index.html (by hash:
-# src/lib/csp.test.ts fails when they change). Styles allow inline (KaTeX,
+# src/lib/csp.test.ts fails when they change), plus Cloudflare Web Analytics'
+# beacon, which Cloudflare adds to the page. Styles allow inline (KaTeX,
 # Mermaid, Excalidraw write style attributes). Fonts may also come from
 # esm.sh: Excalidraw's CJK font isn't bundled (scripts/copy-excalidraw-fonts.mjs).
 # Network stays open: the AI provider is any address the user enters,
 # including a local model server. Keep the two copies the same.
 /
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-ucSOQe5VD/9xZf74ma3VwrBK/O1WT9eqzii5tYawC5w=' 'sha256-G1F5mmTms/TwwCV1rGpRJ03dfRHg/gjo7pWjhTzgyoE='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https://esm.sh; media-src 'self' data: blob:; connect-src 'self' data: blob: https: wss: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' https:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com 'sha256-ucSOQe5VD/9xZf74ma3VwrBK/O1WT9eqzii5tYawC5w=' 'sha256-G1F5mmTms/TwwCV1rGpRJ03dfRHg/gjo7pWjhTzgyoE='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https://esm.sh; media-src 'self' data: blob:; connect-src 'self' data: blob: https: wss: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' https:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 /s/*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-ucSOQe5VD/9xZf74ma3VwrBK/O1WT9eqzii5tYawC5w=' 'sha256-G1F5mmTms/TwwCV1rGpRJ03dfRHg/gjo7pWjhTzgyoE='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https://esm.sh; media-src 'self' data: blob:; connect-src 'self' data: blob: https: wss: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' https:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com 'sha256-ucSOQe5VD/9xZf74ma3VwrBK/O1WT9eqzii5tYawC5w=' 'sha256-G1F5mmTms/TwwCV1rGpRJ03dfRHg/gjo7pWjhTzgyoE='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https://esm.sh; media-src 'self' data: blob:; connect-src 'self' data: blob: https: wss: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' https:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 # The frame AI-built interactive pages run in (public/sandbox.html, served
 # as /sandbox: Cloudflare redirects the .html name, and rules match the
