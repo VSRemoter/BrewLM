@@ -678,20 +678,36 @@ async fn pair_handler(
         .into_response()
 }
 
-/// Exposes ONLY the UI theme preference — never arbitrary settings (keys).
+/// Exposes ONLY the UI theme and Custom Blend's colors — never arbitrary settings (keys).
 async fn preferences_handler(State(st): State<ServerState>, Path(key): Path<String>) -> Response {
     let dev = match auth_device(&st, &key, false).await {
         Ok(d) => d,
         Err(r) => return r,
     };
-    let row = sqlx::query("SELECT value FROM settings WHERE key = 'theme'")
-        .fetch_optional(&st.pool)
-        .await;
-    let theme = match row {
-        Ok(Some(r)) => r.get::<String, _>("value"),
-        _ => "brew".to_string(),
+    let rows = sqlx::query(
+        "SELECT key, value FROM settings WHERE key IN ('theme', 'customBg', 'customText', 'customAccent')",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    let get = |k: &str| {
+        rows.iter()
+            .find(|r| r.get::<String, _>("key") == k)
+            .map(|r| r.get::<String, _>("value"))
     };
-    no_store_json(json!({ "theme": theme, "scope": dev.scope })).into_response()
+    let theme = get("theme").unwrap_or_else(|| "brew".to_string());
+    // Only well-formed "#rrggbb" colors leave the machine; anything else reads as unset.
+    let color = |k: &str| get(k).filter(|v| is_hex_color(v)).unwrap_or_default();
+    no_store_json(json!({
+        "theme": theme,
+        "scope": dev.scope,
+        "custom": { "bg": color("customBg"), "text": color("customText"), "accent": color("customAccent") },
+    }))
+    .into_response()
+}
+
+fn is_hex_color(v: &str) -> bool {
+    v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 async fn notebooks_handler(State(st): State<ServerState>, Path(key): Path<String>) -> Response {
@@ -1806,6 +1822,14 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        for (k, v) in [("customBg", "#060023"), ("customText", "#ff83f0"), ("customAccent", "not a color"), ("anthropicKey", "sk-secret")] {
+            sqlx::query("INSERT INTO settings VALUES (?, ?)")
+                .bind(k)
+                .bind(v)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
 
         let state = ServerState {
             pool,
@@ -2140,11 +2164,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let text = body_string(resp).await;
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["theme"], "ocean");
         assert_eq!(body["scope"], "full");
+        // Custom Blend's colors, with anything that isn't a color left out
+        assert_eq!(body["custom"], json!({ "bg": "#060023", "text": "#ff83f0", "accent": "" }));
         // no settings keys or other config leaks
-        assert_eq!(body.as_object().unwrap().len(), 2);
+        assert_eq!(body.as_object().unwrap().len(), 3);
+        assert!(!text.contains("sk-secret"), "{text}");
     }
 
     #[tokio::test]

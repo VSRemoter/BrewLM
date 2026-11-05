@@ -13,7 +13,7 @@
   :root {
     /* Overridden by JS theme switcher; defaults = "brew" (desktop default). */
     --bg: #fff8f3; --panel: #ffffff; --panel2: #f9ece2; --edge: #f3e1d4;
-    --ink: #2b1709; --ink2: #7a5341; --ink3: #b39079; --accent: #f2541b;
+    --ink: #2b1709; --ink2: #76503e; --ink3: #8d6e5a; --accent: #f2541b; --on-accent: var(--bg);
     --good: #15803d; --bad: #dc2626;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -30,7 +30,7 @@
   body.readonly .write-only { display: none !important; }
   .btn { display: inline-block; border: 1px solid var(--edge); background: var(--panel);
     color: var(--ink); border-radius: 999px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
-  .btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
   .btn-danger { color: var(--bad); }
   .btn:disabled { opacity: .5; }
   .tts-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
@@ -96,10 +96,10 @@
   .tabs { display: flex; gap: 6px; margin: 10px 0 14px; }
   .tab { flex: 1; text-align: center; padding: 9px 0; border-radius: 999px; font-size: 14px;
     cursor: pointer; border: 1px solid var(--edge); background: var(--panel); color: var(--ink2); }
-  .tab.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .tab.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
   /* Chat */
   .msg { max-width: 88%; padding: 10px 14px; border-radius: 16px; margin-bottom: 10px; font-size: 14.5px; }
-  .msg.user { margin-left: auto; background: var(--accent); color: var(--bg); border-bottom-right-radius: 4px; }
+  .msg.user { margin-left: auto; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }
   .msg.bot { background: var(--panel); border: 1px solid var(--edge); border-bottom-left-radius: 4px; }
   .msg.bot .body-md { font-size: 14.5px; }
   .msg.thinking { color: var(--ink3); font-style: italic; }
@@ -111,7 +111,7 @@
   .composer textarea { flex: 1; border: 1px solid var(--edge); background: var(--panel);
     color: var(--ink); border-radius: 18px; padding: 10px 14px; font-size: 15px; max-height: 110px;
     outline: none; resize: none; font-family: inherit; }
-  .composer button { border-radius: 999px; border: none; background: var(--accent); color: var(--bg);
+  .composer button { border-radius: 999px; border: none; background: var(--accent); color: var(--on-accent);
     padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
   .composer button:disabled { opacity: .5; }
   #app.in-chat { padding-bottom: 100px; }
@@ -126,7 +126,7 @@
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
   .chip { border: 1px solid var(--edge); background: var(--panel2); color: var(--ink2);
     border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
-  .chip.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .job-pill { background: var(--panel2); border: 1px dashed var(--edge); border-radius: 12px;
     padding: 10px 14px; font-size: 13px; color: var(--ink2); margin-bottom: 10px; }
   .src-item { cursor: default; }
@@ -184,31 +184,76 @@ const post = (path, body) => {
 };
 
 /* ------------------------------- theming -------------------------------- */
+// Same themes, names and order as the desktop's picker (src/lib/themes.ts).
 const M_THEMES = {
-  brew:     { name:'Brew',     scheme:'light',font:null, v:{ bg:'#fff8f3', panel:'#ffffff', panel2:'#f9ece2', edge:'#f3e1d4', ink:'#2b1709', ink2:'#7a5341', ink3:'#b39079', accent:'#f2541b' } },
-  original: { name:'Daylight', scheme:'light', font:null, v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#8a8a8a', accent:'#171717' } },
-  midnight: { name:'Midnight', scheme:'dark', font:null, v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a1a1aa', ink3:'#6e6e78', accent:'#f4f4f5' } },
-  forest:   { name:'Forest',   scheme:'dark', font:null, v:{ bg:'#0f1412', panel:'#161d1a', panel2:'#1f2824', edge:'#2b3631', ink:'#eef2ec', ink2:'#aab5ad', ink3:'#7a877f', accent:'#4cc38a' } },
-  ocean:    { name:'Ocean',    scheme:'dark', font:null, v:{ bg:'#0b111c', panel:'#121a28', panel2:'#1b2434', edge:'#273347', ink:'#edf2f9', ink2:'#a9b4c5', ink3:'#76839a', accent:'#4ea6ff' } },
-  copper:   { name:'Copper',   scheme:'dark', font:null, v:{ bg:'#14100d', panel:'#1c1713', panel2:'#28211b', edge:'#382e26', ink:'#f5eee6', ink2:'#bcae9f', ink3:'#918372', accent:'#e8873f' } },
-  wine:     { name:'Wine',     scheme:'dark', font:null, v:{ bg:'#140f13', panel:'#1c161b', panel2:'#2a1f27', edge:'#3a2c35', ink:'#f6eff3', ink2:'#bcabb5', ink3:'#93808b', accent:'#e0607e' } },
-  rose:     { name:'Rose',     scheme:'light',font:null, v:{ bg:'#fdf1f6', panel:'#ffffff', panel2:'#f8e2ec', edge:'#f2d3e1', ink:'#3f1a2d', ink2:'#93536f', ink3:'#c18ba6', accent:'#ec4899' } },
-  matrix:   { name:'Matrix',   scheme:'dark', font:'"SF Mono", ui-monospace, Menlo, monospace',
-              v:{ bg:'#010603', panel:'#04140b', panel2:'#082014', edge:'#11452a', ink:'#a3f7bf', ink2:'#52b96f', ink3:'#2d7a44', accent:'#22e05c' } },
-  lilac:    { name:'Lilac',    scheme:'light',font:null, v:{ bg:'#f5f3fc', panel:'#ffffff', panel2:'#ece7fa', edge:'#e4ddf6', ink:'#2d2342', ink2:'#6e5f99', ink3:'#a89ccc', accent:'#7c5cff' } },
-  sunset:   { name:'Sunset',   scheme:'dark', font:null, v:{ bg:'#1f1016', panel:'#2a161d', panel2:'#331a22', edge:'#46222d', ink:'#f7e8dd', ink2:'#c4a0a5', ink3:'#8a5f68', accent:'#ff9e42' } },
-  candy:    { name:'Candy',    scheme:'dark', font:null, v:{ bg:'#0d0a1f', panel:'#17122e', panel2:'#1f1840', edge:'#2b2252', ink:'#efeaff', ink2:'#a99bdd', ink3:'#6c5fa8', accent:'#ff6bcb' } },
+  brew:     { name:'Brew',           scheme:'light', v:{ bg:'#fff8f3', panel:'#ffffff', panel2:'#f9ece2', edge:'#f3e1d4', ink:'#2b1709', ink2:'#76503e', ink3:'#8d6e5a', accent:'#f2541b' } },
+  original: { name:'Cream',          scheme:'light', v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#747474', accent:'#171717' } },
+  rose:     { name:'Rose Latte',     scheme:'light', v:{ bg:'#fdf1f6', panel:'#ffffff', panel2:'#f8e2ec', edge:'#f2d3e1', ink:'#3f1a2d', ink2:'#814660', ink3:'#97677f', accent:'#ec4899' } },
+  lilac:    { name:'Lavender Latte', scheme:'light', v:{ bg:'#f5f3fc', panel:'#ffffff', panel2:'#ece7fa', edge:'#e4ddf6', ink:'#2d2342', ink2:'#5e5184', ink3:'#796e98', accent:'#7c5cff' } },
+  copper:   { name:'Espresso',       scheme:'dark',  v:{ bg:'#14100d', panel:'#1c1713', panel2:'#28211b', edge:'#382e26', ink:'#f5eee6', ink2:'#bcae9f', ink3:'#918372', accent:'#e8873f' } },
+  midnight: { name:'Dark Roast',     scheme:'dark',  v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a2a2ab', ink3:'#81818a', accent:'#f4f4f5' } },
+  wine:     { name:'Coffee Cherry',  scheme:'dark',  v:{ bg:'#140f13', panel:'#1c161b', panel2:'#2a1f27', edge:'#3a2c35', ink:'#f6eff3', ink2:'#bcabb5', ink3:'#93808b', accent:'#e0607e' } },
+  forest:   { name:'Matcha',         scheme:'dark',  v:{ bg:'#0f1412', panel:'#161d1a', panel2:'#1f2824', edge:'#2b3631', ink:'#eef2ec', ink2:'#aab5ad', ink3:'#7b8880', accent:'#4cc38a' } },
+  ocean:    { name:'Cold Brew',      scheme:'dark',  v:{ bg:'#0b111c', panel:'#121a28', panel2:'#1b2434', edge:'#273347', ink:'#edf2f9', ink2:'#a9b4c5', ink3:'#77849b', accent:'#4ea6ff' } },
+  // Custom Blend joins once the desktop sends its colors (customTheme()).
 };
+// Themes the desktop retired, and where their fans went.
+const RETIRED_THEMES = { velvet:'custom', sunset:'wine', candy:'lilac' };
 const THEME_KEY = 'brewlm-mobile-theme';
 let currentTheme = 'brew';
 
+/* Custom Blend, derived from the desktop's picks the same way it does
+   (src/lib/customTheme.ts): surfaces blend background and text, and any
+   text or accent too faint to read is nudged until it passes. */
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const rgbHex = c => '#' + c.map(v => Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, '0')).join('');
+const mixHex = (a, b, t) => { const [x, y] = [hexRgb(a), hexRgb(b)]; return rgbHex(x.map((v, i) => v + (y[i] - v) * t)); };
+const lum = h => {
+  const [r, g, b] = hexRgb(h).map(v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrastOf = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+const darkHex = h => lum(h) < 0.18;
+function readableOn(color, bg, ratio) {
+  if (contrastOf(color, bg) >= ratio) return color;
+  const target = darkHex(bg) ? '#ffffff' : '#000000';
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (contrastOf(mixHex(color, target, mid), bg) >= ratio) hi = mid; else lo = mid;
+  }
+  return mixHex(color, target, hi);
+}
+function customTheme({ bg, text, accent }) {
+  const dark = darkHex(bg);
+  const panel = dark ? mixHex(bg, text, 0.04) : mixHex(bg, '#ffffff', 0.7);
+  const tone = t => mixHex(panel, text, t);
+  const hover = tone(dark ? 0.1 : 0.07);
+  const ink = readableOn(text, hover, 4.5);
+  const pop = readableOn(accent || text, panel, 3);
+  const onAccent = contrastOf(bg, pop) >= 4.5 ? bg
+    : contrastOf('#000000', pop) >= contrastOf('#ffffff', pop) ? '#000000' : '#ffffff';
+  return { name:'Custom Blend', scheme: dark ? 'dark' : 'light', v:{
+    bg, panel, panel2: hover, edge: tone(dark ? 0.22 : 0.16), ink,
+    ink2: readableOn(mixHex(ink, panel, 0.25), hover, 4.5),
+    ink3: readableOn(mixHex(ink, panel, 0.4), hover, 4.5),
+    accent: pop, onAccent,
+  } };
+}
+const HEX = /^#[0-9a-f]{6}$/i;
+function addCustomTheme(c) {
+  if (c && HEX.test(c.bg) && HEX.test(c.text))
+    M_THEMES.custom = customTheme({ bg: c.bg, text: c.text, accent: HEX.test(c.accent) ? c.accent : '' });
+}
+
 function applyMobileTheme(id, persist) {
+  id = RETIRED_THEMES[id] ?? id;
   const t = M_THEMES[id] || M_THEMES.brew;
   currentTheme = M_THEMES[id] ? id : 'brew';
   const root = document.documentElement;
-  for (const [k, val] of Object.entries(t.v)) root.style.setProperty(`--${k}`, val);
+  for (const [k, val] of Object.entries({ onAccent: t.v.bg, ...t.v }))
+    root.style.setProperty(k === 'onAccent' ? '--on-accent' : `--${k}`, val);
   root.style.colorScheme = t.scheme;
-  document.body.style.fontFamily = t.font || '';
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', t.v.bg);
   if (persist) try { localStorage.setItem(THEME_KEY, currentTheme); } catch {}
   document.querySelectorAll('.tdot').forEach(d =>
@@ -223,6 +268,7 @@ function buildThemeDock() {
     dot.className = 'tdot';
     dot.dataset.theme = id;
     dot.title = t.name;
+    dot.setAttribute('aria-label', t.name);
     dot.style.backgroundColor = t.v.accent;
     dot.onclick = () => applyMobileTheme(id, true);
     dock.appendChild(dot);
@@ -230,17 +276,20 @@ function buildThemeDock() {
   document.body.appendChild(dock);
 }
 async function initTheme() {
-  buildThemeDock();
-  const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
-  if (saved && M_THEMES[saved]) return applyMobileTheme(saved, false);
+  // The desktop's theme, plus Custom Blend's colors so that theme can be offered here too.
+  let desktop = null;
   if (MODE === 'd') {
     try {
-      const { theme, scope } = await api('/preferences');
+      const { theme, scope, custom } = await api('/preferences');
       if (scope) { SCOPE = scope; applyScopeClass(); }
-      return applyMobileTheme(M_THEMES[theme] ? theme : 'brew', false);
+      addCustomTheme(custom);
+      desktop = theme;
     } catch {}
   }
-  applyMobileTheme('brew', false);
+  buildThemeDock();
+  const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
+  const pick = [saved, desktop].map(id => RETIRED_THEMES[id] ?? id).find(id => id && M_THEMES[id]);
+  applyMobileTheme(pick || 'brew', false);
 }
 
 /* -------------------------------- markdown ------------------------------ */
