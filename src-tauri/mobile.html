@@ -128,7 +128,12 @@
     border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
   .chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .job-pill { background: var(--panel2); border: 1px dashed var(--edge); border-radius: 12px;
-    padding: 10px 14px; font-size: 13px; color: var(--ink2); margin-bottom: 10px; }
+    padding: 10px 14px; font-size: 13px; color: var(--ink2); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px; }
+  .job-pill .txt { flex: 1; min-width: 0; }
+  .job-pill .x { flex: none; width: 28px; height: 28px; margin: -4px -6px -4px 0; border: 0; border-radius: 8px;
+    background: transparent; color: var(--ink3); font-size: 18px; line-height: 1; cursor: pointer; }
+  .job-pill .x:disabled { opacity: .4; }
   .src-item { cursor: default; }
   .src-item .t { font-size: 14px; }
   /* Theme dock */
@@ -664,8 +669,9 @@ async function pollJob(id, maxSeconds) {
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 2000));
     const job = await api(`/jobs/${encodeURIComponent(id)}`);
-    if (job.status === 'done' || job.status === 'error') return job;
-    if (activeJobs[id]) activeJobs[id].el && (activeJobs[id].el.querySelector('.p').textContent = job.progress || 'Working…');
+    if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') return job;
+    const a = activeJobs[id];
+    if (a && a.el && !a.cancelling) a.el.querySelector('.p').textContent = job.progress || 'Working…';
   }
   throw new Error('Timed out waiting for the desktop — is BrewLM open there?');
 }
@@ -797,12 +803,23 @@ function generateSheet(pane, nb) {
       const { job_id } = await post('/generate', { notebook_id: nb.id, kind: picked.kind, options });
       const jobsEl = pane.querySelector('#jobs');
       jobsEl.insertAdjacentHTML('afterbegin',
-        `<div class="job-pill" id="job-${job_id}">⏳ <strong>${picked.label}</strong> — <span class="p">Queued…</span></div>`);
-      activeJobs[job_id] = { label: picked.label, el: document.getElementById(`job-${job_id}`) };
+        `<div class="job-pill" id="job-${job_id}"><span class="txt">⏳ <strong>${picked.label}</strong> — <span class="p">Queued…</span></span>` +
+        `<button class="x" aria-label="Cancel ${picked.label}">×</button></div>`);
+      const pill = document.getElementById(`job-${job_id}`);
+      activeJobs[job_id] = { label: picked.label, el: pill };
+      // Stops it on the computer too; nothing is saved.
+      const x = pill.querySelector('.x');
+      x.onclick = async () => {
+        x.disabled = true;
+        activeJobs[job_id].cancelling = true;
+        pill.querySelector('.p').textContent = 'Cancelling…';
+        try { await post(`/jobs/${encodeURIComponent(job_id)}/cancel`); }
+        catch (err) { x.disabled = false; activeJobs[job_id].cancelling = false; alert(err.message); }
+      };
       const job = await pollJob(job_id, picked.kind === 'audio' || picked.kind === 'research' ? 600 : 180);
       document.getElementById(`job-${job_id}`)?.remove();
       delete activeJobs[job_id];
-      if (job.status !== 'done') alert(job.result || 'Generation failed.');
+      if (job.status === 'error') alert(job.result || 'Generation failed.');
       renderNotebook(nb.id);
     } catch (e) { alert(e.message); renderNotebook(nb.id); }
   };

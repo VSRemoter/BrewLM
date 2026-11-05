@@ -21,7 +21,7 @@ import {
   touchChat,
   touchNotebook,
 } from "./db";
-import { complete, extractJson, type StreamUsage } from "./llm";
+import { complete, extractJson, isAbortError, type StreamUsage } from "./llm";
 import { shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
@@ -103,6 +103,9 @@ export function stopJobRunner(): void {
   timer = null;
 }
 
+/** How often a running job checks whether the phone cancelled it. */
+const CANCEL_POLL_MS = 1500;
+
 async function drainOnce(): Promise<void> {
   if (busy) return;
   busy = true;
@@ -113,34 +116,60 @@ async function drainOnce(): Promise<void> {
     );
     const job = rows[0];
     if (!job) return;
-    await d.execute("UPDATE jobs SET status = 'running', updated_at = $1 WHERE id = $2", [
-      Date.now(),
-      job.id,
-    ]);
+    // Only if still pending: the phone may have cancelled it since the select.
+    const claimed = await d.execute(
+      "UPDATE jobs SET status = 'running', updated_at = $1 WHERE id = $2 AND status = 'pending'",
+      [Date.now(), job.id]
+    );
+    if (claimed.rowsAffected === 0) return;
     console.info("MOBILE_JOB_RUNNING", job.kind, job.id);
+    // The phone cancels by setting the row's status (see the sharing server).
+    const ctrl = new AbortController();
+    const watch = window.setInterval(() => {
+      void d
+        .select<{ status: string }[]>("SELECT status FROM jobs WHERE id = $1", [job.id])
+        .then((r) => {
+          if (r[0]?.status === "cancelled") ctrl.abort();
+        })
+        .catch(() => {});
+    }, CANCEL_POLL_MS);
+    // Outcomes only land on a job still running, so a cancel is never overwritten.
     try {
-      const result = await runJob(JSON.parse(job.payload));
+      const result = await runJob(JSON.parse(job.payload), ctrl.signal);
       await d.execute(
-        "UPDATE jobs SET status = 'done', result = $1, progress = '', updated_at = $2 WHERE id = $3",
+        "UPDATE jobs SET status = 'done', result = $1, progress = '', updated_at = $2 WHERE id = $3 AND status = 'running'",
         [result, Date.now(), job.id]
       );
       console.info("MOBILE_JOB_DONE", job.id);
     } catch (e) {
+      if (ctrl.signal.aborted) {
+        console.info("MOBILE_JOB_CANCELLED", job.id);
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       await d.execute(
-        "UPDATE jobs SET status = 'error', result = $1, updated_at = $2 WHERE id = $3",
+        "UPDATE jobs SET status = 'error', result = $1, updated_at = $2 WHERE id = $3 AND status = 'running'",
         [msg, Date.now(), job.id]
       );
       console.warn("MOBILE_JOB_ERROR", job.id, msg);
+    } finally {
+      window.clearInterval(watch);
     }
   } finally {
     busy = false;
   }
 }
 
-async function runJob(payload: { notebook_id: string; content?: string; kind?: string } & Record<string, unknown>): Promise<string> {
-  if (payload.kind === undefined && typeof payload.content === "string") return runChatJob(payload as never);
-  return runGenerateJob(payload as never);
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+async function runJob(
+  payload: { notebook_id: string; content?: string; kind?: string } & Record<string, unknown>,
+  signal: AbortSignal
+): Promise<string> {
+  if (payload.kind === undefined && typeof payload.content === "string") return runChatJob(payload as never, signal);
+  return runGenerateJob(payload as never, signal);
 }
 
 /* ---------------------------------- chat ---------------------------------- */
@@ -150,7 +179,7 @@ async function runChatJob(p: {
   content: string;
   chat_id?: string | null;
   new_chat?: boolean;
-}): Promise<string> {
+}, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key in Settings on the desktop first.");
@@ -206,6 +235,7 @@ async function runChatJob(p: {
       temperature: settings.temperature ?? undefined,
       thinking: settings.thinking,
       maxOutput: settings.maxOutput,
+      signal,
       onUsage: (u) => void recordUsage("chat", settings.provider, settings.model, u),
       cacheKey: p.notebook_id,
       // Per-question excerpts sit before the history, so a history breakpoint
@@ -227,6 +257,7 @@ async function runChatJob(p: {
     prompt: p.content,
     model: settings.model,
   });
+  throwIfAborted(signal);
   await addMessage(chatId, p.notebook_id, "assistant", answer);
   await touchChat(chatId);
   await touchNotebook(p.notebook_id);
@@ -259,7 +290,7 @@ async function runGenerateJob(p: {
   notebook_id: string;
   kind: string;
   options: GenOpts;
-}): Promise<string> {
+}, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key in Settings on the desktop first.");
@@ -275,9 +306,11 @@ async function runGenerateJob(p: {
       settings,
       title: o.topic,
       description: "",
+      signal,
       onPhase: (phase) => void setJobProgress(phase),
       onUsage: (provider, model, u) => meterUsage(meter, provider, model, u),
     });
+    throwIfAborted(signal);
     for (const page of outcome.pages) {
       const src = await addSource(p.notebook_id, "link", page.title, page.text, page.url);
       void indexSource(src, settings);
@@ -315,8 +348,12 @@ async function runGenerateJob(p: {
     // Huge notebooks: cached whole-notebook condensation so every tool covers
     // ALL sources (the expensive pass is computed once, then shared).
     if (opts.exhaustive && totalSourceChars > MAP_REDUCE_THRESHOLD) {
-      const notes = await condenseNotebook(p.notebook_id, grounding, settings, (ph) =>
-        void setJobProgress(ph)
+      const notes = await condenseNotebook(
+        p.notebook_id,
+        grounding,
+        settings,
+        (ph) => void setJobProgress(ph),
+        signal
       );
       return complete({
         provider: settings.provider,
@@ -325,6 +362,7 @@ async function runGenerateJob(p: {
         thinking: settings.thinking,
         maxOutput: settings.maxOutput,
         temperature: settings.temperature ?? undefined,
+        signal,
         onUsage: tally,
         messages: [
           { role: "system", content: condensedSystemPrompt(notes) },
@@ -340,6 +378,7 @@ async function runGenerateJob(p: {
       thinking: settings.thinking,
       maxOutput: settings.maxOutput,
       temperature: settings.temperature ?? undefined,
+      signal,
       onUsage: tally,
       messages: [
         {
@@ -421,11 +460,13 @@ async function runGenerateJob(p: {
       let note: string | undefined;
       try {
         const result = await synthesizeScript(turns, settings, {
+          signal,
           onProgress: (i, total) => void setJobProgress(`Synthesizing audio ${i + 1}/${total}…`),
         });
         audio = result.audio;
         note = result.note;
       } catch (e) {
+        if (isAbortError(e) || signal.aborted) throw e;
         note = `TTS failed (${e instanceof Error ? e.message : "unknown error"}) — script only`;
       }
       title = "Audio overview";
@@ -436,6 +477,7 @@ async function runGenerateJob(p: {
     default:
       throw new Error(`Unknown generation kind: ${p.kind}`);
   }
+  throwIfAborted(signal);
   await addArtifact(p.notebook_id, p.kind as never, title, data, meterTotal(meter));
   await touchNotebook(p.notebook_id);
   return done;

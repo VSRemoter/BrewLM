@@ -292,6 +292,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/d/{key}/api/chat", post(chat_handler))
         .route("/d/{key}/api/generate", post(generate_handler))
         .route("/d/{key}/api/jobs/{id}", get(job_handler))
+        .route("/d/{key}/api/jobs/{id}/cancel", post(job_cancel_handler))
         .fallback(|| async { (StatusCode::NOT_FOUND, "not found") })
         .with_state(state)
 }
@@ -1544,6 +1545,29 @@ async fn job_handler(State(st): State<ServerState>, Path((key, id)): Path<(Strin
     }
 }
 
+/// Cancel one of this device's queued or running jobs. A queued one is never
+/// picked up; the desktop runner sees the status change on a running one,
+/// stops it and saves nothing. A job that already ended is left as it was.
+async fn job_cancel_handler(State(st): State<ServerState>, Path((key, id)): Path<(String, String)>) -> Response {
+    let dev = match auth_device(&st, &key, true).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let res = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', progress = '', updated_at = ? \
+         WHERE id = ? AND device_id = ? AND status IN ('pending', 'running')",
+    )
+    .bind(now_ms())
+    .bind(&id)
+    .bind(&dev.id)
+    .execute(&st.pool)
+    .await;
+    match res {
+        Ok(r) => no_store_json(json!({ "cancelled": r.rows_affected() > 0 })).into_response(),
+        Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    }
+}
+
 async fn artifact_handler(State(st): State<ServerState>, Path((key, id)): Path<(String, String)>) -> Response {
     if let Err(r) = auth_device(&st, &key, false).await {
         return r;
@@ -2112,6 +2136,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn phone_can_cancel_its_own_unfinished_jobs() {
+        let (app, _dir) = fixture().await;
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/d/{FULL_KEY}/api/generate"),
+                r#"{"notebook_id":"nb1","kind":"quiz"}"#,
+            ))
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let job_id = body["job_id"].as_str().unwrap().to_string();
+        let cancel = format!("/d/{FULL_KEY}/api/jobs/{job_id}/cancel");
+
+        // A read-only device can't cancel.
+        let resp = app
+            .clone()
+            .oneshot(post_json(&format!("/d/{READ_KEY}/api/jobs/{job_id}/cancel"), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let resp = app.clone().oneshot(post_json(&cancel, "{}")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains(r#""cancelled":true"#));
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/d/{FULL_KEY}/api/jobs/{job_id}")))
+            .await
+            .unwrap();
+        assert!(body_string(resp).await.contains(r#""status":"cancelled""#));
+
+        // Already ended: nothing changes.
+        let resp = app.oneshot(post_json(&cancel, "{}")).await.unwrap();
+        assert!(body_string(resp).await.contains(r#""cancelled":false"#));
     }
 
     #[tokio::test]
