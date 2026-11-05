@@ -208,6 +208,9 @@ export const platform: Platform = {
   },
   openUrl: async (url) => void window.open(url, "_blank", "noopener"),
   appVersion: async () => __APP_VERSION__,
+  // public/sandbox.html: Cloudflare serves it at /sandbox, with its own
+  // headers there (public/_headers); Vite by its file name.
+  sandboxUrl: () => (import.meta.env.DEV ? "/sandbox.html" : "/sandbox"),
 
   async saveFile({ defaultName, data }) {
     const ext = defaultName.split(".").pop()?.toLowerCase() ?? "";

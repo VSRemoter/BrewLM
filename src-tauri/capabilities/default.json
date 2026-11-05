@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window. Files outside the app's own folder are reachable only once the user picks them in a dialog (the dialog adds each pick to the fs scope); the one exception is writing the database file when restoring a backup.",
   "windows": [
     "main"
   ],
@@ -12,17 +12,15 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:default",
-    {
-      "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "**" }]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "**" }]
-    },
+    "fs:allow-read-file",
+    "fs:allow-write-text-file",
     {
       "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        { "path": "$APPDATA/brewlm.db" },
+        { "path": "$APPDATA/brewlm.db-wal" },
+        { "path": "$APPDATA/brewlm.db-shm" }
+      ]
     },
     "http:default",
     {

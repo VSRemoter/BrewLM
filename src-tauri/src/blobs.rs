@@ -205,10 +205,23 @@ fn gc(dir: &Path, keep: &[String], grace_ms: u64) -> Result<GcResult, String> {
     Ok(out)
 }
 
+/// The page may only name a file the user picked in a save/open dialog (the
+/// dialog adds each pick to the file-system scope), so these commands can't
+/// write or read anywhere else on the disk.
+fn user_picked(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
+    use tauri_plugin_fs::FsExt;
+    if app.fs_scope().is_allowed(path) {
+        Ok(())
+    } else {
+        Err("Choose the file in the dialog.".into())
+    }
+}
+
 /// Zip the database (WAL already checkpointed by the caller) + every blob.
 /// Media is already compressed, so entries are stored, not deflated.
 #[tauri::command]
 pub async fn backup_export(app: tauri::AppHandle, dest: String) -> Result<(), String> {
+    user_picked(&app, &dest)?;
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || export_zip(&data_dir, Path::new(&dest)))
         .await
@@ -246,6 +259,7 @@ fn export_zip(data_dir: &Path, dest: &Path) -> Result<(), String> {
 /// the database and truncates the WAL sidecars first, then reloads.
 #[tauri::command]
 pub async fn backup_restore_zip(app: tauri::AppHandle, src: String) -> Result<(), String> {
+    user_picked(&app, &src)?;
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || restore_zip(&data_dir, Path::new(&src)))
         .await

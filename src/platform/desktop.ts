@@ -67,6 +67,9 @@ export const platform: Platform = {
     log: (line) => void invoke("sync_log", { line }).catch(() => {}),
   },
 
+  // Served by the app itself (src-tauri/src/sandbox.rs).
+  sandboxUrl: () => convertFileSrc("", "brewsandbox"),
+
   onMenu(handler) {
     const off = listen<string>("menu", (e) => handler(e.payload));
     return () => void off.then((f) => f());

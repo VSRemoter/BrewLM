@@ -161,12 +161,11 @@ const PAGE_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
 /**
- * The web app runs pages in public/sandbox.html instead of a srcdoc frame,
- * which would inherit the app's own CSP (public/_headers) and so couldn't run
- * the page's inline scripts. The frame says "ready", then gets the page.
+ * Pages run in public/sandbox.html (platform.sandboxUrl(): the web app's
+ * /sandbox, the desktop app's brewsandbox: scheme) instead of a srcdoc frame,
+ * which would inherit the app's own CSP and so couldn't run the page's inline
+ * scripts. The frame says "ready", then gets the page.
  */
-/** Cloudflare serves public/sandbox.html at /sandbox, with its own headers there; Vite by its file name. */
-export const SANDBOX_URL = import.meta.env.DEV ? "/sandbox.html" : "/sandbox";
 export const SANDBOX_READY = "brewlm-sandbox-ready";
 export const SANDBOX_PAGE = "brewlm-sandbox-page";
 

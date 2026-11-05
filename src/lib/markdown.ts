@@ -1,5 +1,6 @@
 /** Minimal, safe markdown → HTML for chat bubbles. */
 
+import DOMPurify, { type DOMPurify as Purifier } from "dompurify";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -26,34 +27,54 @@ function inline(s: string): string {
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
-function unescapeHtml(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+/* ------------------------------ svg drawings ------------------------------ */
+
+/**
+ * The SVG cleaner: DOMPurify (what mermaid uses too), in an instance of its
+ * own so this hook doesn't touch mermaid's. Null where there's no DOM to
+ * parse with (unit tests in Node), and then drawings show as code instead.
+ */
+let purifier: Purifier | null | undefined;
+
+function svgPurifier(): Purifier | null {
+  if (purifier !== undefined) return purifier;
+  purifier = typeof window === "undefined" ? null : DOMPurify(window);
+  if (purifier && !purifier.isSupported) purifier = null;
+  // Only #refs survive (gradients, markers, <use> by id): nothing phones home.
+  purifier?.addHook("uponSanitizeAttribute", (_node, data) => {
+    if ((data.attrName === "href" || data.attrName === "xlink:href") && !data.attrValue.trim().startsWith("#"))
+      data.keepAttr = false;
+  });
+  return purifier;
 }
 
 /**
- * Keep the drawing, drop anything active: script/foreignObject/a elements,
- * on* event attributes, and hrefs pointing outside the document (only #refs
- * survive, so gradients/links-by-id keep working and nothing phones home).
+ * Keep the drawing, drop anything active. AI answers (steered by sources) and
+ * shared notebooks (written by someone else) both reach this, so it must hold
+ * against hostile input: a hand-rolled filter here was bypassed before.
+ * Null if it isn't a drawing (or can't be cleaned here): show it as code.
  */
-function sanitizeSvg(escaped: string): string | null {
-  let raw = unescapeHtml(escaped.trim()).replace(/^<\?xml[^?]*\?>\s*/, "");
-  if (!raw.toLowerCase().startsWith("<svg")) return null;
-  raw = raw
-    .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
-    .replace(/<foreignObject[\s\S]*?<\/foreignObject\s*>/gi, "")
-    .replace(/<a[\s>][\s\S]*?<\/a\s*>/gi, "")
-    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
-    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
-    .replace(/\son\w+\s*=\s*[^\s>]+\s*/gi, "")
-    .replace(/(xlink:)?href\s*=\s*"(?!#)[^"]*"/gi, "")
-    .replace(/(xlink:)?href\s*=\s*'(?!#)[^']*'/gi, "");
-  return raw;
+export function sanitizeSvg(raw: string): string | null {
+  const svg = raw.trim().replace(/^<\?xml[^?]*\?>\s*/, "");
+  if (!svg.toLowerCase().startsWith("<svg")) return null;
+  const purify = svgPurifier();
+  if (!purify) return null;
+  const clean = purify.sanitize(svg, {
+    USE_PROFILES: { svg: true, svgFilters: true },
+    // <use> repeats a shape by id; the hook above keeps it to #refs in this page.
+    ADD_TAGS: ["use"],
+    FORBID_TAGS: ["a", "foreignObject"],
+  });
+  return clean.trimStart().toLowerCase().startsWith("<svg") ? clean : null;
 }
+
+/**
+ * Cleaned drawings go into the page last, after the math pass, so nothing
+ * substitutes text inside them. Their placeholders use a private-use
+ * character, removed from the source first so none can be forged.
+ */
+const SVG_MARK = "";
+const SVG_SLOT_RE = /(\d+)/g;
 
 /* ------------------------------- LaTeX math ------------------------------- */
 
@@ -100,8 +121,9 @@ function restoreMath(html: string, rendered: string[]): string {
 
 export function renderMarkdown(src: string): string {
   // Split fences on the RAW source so math inside code stays literal.
-  const blocks = src.split(/```/);
+  const blocks = src.split(SVG_MARK).join("").split(/```/);
   const rendered: string[] = [];
+  const svgs: string[] = [];
   let html = "";
 
   blocks.forEach((block, i) => {
@@ -109,7 +131,8 @@ export function renderMarkdown(src: string): string {
       // code fence: first line may be a language label
       const nl = block.indexOf("\n");
       const lang = (nl === -1 ? block : block.slice(0, nl)).trim().toLowerCase();
-      const code = escapeHtml((nl === -1 ? "" : block.slice(nl + 1)).replace(/\n$/, ""));
+      const raw = (nl === -1 ? "" : block.slice(nl + 1)).replace(/\n$/, "");
+      const code = escapeHtml(raw);
       // mermaid diagrams: placeholder div, hydrated into an svg on the client
       if (lang === "mermaid") {
         html += `<div class="mermaid-block">${code}</div>`;
@@ -117,9 +140,9 @@ export function renderMarkdown(src: string): string {
       }
       // svg fences: render the drawing inline (scripts/handlers stripped)
       if (lang === "svg" || lang === "xml") {
-        const svg = sanitizeSvg(code);
+        const svg = sanitizeSvg(raw);
         if (svg) {
-          html += `<div class="svg-embed">${svg}</div>`;
+          html += `<div class="svg-embed">${SVG_MARK}${svgs.push(svg) - 1}${SVG_MARK}</div>`;
           return;
         }
       }
@@ -235,5 +258,5 @@ export function renderMarkdown(src: string): string {
     flushList();
   });
 
-  return restoreMath(html, rendered);
+  return restoreMath(html, rendered).replace(SVG_SLOT_RE, (_, n) => svgs[Number(n)] ?? "");
 }

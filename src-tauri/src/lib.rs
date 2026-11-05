@@ -1,4 +1,5 @@
 mod blobs;
+mod sandbox;
 mod server;
 mod sync;
 
@@ -138,6 +139,8 @@ pub fn run() {
             let app = ctx.app_handle().clone();
             std::thread::spawn(move || responder.respond(blobs::serve(&app, &request)));
         })
+        // The frame interactive pages run in, with a policy of its own (see sandbox.rs).
+        .register_uri_scheme_protocol("brewsandbox", |_ctx, request| sandbox::serve(&request))
         .invoke_handler(tauri::generate_handler![
             greet,
             restart_app,

@@ -24,7 +24,6 @@ import {
   parseInteractive,
   SANDBOX_PAGE,
   SANDBOX_READY,
-  SANDBOX_URL,
   sandboxDoc,
 } from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
@@ -260,9 +259,9 @@ let docCount = 0;
 
 /**
  * An AI-built page in a sandboxed iframe: scripts run, but with an opaque
- * origin (no access to the app, its storage or keys) and no network (CSP
- * injected by sandboxDoc). Full screen reuses the same iframe — it's restyled
- * as an overlay, not remounted — so the page keeps its state.
+ * origin (no access to the app, its storage or keys) and no network (the
+ * frame's own CSP, and sandboxDoc's). Full screen reuses the same iframe —
+ * it's restyled as an overlay, not remounted — so the page keeps its state.
  */
 function InteractiveView({
   title,
@@ -281,8 +280,7 @@ function InteractiveView({
 }) {
   const page = useMemo(() => parseInteractive(data), [data]);
   const doc = useMemo(() => (page ? sandboxDoc(page.html, dark) : ""), [page, dark]);
-  /** Web: the page is posted to SANDBOX_URL when it's ready (see SANDBOX_URL); a new doc reloads the frame. */
-  const viaFrame = platform.kind === "web";
+  /** The page is posted to the frame (platform.sandboxUrl) when it's ready; a new doc reloads the frame. */
   const docRef = useRef(doc);
   docRef.current = doc;
   const docId = useMemo(() => ++docCount, [doc]);
@@ -301,7 +299,7 @@ function InteractiveView({
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frameRef.current?.contentWindow) return;
       const msg = e.data as { type?: unknown; message?: unknown } | null;
-      if (msg?.type === SANDBOX_READY && viaFrame)
+      if (msg?.type === SANDBOX_READY)
         (e.source as Window).postMessage({ type: SANDBOX_PAGE, html: docRef.current }, "*");
       else if (msg?.type === INTERACTIVE_ERROR_MESSAGE && typeof msg.message === "string")
         setProblem((cur) => cur ?? msg.message as string);
@@ -370,10 +368,10 @@ function InteractiveView({
         </div>
       )}
       <iframe
-        key={viaFrame ? `${run}:${docId}` : run}
+        key={`${run}:${docId}`}
         ref={frameRef}
         title={title}
-        {...(viaFrame ? { src: SANDBOX_URL } : { srcDoc: doc })}
+        src={platform.sandboxUrl()}
         sandbox="allow-scripts"
         className="min-h-0 w-full flex-1 border-0 bg-canvas"
       />

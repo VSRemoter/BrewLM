@@ -106,6 +106,13 @@ export interface Platform {
     log(line: string): void;
   };
 
+  /**
+   * The frame AI-built interactive pages run in (lib/interactive.ts): served
+   * with a no-network policy of its own, since a srcdoc frame would inherit
+   * the app's, which (rightly) blocks the pages' inline scripts.
+   */
+  sandboxUrl(): string;
+
   /** Desktop only: commands from the app's menu bar (e.g. "close-tab"). Returns an unsubscribe. */
   onMenu?(handler: (command: string) => void): () => void;
 }
