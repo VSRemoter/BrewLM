@@ -15,7 +15,8 @@
 
 import { platform } from "../platform";
 import {
-  chunksForNotebook,
+  chunkEmbeddings,
+  chunkRowsForNotebook,
   chunksForSource,
   getSetting,
   indexedSourceIds,
@@ -29,6 +30,7 @@ import { complete } from "./llm";
 import { ensureMediaText } from "./media";
 import { contextBudget, loadLocalServer, localHeaders } from "./local";
 import { activeKey, loadSettings } from "./settings";
+import type { ChunkRow } from "./db";
 import type { Settings, Source, SourceChunk } from "./types";
 import { addUsage, newUsageAccumulator, recordAccumulated } from "./usage";
 
@@ -47,6 +49,28 @@ export const isRetrievable = (s: Source) => {
   const text = sourceText(s);
   return text.length > 0 && !text.startsWith("data:");
 };
+
+/* ----------------------------- whole notebook ----------------------------- */
+
+/** What one source costs in a whole-notebook prompt: its text plus its heading. */
+const wholeCost = (s: Source) => sourceText(s).length + s.title.length + 32;
+
+/**
+ * Whether every source's full text fits the sources budget. Then the chat
+ * prompt carries the whole notebook in a fixed order instead of excerpts picked
+ * per message: nothing to rank (no embedding call, no index read), and the
+ * prompt stays byte-identical across messages and new chats, so the provider's
+ * prompt cache serves it from the second request on.
+ */
+export function wholeNotebookFits(sources: Source[], maxChars: number): boolean {
+  const textual = sources.filter(isRetrievable);
+  return textual.length > 0 && textual.reduce((n, s) => n + wholeCost(s), 0) <= maxChars;
+}
+
+/** Sources in a stable order (oldest first), independent of how the UI sorts them. */
+export function inDocumentOrder(sources: Source[]): Source[] {
+  return [...sources].sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
 
 /* -------------------------------- chunking -------------------------------- */
 
@@ -175,7 +199,7 @@ async function embedAll(texts: string[], settings: Settings): Promise<number[][]
   return out;
 }
 
-function cosine(a: number[], b: number[]): number {
+function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let dot = 0;
   let na = 0;
   let nb = 0;
@@ -306,17 +330,49 @@ export async function ensureIndexed(sources: Source[], settings?: Settings): Pro
     await indexSource(src, s);
   }
 
-  // Stale-embedding backfill.
+  // Stale-embedding backfill, in the background: the prompt being sent ranks
+  // with today's BM25 chunks rather than wait for every source to re-embed
+  // (on a session's first message that wait could be many seconds).
   const targets = embedTargets(s);
   if (targets.length === 0) return;
   const fingerprint = `${s.provider}:${targets.map((t) => `${t.model}/${t.key.slice(-4)}`).join(",")}`;
   const stale = await unembeddedSourceIds(notebookId);
-  for (const src of textual) {
-    const attemptKey = `${src.id}:${fingerprint}`;
-    if (!stale.has(src.id) || backfillAttempts.has(attemptKey)) continue;
-    backfillAttempts.add(attemptKey);
-    await indexSource(src, s, { onlyIfEmbeddable: true });
+  const todo = textual.filter((src) => stale.has(src.id) && !backfillAttempts.has(`${src.id}:${fingerprint}`));
+  for (const src of todo) backfillAttempts.add(`${src.id}:${fingerprint}`);
+  if (todo.length === 0) return;
+  void (async () => {
+    for (const src of todo) await indexSource(src, s, { onlyIfEmbeddable: true });
+  })();
+}
+
+/* ------------------------------ vector cache ------------------------------ */
+
+/**
+ * Parsed embeddings per notebook, by chunk id. Each message used to read every
+ * chunk's embedding JSON from the database and parse it again (megabytes for a
+ * big book); now only chunks not seen before are read. Chunk ids change on
+ * re-index, so a stale entry can't be served for new text.
+ */
+const vectorCache = new Map<string, Map<string, Float32Array | null>>();
+
+async function vectorsFor(notebookId: string, rows: ChunkRow[]): Promise<Map<string, Float32Array | null>> {
+  const known = vectorCache.get(notebookId) ?? new Map<string, Float32Array | null>();
+  const missing = rows.filter((r) => r.has_embedding && !known.has(r.id)).map((r) => r.id);
+  if (missing.length > 0) {
+    const fetched = await chunkEmbeddings(notebookId, missing.length > rows.length / 2 ? undefined : missing);
+    for (const { id, embedding } of fetched) {
+      try {
+        known.set(id, Float32Array.from(JSON.parse(embedding) as number[]));
+      } catch {
+        known.set(id, null); // corrupt embedding row — BM25 will cover it
+      }
+    }
   }
+  // Keep only live chunks, so deleted sources and old index versions don't pile up.
+  const next = new Map<string, Float32Array | null>();
+  for (const r of rows) next.set(r.id, r.has_embedding ? known.get(r.id) ?? null : null);
+  vectorCache.set(notebookId, next);
+  return next;
 }
 
 /* -------------------------------- retrieval ------------------------------- */
@@ -346,15 +402,15 @@ const HEAD_RE =
   /\b(first|begin|beginning|start|starting|opening|introduction|preface|prologue)\b/i;
 
 function boundaryChunks(
-  live: SourceChunk[],
+  live: ChunkRow[],
   rankedSourceIds: string[],
   query: string
-): SourceChunk[] {
+): ChunkRow[] {
   const tail = TAIL_RE.test(query);
   const head = HEAD_RE.test(query);
   if (!tail && !head) return [];
 
-  const bySource = new Map<string, SourceChunk[]>();
+  const bySource = new Map<string, ChunkRow[]>();
   for (const c of live) {
     const arr = bySource.get(c.source_id) ?? [];
     arr.push(c);
@@ -371,7 +427,7 @@ function boundaryChunks(
     if (largest) focus.push(largest[0]);
   }
 
-  const out: SourceChunk[] = [];
+  const out: ChunkRow[] = [];
   for (const id of focus) {
     const sorted = [...(bySource.get(id) ?? [])].sort((a, b) => a.seq - b.seq);
     if (head) out.push(...sorted.slice(0, 2));
@@ -390,7 +446,7 @@ const FRESH_SOURCE_MS = 30 * 60_000;
  * in the last half hour. "What's in the link I just added?" shares no words
  * with the page itself, so relevance scoring alone would leave it out.
  */
-function freshChunks(live: SourceChunk[], sources: Source[]): SourceChunk[] {
+function freshChunks(live: ChunkRow[], sources: Source[]): ChunkRow[] {
   const now = Date.now();
   const fresh = sources
     .filter((s) => now - s.created_at < FRESH_SOURCE_MS)
@@ -419,7 +475,7 @@ export async function rankChunks(
 ): Promise<RetrievedChunk[]> {
   const notebookId = sources[0]?.notebook_id;
   if (!notebookId || !query.trim()) return [];
-  const chunks = await chunksForNotebook(notebookId);
+  const chunks = await chunkRowsForNotebook(notebookId);
   if (chunks.length === 0) return [];
   const byId = new Map(sources.map((s) => [s.id, s]));
   const live = chunks.filter((c) => byId.has(c.source_id));
@@ -428,21 +484,20 @@ export async function rankChunks(
   const s = settings ?? (await loadSettings());
   const scored: { c: (typeof live)[number]; score: number }[] = [];
 
-  // Vector path — only when both sides can be embedded.
-  if (live.some((c) => c.embedding)) {
-    const qv = (await embedAll([query.slice(0, 2000)], s))?.[0];
+  // Vector path — only when both sides can be embedded. The query embedding
+  // and the stored vectors load in parallel.
+  if (live.some((c) => c.has_embedding)) {
+    const [qv, vectors] = await Promise.all([
+      embedAll([query.slice(0, 2000)], s).then((v) => v?.[0]),
+      vectorsFor(notebookId, live),
+    ]);
     if (qv) {
       for (const c of live) {
-        if (!c.embedding) continue;
-        try {
-          const v = JSON.parse(c.embedding) as number[];
-          // Vectors from a different embedding model (e.g. cloud vs local) aren't
-          // comparable; skip them and let BM25 take over if too few remain.
-          if (v.length !== qv.length) continue;
-          scored.push({ c, score: cosine(qv, v) });
-        } catch {
-          /* corrupt embedding row — BM25 will cover it */
-        }
+        const v = vectors.get(c.id);
+        // Vectors from a different embedding model (e.g. cloud vs local) aren't
+        // comparable; skip them and let BM25 take over if too few remain.
+        if (!v || v.length !== qv.length) continue;
+        scored.push({ c, score: cosine(qv, v) });
       }
     }
   }

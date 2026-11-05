@@ -46,6 +46,52 @@ interface StreamOptions {
    * start over, after a retry). Reasoning is never part of the yielded text.
    */
   onReasoning?: (reasoning: string) => void;
+  /**
+   * Groups requests that share a prompt prefix (the notebook id), so providers
+   * that route between servers send them to the same one and its cache:
+   * OpenRouter's `session_id`, OpenAI's `prompt_cache_key`.
+   */
+  cacheKey?: string;
+  /**
+   * Multi-turn chat: also cache the conversation up to the newest message, so
+   * the next turn re-reads the whole history from cache, not just the system
+   * prompt. Off for one-off requests (Studio), where it would only add the
+   * cache-write surcharge on text that is never read again.
+   */
+  cacheHistory?: boolean;
+}
+
+/**
+ * Prompt caching follows the message layout callers send. Leading system
+ * messages are the prompt's prefix, in order: the FIRST is the stable part
+ * (rules, sources) and gets the cache breakpoint; any later ones hold what
+ * changes between messages (@-mentions), after the breakpoint so they never
+ * invalidate it. Providers without explicit caching see them joined into one
+ * system message, byte-identical to sending a single one.
+ */
+function leadingSystem(messages: LlmMessage[]): { system: string[]; rest: LlmMessage[] } {
+  let i = 0;
+  while (i < messages.length && messages[i].role === "system") i++;
+  return {
+    system: messages.slice(0, i).map((m) => m.content).filter((t) => t.length > 0),
+    rest: messages.slice(i),
+  };
+}
+
+const EPHEMERAL = { type: "ephemeral" } as const;
+
+/** Text blocks for a system prompt, the breakpoint on the stable first one. */
+function cachedSystemBlocks(system: string[]) {
+  return system.map((text, i) => (i === 0 ? { type: "text", text, cache_control: EPHEMERAL } : { type: "text", text }));
+}
+
+/** The conversation, with a breakpoint on the newest message when `cacheHistory` asks for one. */
+function cachedTurns(rest: LlmMessage[], cacheHistory: boolean | undefined) {
+  return rest.map((m, i) =>
+    cacheHistory && i === rest.length - 1 && m.content
+      ? { role: m.role, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] }
+      : { role: m.role, content: m.content }
+  );
 }
 
 /**
@@ -292,7 +338,13 @@ export async function complete(opts: StreamOptions): Promise<string> {
   return out;
 }
 
-async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<string> {
+/** Anthropic-family models routed via OpenRouter take explicit cache breakpoints. */
+function openRouterClaude(opts: Pick<StreamOptions, "provider" | "model">): boolean {
+  return opts.provider === "openrouter" && /anthropic|claude/i.test(opts.model);
+}
+
+/** Endpoint, headers and body of an OpenAI-compatible chat request (streamed). */
+async function openAICompatibleRequest(opts: StreamOptions) {
   const local = opts.provider === "local" ? await loadLocalServer() : null;
   if (local && !local.baseUrl) throw new Error("Set your local server address in Settings → AI Model.");
   if (local && !opts.model.trim()) throw new Error("Pick a local model in Settings → AI Model.");
@@ -311,21 +363,17 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   }
 
   // Anthropic-family models routed via OpenRouter support explicit prompt
-  // caching: mark the (large, stable) system message as cacheable so repeat
-  // turns in a notebook re-read the sources at ~10% cost instead of 100%.
-  const cacheable = opts.provider === "openrouter" && /anthropic|claude/i.test(opts.model);
-  const messages = cacheable
-    ? opts.messages.map((m) =>
-        m.role === "system"
-          ? {
-              role: m.role,
-              content: [
-                { type: "text", text: m.content, cache_control: { type: "ephemeral" } },
-              ],
-            }
-          : m
-      )
-    : opts.messages;
+  // caching: a breakpoint after the stable system prefix (so repeat turns and
+  // new chats in a notebook re-read the sources at ~10% cost), and in chats one
+  // on the newest message (so the next turn re-reads the history too). Other
+  // providers cache prefixes on their own; they get one plain system message.
+  const { system, rest } = leadingSystem(opts.messages);
+  const messages = openRouterClaude(opts)
+    ? [
+        ...(system.length ? [{ role: "system", content: cachedSystemBlocks(system) }] : []),
+        ...cachedTurns(rest, opts.cacheHistory),
+      ]
+    : [...(system.length ? [{ role: "system", content: system.join("\n\n") }] : []), ...rest];
 
   const body: Record<string, unknown> = {
     model: opts.model,
@@ -333,6 +381,11 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     stream: true,
     stream_options: { include_usage: true },
   };
+  // Same key → same server → its cache. OpenRouter pins the provider from the
+  // very first request (otherwise only after a cache hit, so turn 2 could land
+  // on a provider whose cache is empty).
+  if (opts.cacheKey && opts.provider === "openrouter") body.session_id = opts.cacheKey;
+  if (opts.cacheKey && opts.provider === "openai") body.prompt_cache_key = opts.cacheKey;
   const limits = local ? null : await modelLimits(opts.provider, opts.apiKey, opts.model);
   // Local windows are small: the budget keeps room for the answer. OpenAI
   // publishes no limits, so automatic sends no cap and it allows the model's maximum.
@@ -365,6 +418,74 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
   }
   const temperature = temperatureFor(opts, limits, effort);
   if (temperature != null) body.temperature = temperature;
+  return { local, base, headers, body, capField, limits, effort, setEffort };
+}
+
+/**
+ * Write the stable system prefix into the prompt cache before the real
+ * request, while the user is still typing, so the first message of a chat
+ * starts answering at once instead of first reading every source. It sends
+ * exactly what the real request will (system prompt, thinking and effort
+ * settings, so the entry matches) with a placeholder for the conversation, and
+ * asks for no answer. Explicit caches only: Claude on Anthropic or OpenRouter.
+ * Elsewhere it does nothing, since those providers cache prefixes from real
+ * requests on their own. Returns the billed usage, or null when nothing was
+ * sent or it failed; it never throws.
+ */
+export async function prewarmCache(opts: StreamOptions): Promise<StreamUsage | null> {
+  const system = opts.messages.filter((m) => m.role === "system" && m.content);
+  if (system.length === 0) return null;
+  const warm: StreamOptions = {
+    ...opts,
+    messages: [...system, { role: "user", content: "warmup" }],
+    cacheHistory: false,
+  };
+  try {
+    if (opts.provider === "anthropic" && opts.model.trim()) {
+      const { body } = await anthropicRequest(warm);
+      // max_tokens 0: prefill only (the cache write), no reply and no output billed.
+      body.max_tokens = 0;
+      body.stream = false;
+      const res = await fetch(ANTHROPIC_MESSAGES, {
+        method: "POST",
+        headers: anthropicHeaders(opts.apiKey),
+        body: JSON.stringify(body),
+        signal: opts.signal,
+      });
+      if (!res.ok) return null;
+      const u = ((await res.json()) as { usage?: Record<string, number> }).usage ?? {};
+      return { input: u.input_tokens, output: u.output_tokens ?? 0, cachedRead: u.cache_read_input_tokens, cachedWrite: u.cache_creation_input_tokens };
+    }
+    if (openRouterClaude(opts)) {
+      const { base, headers, body, capField } = await openAICompatibleRequest(warm);
+      // OpenRouter wants at least one output token; one is all it may write.
+      body[capField] = 1;
+      body.stream = false;
+      delete body.stream_options;
+      const res = await fetch(base, { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
+      if (!res.ok) return null;
+      const u = ((await res.json()) as { usage?: Record<string, any> }).usage ?? {};
+      return {
+        input: u.prompt_tokens,
+        output: u.completion_tokens,
+        cachedRead: u.prompt_tokens_details?.cached_tokens,
+        cachedWrite: u.prompt_tokens_details?.cache_write_tokens,
+        costUsd: typeof u.cost === "number" ? u.cost : undefined,
+      };
+    }
+  } catch {
+    /* warming is best-effort: the real request simply reads cold */
+  }
+  return null;
+}
+
+/** Whether prewarmCache can do anything for this provider and model. */
+export function canPrewarm(provider: Provider, model: string): boolean {
+  return (provider === "anthropic" && !!model.trim()) || openRouterClaude({ provider, model });
+}
+
+async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<string> {
+  const { local, base, headers, body, capField, limits, effort, setEffort } = await openAICompatibleRequest(opts);
 
   // A reasoning model can spend the whole output allowance thinking and stop
   // ("length") before writing a word. Nothing has been shown yet then, so try
@@ -450,6 +571,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
             input: u.prompt_tokens ?? u.input_tokens ?? usage.input,
             output: u.completion_tokens ?? u.output_tokens ?? usage.output,
             cachedRead: u.prompt_tokens_details?.cached_tokens ?? u.cache_read_input_tokens ?? usage.cachedRead,
+            cachedWrite: u.prompt_tokens_details?.cache_write_tokens ?? u.cache_creation_input_tokens ?? usage.cachedWrite,
             // OpenRouter reports the real billed amount when usage:include is set.
             costUsd: typeof u.cost === "number" ? u.cost : usage.costUsd,
           };
@@ -497,10 +619,21 @@ function imagePartUrl(part: unknown): string | null {
   return null;
 }
 
-async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
-  const system = opts.messages.filter((m) => m.role === "system");
+const ANTHROPIC_MESSAGES = "https://api.anthropic.com/v1/messages";
+
+function anthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+  };
+}
+
+/** Body of an Anthropic Messages request (streamed). */
+async function anthropicRequest(opts: StreamOptions) {
+  const system = opts.messages.filter((m) => m.role === "system" && m.content).map((m) => m.content);
   const rest = opts.messages.filter((m) => m.role !== "system");
-  const systemText = system.map((m) => m.content).join("\n\n");
 
   const limits = await modelLimits("anthropic", opts.apiKey, opts.model);
   const effort = effortFor(opts, limits);
@@ -518,27 +651,26 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
     ...(temperature != null ? { temperature } : {}),
     ...(effort ? { output_config: { effort } } : {}),
     ...claudeThinking(opts.model, limits, effort),
-    // One ephemeral cache breakpoint at the end of the (large, stable)
-    // system prompt: repeat turns re-read the sources at ~10% input cost.
-    system: systemText
-      ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
-      : undefined,
-    messages: rest.map((m) => ({ role: m.role, content: m.content })),
+    // A breakpoint at the end of the stable system prefix: repeat turns and new
+    // chats re-read the sources at ~10% input cost. In chats a second one on
+    // the newest message caches the history for the next turn.
+    system: system.length ? cachedSystemBlocks(system) : undefined,
+    messages: cachedTurns(rest, opts.cacheHistory),
   };
+  return { body, limits, effort };
+}
+
+async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
+  const { body, limits, effort } = await anthropicRequest(opts);
 
   // Same recovery as the OpenAI-compatible path: shrink to a cap the API names,
   // or retry once with thinking turned down when it ran out before writing.
   let retriedThinking = false;
   let shrinks = 0;
   for (;;) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch(ANTHROPIC_MESSAGES, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": opts.apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
+      headers: anthropicHeaders(opts.apiKey),
       body: JSON.stringify(body),
       signal: opts.signal,
     });

@@ -10,7 +10,7 @@ vi.mock("./local", () => ({
   localHeaders: () => ({}),
 }));
 
-import { AUTO_OUTPUT_TOKENS, complete, extractJson, supportsTemperature, takesThinking, ThinkSplitter } from "./llm";
+import { AUTO_OUTPUT_TOKENS, complete, extractJson, prewarmCache, supportsTemperature, takesThinking, ThinkSplitter } from "./llm";
 
 /** A streamed reply made of SSE `data:` lines. */
 function sse(...events: unknown[]): Response {
@@ -404,5 +404,79 @@ describe("takesThinking", () => {
     expect(await takesThinking("openai", "k", "o4-mini")).toBe(true);
     expect(await takesThinking("openai", "k", "gpt-4o")).toBe(false);
     expect(await takesThinking("local", "", "llama")).toBe(false);
+  });
+});
+
+describe("Prompt caching", () => {
+  const chat = [
+    { role: "system" as const, content: "STABLE" },
+    { role: "system" as const, content: "MENTIONS" },
+    { role: "user" as const, content: "q1" },
+    { role: "assistant" as const, content: "a1" },
+    { role: "user" as const, content: "q2" },
+  ];
+  const mark = { type: "ephemeral" };
+
+  it("Anthropic: breakpoint after the stable system block, and on the newest message in chats", async () => {
+    replies.push(anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-opus-5-5", messages: chat, cacheHistory: true });
+    expect(sent[0].system).toEqual([
+      { type: "text", text: "STABLE", cache_control: mark },
+      { type: "text", text: "MENTIONS" },
+    ]);
+    expect(sent[0].messages[0]).toEqual({ role: "user", content: "q1" });
+    expect(sent[0].messages[2]).toEqual({ role: "user", content: [{ type: "text", text: "q2", cache_control: mark }] });
+  });
+
+  it("one-off requests get no history breakpoint", async () => {
+    replies.push(anthropicText("ok"));
+    await ask({ provider: "anthropic", model: "claude-opus-5-5", messages: chat });
+    expect(sent[0].messages[2]).toEqual({ role: "user", content: "q2" });
+  });
+
+  it("OpenRouter Claude: one system message with the breakpoint on its stable block, sticky session", async () => {
+    replies.push(openAiText("ok"));
+    await ask({ model: "anthropic/claude-opus-4.7", messages: chat, cacheHistory: true, cacheKey: "nb1" });
+    expect(sent[0].messages[0]).toEqual({
+      role: "system",
+      content: [{ type: "text", text: "STABLE", cache_control: mark }, { type: "text", text: "MENTIONS" }],
+    });
+    expect(sent[0].messages.at(-1)).toEqual({ role: "user", content: [{ type: "text", text: "q2", cache_control: mark }] });
+    expect(sent[0].session_id).toBe("nb1");
+  });
+
+  it("other providers see one plain system message, joined", async () => {
+    replies.push(openAiText("ok"));
+    await ask({ model: "plain/small", messages: chat, cacheHistory: true, cacheKey: "nb1" });
+    expect(sent[0].messages[0]).toEqual({ role: "system", content: "STABLE\n\nMENTIONS" });
+    expect(sent[0].messages.at(-1)).toEqual({ role: "user", content: "q2" });
+  });
+
+  it("OpenAI gets a prompt_cache_key", async () => {
+    replies.push(openAiText("ok"));
+    await ask({ provider: "openai", model: "gpt-4.1", messages: chat, cacheKey: "nb1" });
+    expect(sent[0].prompt_cache_key).toBe("nb1");
+    expect(sent[0].session_id).toBeUndefined();
+  });
+
+  it("pre-warm sends the real system prompt and settings, asks for no reply", async () => {
+    replies.push(new Response(JSON.stringify({ usage: { input_tokens: 3, output_tokens: 0, cache_creation_input_tokens: 5000 } })));
+    const usage = await prewarmCache({ provider: "anthropic", apiKey: "k", model: "claude-opus-5-5", messages: chat, thinking: "low" });
+    expect(sent[0].max_tokens).toBe(0);
+    expect(sent[0].stream).toBe(false);
+    expect(sent[0].system[0]).toEqual({ type: "text", text: "STABLE", cache_control: mark });
+    expect(sent[0].output_config).toEqual({ effort: "low" });
+    expect(sent[0].messages).toEqual([{ role: "user", content: "warmup" }]);
+    expect(usage?.cachedWrite).toBe(5000);
+  });
+
+  it("pre-warm does nothing where the cache is automatic", async () => {
+    expect(await prewarmCache({ provider: "openrouter", apiKey: "k", model: "plain/small", messages: chat })).toBeNull();
+    expect(sent).toHaveLength(0);
+  });
+
+  it("a failed pre-warm is swallowed", async () => {
+    replies.push(errorResponse(400, "nope"));
+    expect(await prewarmCache({ provider: "anthropic", apiKey: "k", model: "claude-opus-5-5", messages: chat })).toBeNull();
   });
 });

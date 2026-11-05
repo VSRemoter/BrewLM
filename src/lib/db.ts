@@ -764,6 +764,37 @@ export async function chunksForNotebook(notebookId: string): Promise<SourceChunk
   );
 }
 
+/** A chunk without its embedding (a few KB of JSON each): what ranking reads per message. */
+export type ChunkRow = Omit<SourceChunk, "embedding"> & { has_embedding: number };
+
+export async function chunkRowsForNotebook(notebookId: string): Promise<ChunkRow[]> {
+  const d = await getDb();
+  return d.select<ChunkRow[]>(
+    "SELECT id, source_id, notebook_id, seq, page, text, (embedding != '') AS has_embedding FROM source_chunks WHERE notebook_id = $1 ORDER BY source_id, seq",
+    [notebookId]
+  );
+}
+
+/** Embeddings of a notebook's chunks — all of them, or only `ids` (in batches). */
+export async function chunkEmbeddings(notebookId: string, ids?: string[]): Promise<{ id: string; embedding: string }[]> {
+  const d = await getDb();
+  if (!ids) {
+    return d.select("SELECT id, embedding FROM source_chunks WHERE notebook_id = $1 AND embedding != ''", [notebookId]);
+  }
+  const out: { id: string; embedding: string }[] = [];
+  for (let i = 0; i < ids.length; i += 400) {
+    const batch = ids.slice(i, i + 400);
+    const marks = batch.map((_, j) => `$${j + 2}`).join(", ");
+    out.push(
+      ...(await d.select<{ id: string; embedding: string }[]>(
+        `SELECT id, embedding FROM source_chunks WHERE notebook_id = $1 AND embedding != '' AND id IN (${marks})`,
+        [notebookId, ...batch]
+      ))
+    );
+  }
+  return out;
+}
+
 export async function chunksForSource(sourceId: string): Promise<SourceChunk[]> {
   const d = await getDb();
   return d.select<SourceChunk[]>(

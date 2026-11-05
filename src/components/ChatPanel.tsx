@@ -71,7 +71,7 @@ import {
   segmentMentions,
   type MentionItem,
 } from "../lib/mentions";
-import { isAbortError, streamChat, takesThinking, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { canPrewarm, isAbortError, prewarmCache, streamChat, takesThinking, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
@@ -93,7 +93,8 @@ import {
   maxInputReferences,
   supportedAspectRatios,
 } from "../lib/imageApi";
-import { ensureIndexed, isRetrievable, rankChunks, type RetrievedChunk } from "../lib/rag";
+import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
+import { ensureMediaText } from "../lib/media";
 import { fetchSources, webAnswer } from "../lib/research";
 import {
   encodeFetchMessage,
@@ -675,26 +676,81 @@ AI Studio results are saved as artifacts in the Studio panel (right) — reopen,
 API keys, sources, chats and artifacts all live in a local database on your machine. No account, no cloud sync. Organizing works offline; only AI calls need a network.`;
 
 
-/**
- * Assemble the system prompt. Section order is deliberate: constitution and
- * rules first, the (large, stable) sources block next, and the per-message
- * @-mentions last — keeping the expensive prefix byte-identical across turns
- * so provider prompt caching (explicit on Anthropic, automatic on OpenAI)
- * actually hits.
- *
- * When `retrieved` chunks are supplied (rag.ts), the sources block contains
- * the most relevant slices of ALL sources for this message instead of a blind
- * first-N-characters prefix of the first few sources — this is what lets a
- * 400-page PDF or a notebook full of files fit the context budget meaningfully
- * (200k chars on cloud models, sized to the context window on local ones).
- */
+/* ------------------------------ cache warming ------------------------------ */
+
+/** Below this, a stable prompt is too small for a cold read to be noticeably slow. */
+const PREWARM_MIN_CHARS = 8000;
+/** The provider cache lives 5 minutes from a request's start; re-warm a little before. */
+const WARM_FOR_MS = 4.5 * 60_000;
+/** When a stable prompt last went to the provider (warm-up or real), by provider, model and content. */
+const warmedAt = new Map<string, number>();
+
+function warmKey(s: Pick<Settings, "provider" | "model">, stable: string): string {
+  // FNV-1a: a fingerprint of the prompt, cheap even for a 200k-character notebook.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < stable.length; i++) h = Math.imul(h ^ stable.charCodeAt(i), 0x01000193);
+  return `${s.provider}:${s.model}:${stable.length}:${(h >>> 0).toString(36)}`;
+}
+
+/** A real request just sent this prompt, which warms (or refreshes) the cache too. */
+function markWarm(s: Pick<Settings, "provider" | "model">, stable: string) {
+  warmedAt.set(warmKey(s, stable), Date.now());
+}
+
+/** True (and recorded) when this prompt hasn't been sent in the cache's lifetime. */
+function claimWarm(s: Pick<Settings, "provider" | "model">, stable: string): boolean {
+  const key = warmKey(s, stable);
+  const last = warmedAt.get(key);
+  if (last !== undefined && Date.now() - last < WARM_FOR_MS) return false;
+  warmedAt.set(key, Date.now());
+  return true;
+}
+
+interface SystemPromptOpts {
+  grounded?: boolean;
+  constitution?: boolean;
+  budget?: ContextBudget;
+  /**
+   * The whole notebook fits the sources budget (rag.wholeNotebookFits): send
+   * every source's full text, oldest first, instead of `retrieved` excerpts.
+   */
+  whole?: boolean;
+}
+
+/** The system prompt as one string (one-off requests: /search, Studio). */
 export function buildSystemPrompt(
   sources: Source[],
   mentioned: MentionItem[] = [],
   retrieved?: RetrievedChunk[],
-  opts: { grounded?: boolean; constitution?: boolean; budget?: ContextBudget } = {}
+  opts: SystemPromptOpts = {}
 ): string {
+  const { stable, volatile } = buildSystemParts(sources, mentioned, retrieved, opts);
+  return volatile ? `${stable}\n\n${volatile}` : stable;
+}
+
+/**
+ * Assemble the system prompt in two parts, for provider prompt caching.
+ * `stable` (persona, constitution, rules, and the sources when they don't
+ * depend on the message) is byte-identical across turns and new chats as long
+ * as the notebook doesn't change; it carries the cache breakpoint. `volatile`
+ * (per-message excerpts, @-mentions) follows it, so it never invalidates the
+ * expensive prefix.
+ *
+ * Sources: with `opts.whole`, the full text of every source. Otherwise, when
+ * `retrieved` chunks are supplied (rag.ts), the most relevant slices of ALL
+ * sources for this message — this is what lets a 400-page PDF or a notebook
+ * full of files fit the context budget meaningfully (200k chars on cloud
+ * models, sized to the context window on local ones). With neither, a
+ * first-N-characters prefix of each source.
+ */
+export function buildSystemParts(
+  sources: Source[],
+  mentioned: MentionItem[] = [],
+  retrieved?: RetrievedChunk[],
+  opts: SystemPromptOpts = {}
+): { stable: string; volatile: string } {
   const grounded = opts.grounded !== false;
+  const whole = grounded && opts.whole === true;
   const budgetCaps = opts.budget ?? CLOUD_BUDGET;
   // /constitution off: the source stays in the notebook, but no prompt sees it.
   const constitutions = opts.constitution === false
@@ -706,13 +762,18 @@ export function buildSystemPrompt(
   );
   // Ungrounded: no source material is ever sent — zero source tokens, zero
   // retrieval cost; @-mentions (below) remain as the user's explicit override.
+  // Whole notebook: mentioned sources stay in the stable block (their text is
+  // already there; pulling them out would change the cached prefix).
   const knowledge = grounded
     ? sources.filter(
-        (s) => isRetrievable(s) && !mentionedSourceIds.has(s.id)
+        (s) => isRetrievable(s) && (whole || !mentionedSourceIds.has(s.id))
       )
     : [];
+  const inKnowledge = new Set(knowledge.map((s) => s.id));
 
   const parts: string[] = ["You are BrewLM, a thoughtful study assistant."];
+  /** Per-message sections, after the cache breakpoint. */
+  const tail: string[] = [];
 
   // Constitution: the notebook's governing document. It may override defaults.
   if (constitutions.length > 0) {
@@ -739,8 +800,14 @@ export function buildSystemPrompt(
   if (knowledge.length > 0) {
     const omitted: string[] = [];
     let section = "";
+    /** Excerpts depend on the message, so they go after the breakpoint. */
+    let perMessage = false;
 
-    if (retrieved && retrieved.length > 0) {
+    if (whole) {
+      const sections = inDocumentOrder(knowledge).map((s) => `### ${s.title} (${s.type})\n${sourceText(s)}`);
+      section = `# Sources (complete)\nThe full text of every source in this notebook, oldest first.\n\n${sections.join("\n\n---\n\n")}\n\n[Coverage: the full text of every source is included here.]`;
+    } else if (retrieved && retrieved.length > 0) {
+      perMessage = true;
       const covered = new Set<string>();
       let budget = budgetCaps.sources;
       const blocks: string[] = [];
@@ -791,14 +858,20 @@ export function buildSystemPrompt(
     // Where each link source came from, so "what does the link point to?"
     // has an answer even when none of that page's text was picked.
     const links = knowledge.filter((s) => s.type === "link" && s.mime).slice(0, 20);
+    let linkList = "";
     if (links.length > 0) {
       const line = (s: Source) => {
         const t = s.title.replace(/\s+/g, " ").trim();
         return `- ${t.length > 100 ? t.slice(0, 100) + "…" : t} — ${s.mime}`;
       };
-      section += `\n\n[Link sources and their addresses:\n${links.map(line).join("\n")}]`;
+      linkList = `[Link sources and their addresses:\n${links.map(line).join("\n")}]`;
     }
-    parts.push(section);
+    if (perMessage) {
+      if (linkList) parts.push(linkList);
+      tail.push(section);
+    } else {
+      parts.push(linkList ? `${section}\n\n${linkList}` : section);
+    }
   }
 
   // @-mentions tail the prompt: they vary per message, and anything before
@@ -809,7 +882,10 @@ export function buildSystemPrompt(
     for (const m of mentioned) {
       if (budget <= 0) break;
       const cap = Math.min(MAX_MENTION_CHARS, budget);
-      const body = m.text
+      // Its full text is already in the sources above: point at it, don't repeat it.
+      const body = whole && m.group === "source" && inKnowledge.has(m.id)
+        ? "[Its full text is in the Sources section above.]"
+        : m.text
         ? m.text.length > cap
           ? m.text.slice(0, cap) + "\n[…truncated]"
           : m.text
@@ -819,7 +895,7 @@ export function buildSystemPrompt(
       );
       budget -= body.length;
     }
-    parts.push(
+    tail.push(
       `# @-mentioned materials — PRIORITY\nThe user pointed at these with @, so focus on them and cite them by title:\n\n${sections.join("\n\n")}`
     );
   }
@@ -830,7 +906,7 @@ export function buildSystemPrompt(
     );
   }
 
-  return parts.join("\n\n");
+  return { stable: parts.join("\n\n"), volatile: tail.join("\n\n") };
 }
 
 /** Comma-joined titles, capped so the coverage note itself stays cheap. */
@@ -1987,6 +2063,46 @@ export default function ChatPanel({
   const keyed = activeKey(settings);
 
   /**
+   * The user started typing: write the notebook's stable prompt (rules and
+   * every source) into the provider's prompt cache now, so the reply starts
+   * without first reading the whole notebook. Only for notebooks that go whole
+   * (the prompt can't depend on the message), on providers with explicit
+   * caches, and at most once per cache lifetime; a real message refreshes it too.
+   */
+  const prewarmCheckedAt = useRef(0);
+  const prewarm = (text: string) => {
+    if (!text.trim() || text.trimStart().startsWith("/") || !keyed) return;
+    if (!canPrewarm(settings.provider, settings.model)) return;
+    // Building and fingerprinting a big notebook's prompt isn't free: not on every keystroke.
+    if (Date.now() - prewarmCheckedAt.current < 15_000) return;
+    prewarmCheckedAt.current = Date.now();
+    const grounded = (notebookGrounded ?? 1) !== 0;
+    if (!grounded || !wholeNotebookFits(sources, contextBudget(settings).sources)) return;
+    const { stable } = buildSystemParts(sources, [], undefined, {
+      grounded,
+      constitution: (notebookConstitutionOn ?? 1) !== 0,
+      budget: contextBudget(settings),
+      whole: true,
+    });
+    if (stable.length < PREWARM_MIN_CHARS || !claimWarm(settings, stable)) return;
+    const { provider, model } = settings;
+    void prewarmCache({
+      provider,
+      apiKey: keyed,
+      model,
+      messages: [{ role: "system", content: stable }],
+      temperature: settings.temperature ?? undefined,
+      thinking: settings.thinking,
+      maxOutput: settings.maxOutput,
+      cacheKey: notebookId,
+    }).then((u) => {
+      if (!u) return;
+      void recordUsage("chat", provider, model, u);
+      console.info(`[chat timing] cache warmed: write ${u.cachedWrite ?? 0}, read ${u.cachedRead ?? 0} tokens`);
+    });
+  };
+
+  /**
    * Send one payload end-to-end (command or chat message). The /queue drain
    * loop calls this in sequence; `streamingRef` mirrors the LLM busy state
    * synchronously so a chained runSend never hits a stale-closure block.
@@ -2633,28 +2749,44 @@ export default function ChatPanel({
       catalog
     );
 
-    // Retrieval: index any unindexed sources, then fill the context budget
-    // with the chunks most relevant to this message. Skipped entirely when
-    // grounding is off (no embedding calls, no source tokens, no delay).
-    // Any failure falls back to legacy truncation inside buildSystemPrompt.
+    // Sources. A notebook that fits the budget goes whole (no ranking, and a
+    // prompt that stays identical, so it's served from the prompt cache).
+    // Otherwise: index any unindexed sources, then fill the budget with the
+    // chunks most relevant to this message. Skipped entirely when grounding is
+    // off (no embedding calls, no source tokens, no delay). Any failure falls
+    // back to legacy truncation inside buildSystemParts.
+    const t0 = performance.now();
     const groundedNow = (notebookGrounded ?? 1) !== 0;
     let retrieved: RetrievedChunk[] | undefined;
+    let whole = false;
     if (groundedNow) {
       try {
-        await ensureIndexed(sources, settings);
-        const ranked = await rankChunks(sources, text, settings, contextBudget(settings).sources);
-        const mentionedIds = new Set(
-          mentioned.filter((m) => m.group === "source").map((m) => m.id)
-        );
-        const filtered = ranked.filter((r) => !mentionedIds.has(r.sourceId));
-        if (filtered.length > 0) retrieved = filtered;
+        // Media still lacking a transcript/description gets one first (usually a no-op).
+        await ensureMediaText(sources, settings);
+        whole = wholeNotebookFits(sources, contextBudget(settings).sources);
+        if (whole) {
+          // Keep the index current for when the notebook outgrows the budget.
+          void ensureIndexed(sources, settings).catch(() => {});
+        } else {
+          await ensureIndexed(sources, settings);
+          const ranked = await rankChunks(sources, text, settings, contextBudget(settings).sources);
+          const mentionedIds = new Set(
+            mentioned.filter((m) => m.group === "source").map((m) => m.id)
+          );
+          const filtered = ranked.filter((r) => !mentionedIds.has(r.sourceId));
+          if (filtered.length > 0) retrieved = filtered;
+        }
       } catch (e) {
         console.warn("rag: retrieval skipped", e);
       }
     }
+    const tSources = performance.now();
 
+    const system = buildSystemParts(sources, mentioned, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings), whole });
+    markWarm(settings, system.stable);
     const llmMessages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(sources, mentioned, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings) }) },
+      { role: "system", content: system.stable },
+      ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
       ...selectChatHistory(history, contextBudget(settings).history).map((m, i, arr) => ({
         role: m.role,
         // Image embeds in past turns stay on screen but leave the context
@@ -2671,6 +2803,8 @@ export default function ChatPanel({
     let acc = "";
     let thought = "";
     let usage: StreamUsage | null = null;
+    /** When the first answer text arrived (reasoning comes before it). */
+    let firstToken: number | null = null;
     /** Keep the reply's reasoning beside it (never in the message, so it isn't sent back). */
     const keepReasoning = async (messageId: string) => {
       if (!thought.trim()) return;
@@ -2688,15 +2822,24 @@ export default function ChatPanel({
         thinking: settings.thinking,
         maxOutput: settings.maxOutput,
         signal: ctrl.signal,
+        cacheKey: notebookId,
+        cacheHistory: true,
         onUsage: (u) => {
           usage = u;
           void recordUsage("chat", settings.provider, settings.model, u);
+          const ms = (t: number) => Math.round(t);
+          console.info(
+            `[chat timing] sources ${ms(tSources - t0)}ms (${whole ? "whole notebook" : retrieved ? `${retrieved.length} excerpts` : "no excerpts"}), ` +
+              `first token ${firstToken === null ? "-" : `${ms(firstToken - tSources)}ms`}, total ${ms(performance.now() - tSources)}ms · ` +
+              `input ${u.input ?? "?"} tokens, cache read ${u.cachedRead ?? 0}, cache write ${u.cachedWrite ?? 0}`
+          );
         },
         onReasoning: (r) => {
           thought = r;
           setStreamingReasoning(r);
         },
       })) {
+        if (firstToken === null) firstToken = performance.now();
         acc += delta;
         setStreaming(acc);
       }
@@ -3371,6 +3514,7 @@ export default function ChatPanel({
               onChange={(e) => {
                 setDraft(e.target.value);
                 autoSize(e.target);
+                prewarm(e.target.value);
                 const mv = detectMove(e.target.value);
                 // Theme/font match exact `/theme(s)` / `/font(s)` (+ args), so they
                 // take priority over the generic palette — bare tokens open their
