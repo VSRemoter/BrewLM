@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      The web app's frame for AI-built interactive pages (ArtifactView.tsx;
+      the desktop app uses srcdoc instead). The app loads this in an iframe
+      sandboxed to an opaque origin, waits for "ready", then posts the page,
+      which replaces this document. Its own policy (public/_headers) keeps the
+      network off; the page also carries sandboxDoc's (src/lib/interactive.ts).
+      Message names match SANDBOX_READY / SANDBOX_PAGE there.
+    -->
+    <script>
+      (function () {
+        var done = false;
+        addEventListener("message", function (e) {
+          var m = e.data;
+          if (done || e.source !== parent || !m || m.type !== "brewlm-sandbox-page" || typeof m.html !== "string") return;
+          done = true;
+          document.open();
+          document.write(m.html);
+          document.close();
+        });
+        parent.postMessage({ type: "brewlm-sandbox-ready" }, "*");
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>

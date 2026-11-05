@@ -19,7 +19,14 @@ import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactText } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
-import { INTERACTIVE_ERROR_MESSAGE, parseInteractive, sandboxDoc } from "../lib/interactive";
+import {
+  INTERACTIVE_ERROR_MESSAGE,
+  parseInteractive,
+  SANDBOX_PAGE,
+  SANDBOX_READY,
+  SANDBOX_URL,
+  sandboxDoc,
+} from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { fmtItemStorage, useItemStorage } from "../lib/storage";
@@ -248,6 +255,9 @@ export default function ArtifactView({
 
 /* ------------------------------ Interactive ------------------------------ */
 
+/** Numbers each new version of an interactive page (keys the web frame). */
+let docCount = 0;
+
 /**
  * An AI-built page in a sandboxed iframe: scripts run, but with an opaque
  * origin (no access to the app, its storage or keys) and no network (CSP
@@ -271,6 +281,11 @@ function InteractiveView({
 }) {
   const page = useMemo(() => parseInteractive(data), [data]);
   const doc = useMemo(() => (page ? sandboxDoc(page.html, dark) : ""), [page, dark]);
+  /** Web: the page is posted to SANDBOX_URL when it's ready (see SANDBOX_URL); a new doc reloads the frame. */
+  const viaFrame = platform.kind === "web";
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const docId = useMemo(() => ++docCount, [doc]);
   const frameRef = useRef<HTMLIFrameElement>(null);
   /** Bumped to restart the page from scratch. */
   const [run, setRun] = useState(0);
@@ -286,7 +301,9 @@ function InteractiveView({
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frameRef.current?.contentWindow) return;
       const msg = e.data as { type?: unknown; message?: unknown } | null;
-      if (msg?.type === INTERACTIVE_ERROR_MESSAGE && typeof msg.message === "string")
+      if (msg?.type === SANDBOX_READY && viaFrame)
+        (e.source as Window).postMessage({ type: SANDBOX_PAGE, html: docRef.current }, "*");
+      else if (msg?.type === INTERACTIVE_ERROR_MESSAGE && typeof msg.message === "string")
         setProblem((cur) => cur ?? msg.message as string);
     };
     window.addEventListener("message", onMessage);
@@ -353,10 +370,10 @@ function InteractiveView({
         </div>
       )}
       <iframe
-        key={run}
+        key={viaFrame ? `${run}:${docId}` : run}
         ref={frameRef}
         title={title}
-        srcDoc={doc}
+        {...(viaFrame ? { src: SANDBOX_URL } : { srcDoc: doc })}
         sandbox="allow-scripts"
         className="min-h-0 w-full flex-1 border-0 bg-canvas"
       />

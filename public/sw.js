@@ -21,13 +21,18 @@ const SHELL_CACHE = SHELL_PREFIX + VERSION;
 const SAVES_SHELL = VERSION !== "dev";
 /** Files that never change under the same name: the build's hashed assets, icons, fonts. */
 const KEEP_PATHS = ["/assets/", "/icons/", "/excalidraw/"];
+/** The frame AI-built interactive pages run in (src/lib/interactive.ts, SANDBOX_URL). */
+const SANDBOX_PATH = "/sandbox";
 /** How long a launch waits for the network before using the saved app (slow or no signal). */
 const NETWORK_WAIT_MS = 4000;
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
-  // The app's page, so the very first offline launch works.
-  if (SAVES_SHELL) e.waitUntil(caches.open(SHELL_CACHE).then((c) => c.add("/")).catch(() => {}));
+  // The app's page, so the very first offline launch works; the frame, so its interactive pages do.
+  if (SAVES_SHELL)
+    e.waitUntil(
+      caches.open(SHELL_CACHE).then((c) => Promise.all([c.add("/"), c.add(SANDBOX_PATH)])).catch(() => {})
+    );
 });
 
 self.addEventListener("activate", (e) =>
@@ -48,7 +53,9 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (!SAVES_SHELL) return;
-  if (e.request.mode === "navigate") e.respondWith(servePage(e.request));
+  // The interactive-page frame is a page too, but not the app's: kept apart.
+  if (url.pathname === SANDBOX_PATH) e.respondWith(serveSandbox(e.request));
+  else if (e.request.mode === "navigate") e.respondWith(servePage(e.request));
   else if (KEEP_PATHS.some((p) => url.pathname.startsWith(p)) || url.pathname === "/manifest.webmanifest")
     e.respondWith(serveKept(e.request));
 });
@@ -69,6 +76,20 @@ async function servePage(request) {
   if (quick) return quick;
   // Offline or slow: the saved app, else keep waiting for the network.
   return (await cache.match("/")) ?? network;
+}
+
+/** The interactive-page frame (public/sandbox.html, at /sandbox): the network's copy, else the saved one. */
+async function serveSandbox(request) {
+  const cache = await caches.open(SHELL_CACHE);
+  try {
+    const res = await fetch(request);
+    if (res.ok) void cache.put(SANDBOX_PATH, res.clone());
+    return res;
+  } catch (err) {
+    const saved = await cache.match(SANDBOX_PATH);
+    if (saved) return saved;
+    throw err;
+  }
 }
 
 /** A file that never changes: the saved copy, else the network's (then saved). */

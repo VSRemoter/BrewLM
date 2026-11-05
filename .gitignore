@@ -29,3 +29,6 @@ src-tauri/binaries/
 
 # Excalidraw fonts (copied by scripts/copy-excalidraw-fonts.mjs on npm install)
 public/excalidraw/
+
+# Wrangler's local state from previewing the web app (web/wrangler.jsonc)
+web/.wrangler/

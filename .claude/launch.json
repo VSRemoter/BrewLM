@@ -54,6 +54,25 @@
         "../openmindFrontEnd"
       ],
       "port": 1440
+    },
+    {
+      "name": "web-cf",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "exec",
+        "--prefix",
+        "sync-server",
+        "--",
+        "wrangler",
+        "dev",
+        "--config",
+        "web/wrangler.jsonc",
+        "--port",
+        "1432",
+        "--ip",
+        "127.0.0.1"
+      ],
+      "port": 1432
     }
   ]
 }

@@ -160,6 +160,16 @@ export const INTERACTIVE_ERROR_MESSAGE = "brewlm-interactive-error";
 const PAGE_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
+/**
+ * The web app runs pages in public/sandbox.html instead of a srcdoc frame,
+ * which would inherit the app's own CSP (public/_headers) and so couldn't run
+ * the page's inline scripts. The frame says "ready", then gets the page.
+ */
+/** Cloudflare serves public/sandbox.html at /sandbox, with its own headers there; Vite by its file name. */
+export const SANDBOX_URL = import.meta.env.DEV ? "/sandbox.html" : "/sandbox";
+export const SANDBOX_READY = "brewlm-sandbox-ready";
+export const SANDBOX_PAGE = "brewlm-sandbox-page";
+
 /** The page as the iframe gets it: CSP, theme and an error reporter injected at the top of <head>. */
 export function sandboxDoc(html: string, dark: boolean): string {
   const theme = dark ? "dark" : "light";
