@@ -4,7 +4,7 @@
  * them with the exact same LLM pipelines as the Studio panel, writing results
  * (chat messages, artifacts) straight into the shared SQLite database.
  */
-import { buildSystemPrompt, selectChatHistory } from "../components/ChatPanel";
+import { buildSystemParts, buildSystemPrompt, selectChatHistory } from "../components/ChatPanel";
 import {
   addArtifact,
   addMessage,
@@ -32,7 +32,9 @@ import {
   isRetrievable,
   MAP_REDUCE_THRESHOLD,
   rankChunks,
+  wholeNotebookFits,
 } from "./rag";
+import { ensureMediaText } from "./media";
 import { deepResearch } from "./research";
 import { contextBudget } from "./local";
 import { activeKey, loadSettings } from "./settings";
@@ -174,11 +176,28 @@ async function runChatJob(p: {
   ]);
   const sources = await withoutConstitutionIfOff(p.notebook_id, allSources);
   const grounded = (await getNotebookGrounded(p.notebook_id)) !== 0;
-  let retrieved: Awaited<ReturnType<typeof rankChunks>> = [];
+  // Same prompt layout as desktop chat: a notebook that fits is sent whole and
+  // unchanged on every message (served from the prompt cache); a bigger one
+  // gets per-question excerpts in a second system message after the cached part.
+  const budget = contextBudget(settings);
+  let retrieved: Awaited<ReturnType<typeof rankChunks>> | undefined;
+  let whole = false;
   if (grounded) {
-    await ensureIndexed(sources, settings);
-    retrieved = await rankChunks(sources, p.content, settings, contextBudget(settings).sources);
+    try {
+      await ensureMediaText(sources, settings);
+      whole = wholeNotebookFits(sources, budget.sources);
+      if (whole) {
+        void ensureIndexed(sources, settings).catch(() => {});
+      } else {
+        await ensureIndexed(sources, settings);
+        const ranked = await rankChunks(sources, p.content, settings, budget.sources);
+        if (ranked.length) retrieved = ranked;
+      }
+    } catch (e) {
+      console.warn("rag: retrieval skipped", e);
+    }
   }
+  const system = buildSystemParts(sources, [], retrieved, { grounded, budget, whole });
   const reply = (
     await complete({
       provider: settings.provider,
@@ -188,11 +207,13 @@ async function runChatJob(p: {
       thinking: settings.thinking,
       maxOutput: settings.maxOutput,
       onUsage: (u) => void recordUsage("chat", settings.provider, settings.model, u),
+      cacheKey: p.notebook_id,
+      // Per-question excerpts sit before the history, so a history breakpoint
+      // would only pay the cache-write premium (see ChatPanel).
+      cacheHistory: !retrieved,
       messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt(sources, [], retrieved.length ? retrieved : undefined, { grounded, budget: contextBudget(settings) }),
-        },
+        { role: "system", content: system.stable },
+        ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
         ...selectChatHistory(history, contextBudget(settings).history).map((m) => ({
           role: m.role,
           content: stripHistoryImages(m.content),
