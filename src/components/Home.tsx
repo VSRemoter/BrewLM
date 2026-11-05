@@ -1105,9 +1105,11 @@ export default function Home({
                     onClick={onOpenLink}
                     className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
                     title="Open a notebook someone shared with you"
+                    aria-label="Open link"
                   >
                     <Link2 size={13} strokeWidth={1.8} />
-                    Open link
+                    {/* Phones: the icon alone, so the row fits on one line. */}
+                    <span className="hidden sm:inline">Open link</span>
                   </button>
                   <button
                     onClick={() => setSelecting(true)}
