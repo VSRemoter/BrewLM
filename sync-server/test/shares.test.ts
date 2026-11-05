@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/auth";
-import { MAX_SHARES } from "../src/shares";
+import { LAPSED_GRACE_MS, MAX_REPORTS_PER_DAY, MAX_SHARES, sweepShares } from "../src/shares";
 
 const call = (path: string, init?: RequestInit & { session?: string }) =>
   exports.default.fetch(`https://sync.test${path}`, {
@@ -159,5 +159,70 @@ describe("shared links", () => {
         .bind(i.toString(16).padStart(32, "f"), vault)
         .run();
     expect((await call("/v1/shares", { method: "POST", session })).status).toBe(429);
+  });
+});
+
+describe("reports, take-downs and the lifecycle", () => {
+  async function published(email: string) {
+    const acct = await account(email, "sync");
+    const id = await newShare(acct.session);
+    await put(`/v1/shares/${id}/manifest?expect=0`, acct.session, "snap");
+    return { ...acct, id };
+  }
+  const reportIt = (id: string, reason: unknown, ip = "203.0.113.7") =>
+    call(`/v1/shares/${id}/report`, { method: "POST", body: JSON.stringify({ reason }), headers: { "cf-connecting-ip": ip } });
+
+  it("takes reports from anyone, a few a day per address", async () => {
+    const { id } = await published("reported@example.com");
+    expect((await reportIt(id, "")).status).toBe(400);
+    expect((await reportIt("0".repeat(32), "spam")).status).toBe(404);
+    for (let i = 0; i < MAX_REPORTS_PER_DAY; i++) expect((await reportIt(id, `spam ${i}`)).status).toBe(200);
+    expect((await reportIt(id, "more spam")).status).toBe(429);
+    expect((await reportIt(id, "from elsewhere", "198.51.100.1")).status).toBe(200);
+    const n = await env.DB.prepare("SELECT count(*) AS n FROM share_reports WHERE share_id = ?").bind(id).first<{ n: number }>();
+    expect(n?.n).toBe(MAX_REPORTS_PER_DAY + 1);
+  });
+
+  it("lets only the admin take a link down and bring it back", async () => {
+    const { id } = await published("takedown@example.com");
+    const admin = (disabled: boolean, token = "admin-test-token") =>
+      call(`/v1/admin/shares/${id}`, { method: "POST", body: JSON.stringify({ disabled }), headers: { authorization: `Bearer ${token}` } });
+    expect((await admin(true, "wrong-token-of-same-len")).status).toBe(401);
+    expect((await admin(true)).status).toBe(200);
+    expect((await call(`/v1/shares/${id}/manifest`)).status).toBe(410);
+    expect((await admin(false)).status).toBe(200);
+    expect((await call(`/v1/shares/${id}/manifest`)).status).toBe(200);
+  });
+
+  it("pauses links 30 days after the owner's plan ends", async () => {
+    const { id, vault } = await published("lapsed@example.com");
+    await env.DB.prepare("UPDATE users SET trial_ends_at = 0 WHERE id = ?").bind(vault).run();
+    const ended = (ms: number) =>
+      env.DB.prepare("UPDATE subscriptions SET status = 'canceled', current_period_end = ? WHERE user_id = ?").bind(ms, vault).run();
+    await ended(Date.now() - 10 * 86_400_000);
+    expect((await call(`/v1/shares/${id}`)).status).toBe(200);
+    await ended(Date.now() - LAPSED_GRACE_MS - 86_400_000);
+    expect((await call(`/v1/shares/${id}`)).status).toBe(410);
+    await env.DB.prepare("UPDATE subscriptions SET status = 'active', current_period_end = ? WHERE user_id = ?")
+      .bind(Date.now() + 86_400_000, vault)
+      .run();
+    expect((await call(`/v1/shares/${id}`)).status).toBe(200);
+  });
+
+  it("sweeps expired and abandoned links, files and all", async () => {
+    const kept = await published("sweeper@example.com");
+    const expired = await published("sweeper2@example.com");
+    await put(`/v1/shares/${expired.id}/blobs/f`, expired.session, "file");
+    await env.DB.prepare("UPDATE shares SET expires_at = ? WHERE id = ?").bind(Date.now() - 1, expired.id).run();
+    const abandoned = await newShare(kept.session);
+    await env.DB.prepare("UPDATE shares SET created_at = 0 WHERE id = ?").bind(abandoned).run();
+    const fresh = await newShare(kept.session);
+
+    // Earlier tests left links behind too; a run takes a batch at a time.
+    while ((await sweepShares(env)).removed > 0);
+    const left = (await env.DB.prepare("SELECT id FROM shares WHERE id IN (?, ?, ?, ?)").bind(kept.id, expired.id, abandoned, fresh).all<{ id: string }>()).results.map((r) => r.id);
+    expect(left.sort()).toEqual([kept.id, fresh].sort());
+    expect((await env.BLOBS.list({ prefix: `_shares/${expired.id}/` })).objects).toHaveLength(0);
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM share_blobs WHERE share_id = ?").bind(expired.id).first<{ n: number }>()).toEqual({ n: 0 });
   });
 });

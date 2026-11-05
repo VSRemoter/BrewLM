@@ -38,6 +38,8 @@ export default defineConfig(async () => ({
           PUBLIC_URL: "http://127.0.0.1:8787",
           // Tests never send mail, even when .dev.vars holds a real key.
           RESEND_API_KEY: "",
+          REPORT_EMAIL: "",
+          ADMIN_TOKEN: "admin-test-token",
           // The deployed list, whatever .dev.vars allows for local testing.
           CORS_ORIGINS: "https://app.brewlm.com,http://localhost:1430",
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),

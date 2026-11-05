@@ -18,10 +18,19 @@
  *   POST   /v1/shares/:id/sweep           { live } → { removed }  (files the new version doesn't use)
  *
  * Public routes (no account):
- *   GET /v1/shares/:id                    → { version, bytes, updatedAt, expiresAt }
- *   GET /v1/shares/:id/manifest           the current snapshot; `x-share-version` says which
- *   GET /v1/shares/:id/blobs/:blob
- * A link that was stopped, taken down or has expired answers 410.
+ *   GET  /v1/shares/:id                   → { version, bytes, updatedAt, expiresAt }
+ *   GET  /v1/shares/:id/manifest          the current snapshot; `x-share-version` says which
+ *   GET  /v1/shares/:id/blobs/:blob
+ *   POST /v1/shares/:id/report            { reason } (emails the admin; a few a day per address)
+ * A link that was stopped, taken down or has expired answers 410, and so
+ * does one whose owner's plan ended over LAPSED_GRACE_MS ago (it comes back
+ * if they subscribe again).
+ *
+ * Admin (ADMIN_TOKEN):
+ *   POST /v1/admin/shares/:id             { disabled: boolean }  take a link down / bring it back
+ *
+ * `sweepShares` (hourly cron) deletes expired links and abandoned ones that
+ * were never published, freeing their owners' storage, and old reports.
  *
  * Storage: a share's bytes count against its owner's plan, together with the
  * vault (index.ts lowers the vault's limit by them). Each manifest version is
@@ -30,6 +39,7 @@
  */
 import { userForSession, type User } from "./auth";
 import { entitlement } from "./billing";
+import { sendReportEmail } from "./email";
 
 const SHARE_RE = /^[0-9a-f]{32}$/;
 const BLOB_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -43,6 +53,15 @@ const MAX_IDS = 1000;
 const MAX_EXPIRY_MS = 366 * 24 * 60 * 60 * 1000;
 /** A file this young survives a sweep: another device of the owner may be publishing. */
 export const SHARE_SWEEP_GRACE_MS = 2 * 60 * 1000;
+/** A link's owner without a plan for this long: the link pauses until they subscribe again. */
+export const LAPSED_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+export const MAX_REPORTS_PER_DAY = 5;
+const MAX_REASON = 2000;
+/** A link created but never published is dropped after this. */
+const ABANDONED_MS = 24 * 60 * 60 * 1000;
+const REPORTS_KEPT_MS = 180 * 24 * 60 * 60 * 1000;
+/** Links deleted per sweep run: each costs a few storage calls. */
+const SWEEP_BATCH = 25;
 
 const PREFIX = (id: string) => `_shares/${id}/`;
 /** Each upload gets its own object, so two devices publishing at once can't overwrite each other's. */
@@ -140,13 +159,82 @@ function contentLength(req: Request): number | Response {
 
 export async function shareRoutes(req: Request, env: Env, path: string): Promise<Response | null> {
   if (path === "/v1/shares") return ownerRoutes(req, env, null, null);
-  const m = /^\/v1\/shares\/([^/]+)(?:\/(manifest|sweep|blobs\/missing|blobs\/([^/]+)))?$/.exec(path);
+  const admin = /^\/v1\/admin\/shares\/([0-9a-f]{32})$/.exec(path);
+  if (admin) return adminRoute(req, env, admin[1]);
+  const m = /^\/v1\/shares\/([^/]+)(?:\/(manifest|sweep|report|blobs\/missing|blobs\/([^/]+)))?$/.exec(path);
   if (!m) return null;
   const [, id, op, blob] = m;
   if (!SHARE_RE.test(id)) return fail(404, "no such share");
   if (blob !== undefined && !BLOB_RE.test(blob)) return fail(400, "bad blob id");
+  if (op === "report") return req.method === "POST" ? report(req, env, id) : fail(405, "method not allowed");
   const publicRead = req.method === "GET" && (op === undefined || op === "manifest" || blob !== undefined);
   return publicRead ? publicRoutes(req, env, id, op, blob) : ownerRoutes(req, env, id, op ?? null, blob);
+}
+
+/** Does the owner still have a plan, or lost it under LAPSED_GRACE_MS ago? */
+async function ownerActive(env: Env, ownerId: string, now = Date.now()): Promise<boolean> {
+  const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(ownerId).first<User>();
+  if (!user) return false;
+  if ((await entitlement(env, user)).canSync) return true;
+  const sub = await env.DB.prepare("SELECT current_period_end, updated_at FROM subscriptions WHERE user_id = ?")
+    .bind(ownerId)
+    .first<{ current_period_end: number | null; updated_at: number }>();
+  const lapsedAt = sub ? sub.current_period_end ?? sub.updated_at : user.trial_ends_at;
+  return lapsedAt + LAPSED_GRACE_MS > now;
+}
+
+async function report(req: Request, env: Env, id: string): Promise<Response> {
+  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+  if (await flooding(env, `share-ip:${ip}`)) return fail(429, SLOW_DOWN);
+  const body = await req.json<{ reason?: unknown }>().catch(() => ({}) as { reason?: unknown });
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!reason || reason.length > MAX_REASON) return fail(400, "Say briefly what's wrong with this notebook.");
+  const share = await getShare(env, id);
+  if (!share) return fail(404, "no such share");
+  const now = Date.now();
+  const recent = await env.DB.prepare("SELECT count(*) AS n FROM share_reports WHERE ip = ? AND created_at > ?")
+    .bind(ip, now - 24 * 60 * 60 * 1000)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= MAX_REPORTS_PER_DAY) return fail(429, "Too many reports from here today. Try again tomorrow.");
+  await env.DB.prepare("INSERT INTO share_reports (share_id, reason, ip, created_at) VALUES (?, ?, ?, ?)")
+    .bind(id, reason, ip, now)
+    .run();
+  const count = await env.DB.prepare("SELECT count(*) AS n FROM share_reports WHERE share_id = ?").bind(id).first<{ n: number }>();
+  try {
+    await sendReportEmail(env, id, reason, count?.n ?? 1);
+  } catch (e) {
+    console.error("share report email failed", e); // the report is stored either way
+  }
+  return json({ ok: true });
+}
+
+async function adminRoute(req: Request, env: Env, id: string): Promise<Response> {
+  const token = env.ADMIN_TOKEN;
+  const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+  const enc = new TextEncoder();
+  if (!token || given.length !== token.length || !crypto.subtle.timingSafeEqual(enc.encode(given), enc.encode(token)))
+    return fail(401, "unauthorized");
+  if (req.method !== "POST") return fail(405, "method not allowed");
+  const body = await req.json<{ disabled?: unknown }>().catch(() => ({}) as { disabled?: unknown });
+  if (typeof body.disabled !== "boolean") return fail(400, "bad disabled");
+  const res = await env.DB.prepare("UPDATE shares SET disabled_at = ? WHERE id = ?")
+    .bind(body.disabled ? Date.now() : null, id)
+    .run();
+  return res.meta.changes === 1 ? json({ disabled: body.disabled }) : fail(404, "no such share");
+}
+
+/** Hourly: delete expired and abandoned links (their files too) and old reports. */
+export async function sweepShares(env: Env, now = Date.now()): Promise<{ removed: number }> {
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM shares
+     WHERE (expires_at IS NOT NULL AND expires_at < ?1) OR (version = 0 AND created_at < ?2)
+     LIMIT ${SWEEP_BATCH}`
+  )
+    .bind(now, now - ABANDONED_MS)
+    .all<{ id: string }>();
+  for (const r of results) await destroy(env, r.id);
+  await env.DB.prepare("DELETE FROM share_reports WHERE created_at < ?").bind(now - REPORTS_KEPT_MS).run();
+  return { removed: results.length };
 }
 
 async function publicRoutes(req: Request, env: Env, id: string, op: string | undefined, blob: string | undefined) {
@@ -155,6 +243,7 @@ async function publicRoutes(req: Request, env: Env, id: string, op: string | und
   const share = await getShare(env, id);
   if (!share) return fail(404, "no such share");
   if (!live(share) || share.version === 0) return fail(share.version === 0 && live(share) ? 404 : 410, GONE);
+  if (!(await ownerActive(env, share.owner_id))) return fail(410, GONE);
 
   if (op === undefined)
     return json({

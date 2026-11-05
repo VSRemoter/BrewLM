@@ -313,10 +313,19 @@ export async function fetchShareInfo(): Promise<Map<string, ShareInfo>> {
   return new Map(shares.map((s) => [s.id, s]));
 }
 
-/** Stop links whose notebook was deleted for good (after Trash is emptied, or on another device). */
+/**
+ * Stop links whose notebook was deleted for good (after Trash is emptied, or
+ * on another device), and forget links the server no longer has (expired, or
+ * stopped elsewhere).
+ */
 export async function cleanUpShares(): Promise<void> {
   if (!shareServer()) return;
   const d = await getDb();
   const orphans = await d.select<ShareRow[]>("SELECT * FROM shares WHERE notebook_id NOT IN (SELECT id FROM notebooks)");
   for (const r of orphans) await stopSharing(r).catch((e) => console.warn("share: couldn't stop", r.id, e));
+  const onServer = await fetchShareInfo().catch(() => null);
+  if (!onServer) return;
+  // A link only just created may not be listed yet; give it an hour.
+  for (const r of await listShares())
+    if (!onServer.has(r.id) && r.created_at < Date.now() - 3_600_000) await dropRow(r.id);
 }

@@ -42,7 +42,7 @@
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
 import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
-import { sharedBytes, shareRoutes } from "./shares";
+import { sharedBytes, shareRoutes, sweepShares } from "./shares";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
 export { Vault };
@@ -196,6 +196,10 @@ export default {
     out.headers.set("access-control-expose-headers", "x-final-url, x-brewlm-fetch, x-share-version");
     out.headers.append("vary", "Origin");
     return out;
+  },
+  /** Hourly (wrangler.jsonc triggers): expired and abandoned shared links. */
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(sweepShares(env).then((r) => r.removed && console.log(`shares: removed ${r.removed}`)));
   },
 } satisfies ExportedHandler<Env>;
 

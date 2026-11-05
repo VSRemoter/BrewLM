@@ -10,3 +10,7 @@ RESEND_API_KEY=
 POLAR_API_URL=https://sandbox-api.polar.sh
 POLAR_ACCESS_TOKEN=
 POLAR_WEBHOOK_SECRET=
+# Optional. Takes reported shared links down (POST /v1/admin/shares/:id). Any long random string.
+ADMIN_TOKEN=
+# Optional. Where reports of shared links are emailed (needs RESEND_API_KEY); without it they're printed here.
+REPORT_EMAIL=

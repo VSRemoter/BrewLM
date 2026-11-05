@@ -110,3 +110,17 @@ export async function notebookForShare(id: string): Promise<string | null> {
   const rows = await d.select<{ id: string }[]>("SELECT id FROM notebooks WHERE share_id = $1", [id]);
   return rows[0]?.id ?? null;
 }
+
+/** Tell BrewLM a shared notebook breaks the rules (spam, abuse…); the server can't read it, so the reason matters. */
+export async function reportShare(id: string, reason: string): Promise<void> {
+  const res = await platform.fetch(`${await server()}/v1/shares/${id}/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason }),
+    connectTimeout: 15000,
+  });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { error?: string }) => j.error, () => undefined);
+    throw new Error(detail || `The sync server said HTTP ${res.status}.`);
+  }
+}

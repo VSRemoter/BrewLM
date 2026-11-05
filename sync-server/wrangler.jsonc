@@ -41,5 +41,7 @@
     "POLAR_PRODUCT_PLUS_MONTHLY": "7a50c5ce-dabb-4127-9a52-558945554dcf",
     "POLAR_PRODUCT_PLUS_YEARLY": "07300213-6aa1-4e95-bfb9-4d4dc15c440b"
   },
+  // Hourly: delete expired and abandoned shared links (src/shares.ts sweepShares).
+  "triggers": { "crons": ["23 * * * *"] },
   "observability": { "enabled": true }
 }

@@ -28,7 +28,19 @@ DELETE /v1/vaults/:vault/links/:id
 POST /v1/vaults/:vault/blobs/missing   { ids } → { missing }
 PUT  /v1/vaults/:vault/blobs/:id       (raw bytes, up to 100 MB)
 GET  /v1/vaults/:vault/blobs/:id
+
+POST   /v1/shares                      shared notebook links (src/shares.ts): create, then
+PUT    /v1/shares/:id/blobs/:blob      upload encrypted files and the snapshot
+PUT    /v1/shares/:id/manifest?expect=<version>
+GET    /v1/shares/:id[/manifest|/blobs/:blob]   public: anyone with the link
+POST   /v1/shares/:id/report           public: { reason } → emailed to REPORT_EMAIL
+POST   /v1/admin/shares/:id            ADMIN_TOKEN: { disabled } takes a link down
 ```
+
+Shared links are encrypted with a key only the link carries (after `#`), so
+the server can't read them either. They count against the owner's storage;
+an hourly cron deletes expired and never-published ones, and a link pauses
+30 days after its owner's plan ends.
 
 Blobs live in R2: media files and records too big for the change log, whose
 change then carries only a pointer. The key envelope holds the vault key
