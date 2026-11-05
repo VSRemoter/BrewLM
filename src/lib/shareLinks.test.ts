@@ -68,6 +68,7 @@ import {
   MANIFEST_ID,
   parseShareUrl,
   publishShare,
+  shareAppUrl,
   shareFileId,
   shareKeys,
   shareUrl,
@@ -92,6 +93,12 @@ describe("links", () => {
     const parsed = parseShareUrl(`  ${url}  `)!;
     expect(parsed.id).toBe("0123456789abcdef0123456789abcdef");
     expect([...parsed.secret]).toEqual([...key]);
+  });
+
+  it("points links at the web app that reads from the same server", () => {
+    expect(shareAppUrl("https://sync.brewlm.com")).toBe("https://app.brewlm.com");
+    expect(shareAppUrl("https://sync.brewlm.com/")).toBe("https://app.brewlm.com");
+    expect(shareAppUrl("http://127.0.0.1:8787")).toBe("http://localhost:1430");
   });
 
   it("rejects things that aren't links", () => {

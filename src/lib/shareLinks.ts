@@ -27,8 +27,23 @@ import { shareServer } from "./sync";
 import { deriveKeys, encryptBlob, hiddenId, randomBytes, type VaultKeys } from "./vaultCrypto";
 import { platform } from "../platform";
 
-/** Where links open: the web app. */
-export const SHARE_APP_URL = import.meta.env.DEV ? "http://localhost:1430" : "https://app.brewlm.com";
+const LIVE_APP_URL = "https://app.brewlm.com";
+/** The dev web app (`npm run dev:web`), which syncs with a local server. */
+const DEV_APP_URL = "http://localhost:1430";
+
+/**
+ * Where links open: the web app that reads from the same sync server. A dev
+ * build signed in to sync.brewlm.com makes links anyone can open; one using a
+ * local server makes links for the dev web app.
+ */
+export function shareAppUrl(serverUrl = shareServer()?.url): string {
+  if (!serverUrl) return import.meta.env.DEV ? DEV_APP_URL : LIVE_APP_URL;
+  try {
+    return new URL(serverUrl).hostname === "sync.brewlm.com" ? LIVE_APP_URL : DEV_APP_URL;
+  } catch {
+    return LIVE_APP_URL;
+  }
+}
 export const MANIFEST_ID = "manifest";
 const MAX_MISSING = 1000;
 
@@ -102,7 +117,7 @@ export const shareFileId = (keys: VaultKeys, ref: string) => hiddenId(keys, `fil
 
 /* --------------------------------- links --------------------------------- */
 
-export const shareUrl = (s: Pick<ShareRow, "id" | "share_key">) => `${SHARE_APP_URL}/s/${s.id}#${s.share_key}`;
+export const shareUrl = (s: Pick<ShareRow, "id" | "share_key">) => `${shareAppUrl()}/s/${s.id}#${s.share_key}`;
 
 /** `{ id, secret }` from a pasted link (or null if it isn't one). */
 export function parseShareUrl(text: string): { id: string; secret: Uint8Array } | null {
