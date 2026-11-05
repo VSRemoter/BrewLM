@@ -4,14 +4,14 @@
   "version": "5.5.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/build-phone-render.mjs && vite",
     "dev:web": "vite --mode web",
-    "build": "tsc && vite build",
+    "build": "tsc && node scripts/build-phone-render.mjs && vite build",
     "build:web": "tsc && vite build --mode web",
     "deploy:web": "npm run build:web && sync-server/node_modules/.bin/wrangler deploy --config web/wrangler.jsonc",
     "preview": "vite preview",
     "tauri": "tauri",
-    "postinstall": "node scripts/copy-excalidraw-fonts.mjs",
+    "postinstall": "node scripts/copy-excalidraw-fonts.mjs && node scripts/build-phone-render.mjs",
     "test": "vitest run"
   },
   "dependencies": {

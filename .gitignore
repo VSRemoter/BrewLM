@@ -30,5 +30,8 @@ src-tauri/binaries/
 # Excalidraw fonts (copied by scripts/copy-excalidraw-fonts.mjs on npm install)
 public/excalidraw/
 
+# The phone page's renderer bundle (scripts/build-phone-render.mjs, on npm install / dev / build)
+src-tauri/phone-render/
+
 # Wrangler's local state from previewing the web app (web/wrangler.jsonc)
 web/.wrangler/

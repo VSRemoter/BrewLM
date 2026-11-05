@@ -9,6 +9,9 @@
 <meta name="theme-color" content="#fafafa">
 <meta name="referrer" content="no-referrer">
 <title>BrewLM</title>
+<!-- The desktop's renderer for replies and documents (math, tables, drawings); see server.rs asset_handler. -->
+<link rel="stylesheet" href="/assets/render.css?v=__PHONE_ASSETS_V__">
+<script src="/assets/render.js?v=__PHONE_ASSETS_V__"></script>
 <style>
   :root {
     /* Overridden by JS theme switcher; defaults = "brew" (desktop default). */
@@ -114,6 +117,25 @@
   .composer button { border-radius: 999px; border: none; background: var(--accent); color: var(--on-accent);
     padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
   .composer button:disabled { opacity: .5; }
+  .composer #csend.stop { background: var(--panel2); color: var(--ink); border: 1px solid var(--edge); }
+  /* Thinking effort: brain button + menu beside Send */
+  .composer .think-wrap { position: relative; flex: none; display: flex; }
+  .composer .think { background: transparent; color: var(--ink3); padding: 0 10px; min-width: 42px;
+    display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 13px; font-weight: 600; }
+  .composer .think.set { color: var(--ink2); }
+  .composer .think[aria-expanded="true"] { background: var(--panel2); color: var(--ink); }
+  .composer .think svg { width: 19px; height: 19px; flex: none; }
+  .think-menu { position: absolute; right: 0; bottom: calc(100% + 8px); width: 236px; z-index: 50;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; padding: 4px 0;
+    box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+  .think-menu .hd { margin: 0; padding: 6px 14px 4px; font-size: 10.5px; font-weight: 600;
+    letter-spacing: .05em; text-transform: uppercase; color: var(--ink3); }
+  .composer .think-menu button { display: flex; width: 100%; gap: 8px; align-items: flex-start; text-align: left;
+    background: transparent; color: var(--ink2); border-radius: 0; padding: 8px 14px; font-weight: 400; }
+  .composer .think-menu button[aria-checked="true"] { color: var(--ink); }
+  .think-menu .ck { width: 14px; flex: none; padding-top: 1px; font-size: 13px; }
+  .think-menu .nm { display: block; font-size: 14px; font-weight: 600; }
+  .think-menu .ds { display: block; font-size: 12px; color: var(--ink3); }
   #app.in-chat { padding-bottom: 100px; }
   /* Sheets & misc */
   .sheet { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45);
@@ -134,8 +156,97 @@
   .job-pill .x { flex: none; width: 28px; height: 28px; margin: -4px -6px -4px 0; border: 0; border-radius: 8px;
     background: transparent; color: var(--ink3); font-size: 18px; line-height: 1; cursor: pointer; }
   .job-pill .x:disabled { opacity: .4; }
-  .src-item { cursor: default; }
   .src-item .t { font-size: 14px; }
+  .card.has-menu > h3, .card.has-menu > .t { padding-right: 30px; }
+  .pin-pill { color: var(--ink3); }
+  .msg .save-src { display: inline-block; margin-top: 6px; border: 0; background: none; padding: 2px 0;
+    color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .msg .save-src:disabled { color: var(--ink3); cursor: default; }
+  .sheet .actions .btn { display: block; width: 100%; text-align: left; margin: 0 0 8px; }
+  /* The desktop renderer's output (render.js) in bubbles and documents */
+  .body-md .md-table { max-width: 100%; overflow-x: auto; margin: 6px 0 10px; }
+  .body-md table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .body-md th { text-align: left; font-weight: 600; padding: 5px 8px; border-bottom: 1px solid var(--edge); }
+  .body-md td { padding: 5px 8px; border-bottom: 1px solid var(--edge); vertical-align: top; color: var(--ink2); }
+  .body-md tr:last-child td { border-bottom: 0; }
+  .body-md .katex { font-size: 1.04em; max-width: 100%; }
+  .body-md .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+  .body-md img { display: block; max-width: 100%; max-height: 360px; border-radius: 10px; margin: 6px 0; }
+  .body-md .svg-embed { margin: 6px 0; } .body-md .svg-embed svg { max-width: 100%; height: auto; }
+  .body-md .mermaid-block:not(.mermaid-done) { white-space: pre-wrap; font: 12px ui-monospace, Menlo, monospace;
+    color: var(--ink3); background: var(--panel2); border-radius: 10px; padding: 8px 10px; }
+  .body-md .mermaid-block.mermaid-done { background: #fff; border-radius: 10px; padding: 8px; overflow-x: auto; margin: 6px 0; }
+  .body-md .mermaid-block svg { max-width: 100%; height: auto; }
+  .body-md hr { border: 0; border-top: 1px solid var(--edge); margin: 12px 0; }
+  /* Reasoning, usage line, picture actions, phone-only notes */
+  .msg .reasoning { margin: 0 0 6px; }
+  .msg .reasoning summary { font-size: 12.5px; color: var(--ink3); }
+  .msg .reasoning .body-md { font-size: 13px; color: var(--ink3); border-left: 2px solid var(--edge); padding-left: 10px; margin-top: 4px; }
+  .msg .details { margin: 6px 0 0; font-size: 11.5px; color: var(--ink3); }
+  .img-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: -2px 0 8px; }
+  .img-acts button { border: 1px solid var(--edge); background: var(--panel2); color: var(--ink2); border-radius: 999px;
+    padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .msg.note { background: var(--panel2); border-style: dashed; }
+  /* /fetch cards */
+  .fetch .fq { margin: 0 0 8px; font-weight: 600; color: var(--ink); font-size: 14px; }
+  .fcard { border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg); }
+  .fcard .ft { display: block; color: var(--ink); font-weight: 600; text-decoration: none; font-size: 14px; }
+  .fcard .fm { display: block; font-size: 11.5px; color: var(--ink3); margin-top: 2px; }
+  .fcard .fw { display: block; font-size: 12.5px; color: var(--ink2); margin-top: 4px; }
+  .fcard .btn, .fetch > .btn { margin-top: 8px; padding: 5px 12px; font-size: 12.5px; }
+  /* The "/" and "@" picker above the composer */
+  .composer .row { position: relative; }
+  .pick { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); max-height: 46vh; overflow-y: auto; z-index: 55;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 4px 0; }
+  .pick[hidden] { display: none; }
+  .composer .pick button { display: block; width: 100%; text-align: left; background: transparent; color: var(--ink);
+    border-radius: 0; padding: 8px 14px; font-weight: 400; }
+  .pick .pl { display: block; font-size: 14px; font-weight: 600; }
+  .pick .pd { display: block; font-size: 12px; color: var(--ink3); }
+  /* Source viewer */
+  .sheet .meta { color: var(--ink3); font-size: 12.5px; margin: -4px 0 10px; overflow-wrap: anywhere; }
+  .sheet .meta a { color: var(--accent); }
+  .src-img { display: block; max-width: 100%; max-height: 300px; border-radius: 10px; margin: 8px 0; }
+  .src-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.55; color: var(--ink2);
+    background: var(--panel2); border: 1px solid var(--edge); border-radius: 10px; padding: 10px 12px; margin: 6px 0 12px; }
+  /* Chat list sheet */
+  .chat-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--edge); }
+  .chat-row .open { flex: 1; min-width: 0; text-align: left; background: none; border: 0; color: var(--ink);
+    font: inherit; font-size: 14.5px; padding: 11px 0; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-row.active .open { color: var(--accent); font-weight: 600; }
+  .sheet .chat-row .btn { margin: 0; padding: 5px 10px; font-size: 13px; flex: none; }
+  /* Mind maps: a collapsible tree */
+  .mm { font-size: 14px; line-height: 1.4; }
+  .mm .root { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; margin: 2px 0 6px; }
+  .mm .root::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: none; }
+  .mm .root-note { color: var(--ink3); font-size: 12.5px; margin: -2px 0 8px 17px; }
+  .mm ul { list-style: none; margin: 0 0 0 4px; padding: 0 0 0 12px; border-left: 1px solid var(--edge); }
+  .mm li { position: relative; padding: 4px 0 4px 10px; }
+  .mm li::before { content: ''; position: absolute; left: 0; top: 14px; width: 8px; border-top: 1px solid var(--edge); }
+  .mm details { margin: 0; }
+  .mm summary { color: var(--ink); font-size: 14px; list-style: none; cursor: pointer; }
+  .mm summary::-webkit-details-marker { display: none; }
+  .mm summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--ink3); transition: transform .15s; }
+  .mm details[open] > summary::before { transform: rotate(90deg); }
+  .mm .lb { font-weight: 600; }
+  .mm .count { color: var(--ink3); font-size: 11.5px; margin-left: 6px; font-weight: 400; }
+  .mm details[open] > summary .count { display: none; }
+  .mm .leaf { padding-left: 14px; }
+  .mm .leaf .lb { font-weight: 500; }
+  .mm .nt { display: block; color: var(--ink3); font-size: 12.5px; margin-top: 1px; }
+  .mm summary + .nt { margin-left: 14px; }
+  /* Interactive pages: full-screen sandboxed viewer */
+  .viewer { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: flex; flex-direction: column; }
+  .viewer .bar { display: flex; align-items: center; gap: 10px; background: var(--panel);
+    border-bottom: 1px solid var(--edge); padding: calc(8px + env(safe-area-inset-top)) 14px 8px; }
+  .viewer .bar h3 { flex: 1; min-width: 0; margin: 0; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .viewer iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
+  .viewer .warn { font-size: 12.5px; color: var(--bad); background: var(--panel); border-top: 1px solid var(--edge);
+    padding: 8px 14px calc(8px + env(safe-area-inset-bottom)); }
+  .viewer .warn[hidden] { display: none; }
+  body.viewing { overflow: hidden; }
   /* Theme dock */
   .themes { position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 50;
@@ -205,6 +316,58 @@ const M_THEMES = {
 // Themes the desktop retired, and where their fans went.
 const RETIRED_THEMES = { velvet:'custom', sunset:'wine', candy:'lilac' };
 const THEME_KEY = 'brewlm-mobile-theme';
+/* Thinking effort for this phone's chats (sent with each message; the desktop
+   uses it for that reply). Kept on the phone, like the theme. */
+const THINK_KEY = 'brewlm-mobile-thinking';
+const THINK_LEVELS = [
+  ['auto', 'Auto', "Each model's own default"],
+  ['low', 'Low', 'Brief — faster and cheaper'],
+  ['medium', 'Medium', 'Balanced'],
+  ['high', 'High', 'Longest — best for hard questions'],
+];
+function getThinking() {
+  let v = null;
+  try { v = localStorage.getItem(THINK_KEY); } catch {}
+  return THINK_LEVELS.some(l => l[0] === v) ? v : 'auto';
+}
+const BRAIN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg>';
+/* Wire the brain button inside `wrap`: toggles the menu, saves the pick. */
+function mountThinking(wrap) {
+  const btn = wrap.querySelector('.think');
+  const paint = () => {
+    const cur = getThinking();
+    const label = THINK_LEVELS.find(l => l[0] === cur)[1];
+    btn.innerHTML = BRAIN_SVG + (cur === 'auto' ? '' : `<span>${label}</span>`);
+    btn.classList.toggle('set', cur !== 'auto');
+    btn.setAttribute('aria-label', `Thinking effort: ${label}`);
+  };
+  const close = () => {
+    wrap.querySelector('.think-menu')?.remove();
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+  };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  btn.onclick = () => {
+    if (wrap.querySelector('.think-menu')) return close();
+    const cur = getThinking();
+    const menu = document.createElement('div');
+    menu.className = 'think-menu'; menu.setAttribute('role', 'menu');
+    menu.innerHTML = '<p class="hd">Thinking effort</p>' + THINK_LEVELS.map(([id, name, desc]) =>
+      `<button role="menuitemradio" aria-checked="${id === cur}" data-level="${id}">
+        <span class="ck">${id === cur ? '✓' : ''}</span>
+        <span><span class="nm">${name}</span><span class="ds">${desc}</span></span></button>`).join('');
+    menu.onclick = (e) => {
+      const b = e.target.closest('[data-level]');
+      if (!b) return;
+      try { localStorage.setItem(THINK_KEY, b.dataset.level); } catch {}
+      paint(); close();
+    };
+    wrap.appendChild(menu);
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+  };
+  paint();
+}
 let currentTheme = 'brew';
 
 /* Custom Blend, derived from the desktop's picks the same way it does
@@ -497,6 +660,137 @@ async function renderNotebook(id) {
   else renderSourcesTab(pane, nb, st);
 }
 
+/* ------------------------------ rich replies ------------------------------ */
+/* Replies and documents are drawn by the desktop's own renderer
+   (/assets/render.js: markdown, tables, LaTeX math, SVG drawings, /fetch
+   cards), so they look as they do on the computer. md() above stands in if
+   it didn't load. */
+const ASSETS_V = '__PHONE_ASSETS_V__';
+const renderer = () => window.BrewRender || null;
+function rich(src) {
+  const r = renderer();
+  if (!r) return md(src);
+  try { return r.renderMarkdown(src || ''); } catch { return md(src); }
+}
+let mermaidLoad = null;
+function loadMermaid() {
+  mermaidLoad ??= new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = `/assets/mermaid.js?v=${ASSETS_V}`;
+    s.onload = () => {
+      // As the desktop sets it up (src/lib/mermaid.ts).
+      window.mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'strict', fontFamily: 'inherit' });
+      ok(window.mermaid);
+    };
+    s.onerror = () => { mermaidLoad = null; fail(new Error('Diagrams are unavailable.')); };
+    document.head.appendChild(s);
+  });
+  return mermaidLoad;
+}
+let mmdSeq = 0;
+/* After rich(): library pictures get their address, diagrams get drawn. */
+async function hydrate(root) {
+  root.querySelectorAll('img[data-brewimg]').forEach(img => {
+    if (!img.getAttribute('src')) img.src = `${BASE}/api/images/${encodeURIComponent(img.dataset.brewimg)}`;
+    img.loading = 'lazy';
+  });
+  const blocks = [...root.querySelectorAll('.mermaid-block:not([data-hydrated])')];
+  if (!blocks.length) return;
+  blocks.forEach(b => b.dataset.hydrated = '1');
+  let mermaid;
+  try { mermaid = await loadMermaid(); }
+  catch { blocks.forEach(b => b.classList.add('mermaid-error')); return; }
+  for (const el of blocks) {
+    try {
+      const { svg } = await mermaid.render(`pm-mmd-${mmdSeq++}`, (el.textContent || '').trim());
+      el.innerHTML = svg;
+      el.classList.add('mermaid-done');
+    } catch { el.classList.add('mermaid-error'); }
+  }
+}
+
+/* ------------------------- commands and @mentions ------------------------- */
+/* What the "/" picker offers on the phone. The first group runs on the
+   computer exactly as in its chat; the rest are handled here. */
+const PHONE_COMMANDS = [
+  ['/search', '<question>', 'Answer from the web, with links'],
+  ['/fetch', '<what to learn>', 'Find web sources to add'],
+  ['/image', '[16:9] <prompt>', 'Make a picture'],
+  ['/edit', '<change>', 'Change the latest picture'],
+  ['/remix', '<idea>', 'A new picture in its style'],
+  ['/more', '', 'More like the latest picture'],
+  ['/summarize', '', 'Summarize the whole notebook'],
+  ['/note', '<text>', 'Save text as a source'],
+  ['/url', '<link>', 'Add a web page as a source'],
+  ['/ground', '', 'Turn source grounding on or off'],
+  ['/constitution', '[on|off]', "Use or ignore the notebook's constitution"],
+  ['/flashcards', '', 'Make flashcards'],
+  ['/quiz', '', 'Make a quiz'],
+  ['/mindmap', '', 'Make a mind map'],
+  ['/audio', '', 'Make an audio overview'],
+  ['/report', '', 'Write a report'],
+  ['/research', '', 'Run deep research'],
+  ['/new', '', 'Start a new chat'],
+  ['/rename', '<title>', 'Rename this chat'],
+  ['/clear', '', 'Delete this chat'],
+  ['/details', '[on|off]', 'Show tokens and cost under replies'],
+  ['/theme', '[name]', "Change this phone's colors"],
+  ['/help', '', 'What works from your phone'],
+];
+const STUDIO_CMDS = { flashcards: 'flashcards', quiz: 'quiz', mindmap: 'mindmap', audio: 'audio', report: 'report', research: 'research' };
+const HELP_MD = `**Chat commands on your phone**
+
+${PHONE_COMMANDS.map(([c, a, d]) => `- \`${c}${a ? ' ' + a : ''}\` — ${d}`).join('\n')}
+
+Type **@** to point a question at a source or Studio output. Model, voice and other settings are changed in BrewLM on your computer.`;
+
+/* Shows tokens and cost under replies made on this phone (/details). Kept on the phone. */
+const DETAILS_KEY = 'brewlm-mobile-details';
+const detailsOn = () => { try { return localStorage.getItem(DETAILS_KEY) === 'on'; } catch { return false; } };
+/* The usage line of the latest reply, until another chat is opened (the desktop keeps them in memory too). */
+let lastDetails = null;
+
+/* Wire the "/" and "@" pickers to a composer textarea. */
+function mountPicker(ta, row, nb) {
+  const pick = document.createElement('div');
+  pick.className = 'pick'; pick.hidden = true;
+  row.appendChild(pick);
+  const mentionables = () => [
+    ...nb.sources.map(s => ({ title: s.title, kind: s.type === 'context' ? 'constitution' : s.type })),
+    ...nb.artifacts.filter(a => a.kind !== 'drawing').map(a => ({ title: a.title, kind: a.kind })),
+  ];
+  const update = () => {
+    const caret = ta.selectionStart ?? ta.value.length;
+    const before = ta.value.slice(0, caret);
+    let items = [];
+    const slash = /^\/(\w*)$/.exec(before);
+    const at = /(^|\s)@([^@\n]*)$/.exec(before);
+    if (slash) {
+      items = PHONE_COMMANDS.filter(c => c[0].slice(1).startsWith(slash[1].toLowerCase()))
+        .map(([c, a, d]) => ({ label: c + (a ? ' ' + a : ''), desc: d, insert: c + ' ', from: 0 }));
+    } else if (at) {
+      const q = at[2].toLowerCase();
+      items = mentionables().filter(m => m.title.toLowerCase().includes(q)).slice(0, 8)
+        .map(m => ({ label: '@' + m.title, desc: m.kind, insert: '@' + m.title + ' ', from: caret - at[2].length - 1 }));
+    }
+    pick.hidden = !items.length;
+    pick.innerHTML = items.map((it, i) =>
+      `<button type="button" data-pick="${i}"><span class="pl">${esc(it.label)}</span><span class="pd">${esc(it.desc)}</span></button>`).join('');
+    pick.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+      const it = items[Number(b.dataset.pick)];
+      const end = ta.selectionStart ?? ta.value.length;
+      ta.value = ta.value.slice(0, it.from) + it.insert + ta.value.slice(end);
+      const pos = it.from + it.insert.length;
+      ta.focus(); ta.setSelectionRange(pos, pos);
+      ta.dispatchEvent(new Event('input'));
+    });
+  };
+  ta.addEventListener('input', update);
+  ta.addEventListener('click', update);
+  ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ta) pick.hidden = true; }, 150));
+  return { hide: () => { pick.hidden = true; } };
+}
+
 /* -------------------------------- chat tab ------------------------------ */
 async function renderChatTab(pane, nb, st) {
   pane.innerHTML = '<p class="empty">Loading chat…</p>';
@@ -505,25 +799,113 @@ async function renderChatTab(pane, nb, st) {
   catch (e) { pane.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
   if (!chats.find(c => c.id === st.chatId)) st.chatId = chats[0]?.id ?? null;
 
+  // The five most recent, plus the open one if it's older; the rest live in "All chats".
+  const shown = chats.slice(0, 5);
+  const open = chats.find(c => c.id === st.chatId);
+  if (open && !shown.includes(open)) shown.push(open);
   const chatBar = `<div class="chips">
-    ${chats.slice(0, 5).map(c => `<span class="chip ${c.id === st.chatId ? 'active' : ''}" data-chat="${esc(c.id)}">${esc(c.title)}</span>`).join('')}
+    ${shown.map(c => `<span class="chip ${c.id === st.chatId ? 'active' : ''}" data-chat="${esc(c.id)}">${esc(c.title)}</span>`).join('')}
     <span class="chip write-only" data-newchat>＋ New chat</span>
+    ${chats.length ? `<span class="chip" data-allchats>All chats · ${chats.length}</span>` : ''}
   </div>`;
-  pane.innerHTML = `${chatBar}<div id="msgs"></div>`;
+  pane.innerHTML = `${chatBar}<div id="msgs"></div><div id="sheetroot"></div>`;
   pane.querySelectorAll('[data-chat]').forEach(el => el.onclick = () => { st.chatId = el.dataset.chat; renderNotebook(nb.id); });
   pane.querySelector('[data-newchat]').onclick = () => { st.chatId = null; renderMsgs(); };
+  const all = pane.querySelector('[data-allchats]');
+  if (all) all.onclick = () => chatsSheet(pane.querySelector('#sheetroot'), nb, st, chats);
 
   const $msgs = pane.querySelector('#msgs');
   let sending = false;
+  /* The picture an image action picked, for the /edit or /remix being typed. */
+  let pendingImage = null;
+
+  /* A /fetch reply: cards to open or add, as on the desktop. */
+  function fetchCards(list) {
+    const r = renderer();
+    const have = new Set(nb.sources.filter(s => s.url).map(s => r.urlKey(s.url)));
+    return `<div class="fetch"><p class="fq">Sources found for “${esc(list.query)}”</p>
+      ${list.items.map((it, i) => {
+        const added = have.has(r.urlKey(it.url));
+        return `<div class="fcard">
+          <a class="ft" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer">${esc(it.title)}</a>
+          <span class="fm">${esc(r.siteOf(it.url))} · ${esc(it.kind)}</span>
+          ${it.why ? `<span class="fw">${esc(it.why)}</span>` : ''}
+          <button class="btn write-only" data-fadd="${i}" ${added ? 'disabled' : ''}>${added ? 'Added' : 'Add to sources'}</button>
+        </div>`;
+      }).join('')}
+      <button class="btn write-only" data-faddall>Add all</button></div>`;
+  }
+  function wireFetch(el, list) {
+    const add = async (b) => {
+      const it = list.items[Number(b.dataset.fadd)];
+      if (b.disabled) return;
+      b.disabled = true; b.textContent = 'Adding…';
+      try {
+        const { job_id } = await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url: it.url });
+        const job = await pollJob(job_id, 120);
+        if (job.status !== 'done') throw new Error(job.result || "Couldn't read that link.");
+        nb.sources.push({ ...JSON.parse(job.result || '{}'), url: it.url, type: 'link' });
+        b.textContent = 'Added';
+      } catch (e) { b.disabled = false; b.textContent = 'Add to sources'; alert(e.message); }
+    };
+    el.querySelectorAll('[data-fadd]').forEach(b => b.onclick = () => add(b));
+    const allBtn = el.querySelector('[data-faddall]');
+    if (allBtn) allBtn.onclick = async () => {
+      allBtn.disabled = true;
+      for (const b of el.querySelectorAll('[data-fadd]:not(:disabled)')) await add(b);
+      allBtn.disabled = false;
+    };
+  }
+
+  function botHtml(m) {
+    const list = renderer()?.parseFetchMessage(m.content);
+    const think = m.reasoning
+      ? `<details class="reasoning"><summary>Reasoning</summary><div class="body-md">${rich(m.reasoning)}</div></details>` : '';
+    return `<div class="msg bot" data-mid="${esc(m.id)}">${think}<div class="body-md">${list ? fetchCards(list) : rich(m.content)}</div>${
+      m.content.trim()
+        ? `<button class="save-src write-only" data-save="${esc(m.id)}" ${savedReplies.has(m.id) ? 'disabled' : ''}>${
+            savedReplies.has(m.id) ? 'Saved to Sources' : 'Save to Sources'}</button>` : ''}</div>`;
+  }
 
   async function renderMsgs() {
-    if (!st.chatId) { $msgs.innerHTML = `<p class="empty">${SCOPE !== 'full' ? 'Chats appear here — pick an existing one above.' : 'Say something to start a new chat — answers cite your sources.'}</p>`; return; }
+    if (!st.chatId) { $msgs.innerHTML = `<p class="empty">${SCOPE !== 'full' ? 'Chats appear here — pick an existing one above.' : 'Say something to start a new chat — answers cite your sources. Type / for commands, @ to point at a source.'}</p>`; return; }
     let msgs = [];
     try { msgs = (await api(`/chats/${encodeURIComponent(st.chatId)}/messages`)).messages; }
     catch (e) { $msgs.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
-    $msgs.innerHTML = msgs.length ? msgs.map(m => `
-      <div class="msg ${m.role === 'user' ? 'user' : 'bot'}"><div class="body-md">${m.role === 'user' ? esc(m.content) : md(m.content)}</div></div>`
-    ).join('') : '<p class="empty">No messages yet.</p>';
+    $msgs.innerHTML = msgs.length ? msgs.map(m => m.role === 'user'
+      ? `<div class="msg user"><div class="body-md">${esc(m.content)}</div></div>`
+      : botHtml(m)).join('') : '<p class="empty">No messages yet.</p>';
+    // /details: the latest reply's tokens and cost.
+    const bots = $msgs.querySelectorAll('.msg.bot');
+    if (detailsOn() && lastDetails?.chatId === st.chatId && lastDetails.text && bots.length)
+      bots[bots.length - 1].insertAdjacentHTML('beforeend', `<p class="details">${esc(lastDetails.text)}</p>`);
+    msgs.forEach(m => {
+      const list = m.role === 'assistant' && renderer()?.parseFetchMessage(m.content);
+      if (list) wireFetch($msgs.querySelector(`[data-mid="${CSS.escape(m.id)}"]`), list);
+    });
+    await hydrate($msgs);
+    // Picture actions, as the desktop shows on hover.
+    $msgs.querySelectorAll('.msg.bot img[data-brewimg]').forEach(img => {
+      const id = img.dataset.brewimg;
+      img.insertAdjacentHTML('afterend', `<div class="img-acts write-only">
+        <button data-iact="edit" data-img="${esc(id)}">Edit</button>
+        <button data-iact="remix" data-img="${esc(id)}">Remix</button>
+        <button data-iact="more" data-img="${esc(id)}">More like this</button></div>`);
+    });
+    $msgs.querySelectorAll('[data-iact]').forEach(b => b.onclick = () => {
+      if (b.dataset.iact === 'more') return send('/more', b.dataset.img);
+      pendingImage = b.dataset.img;
+      ta.value = `/${b.dataset.iact} `;
+      ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+    $msgs.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Saving…';
+      try {
+        await runEdit(`/messages/${encodeURIComponent(b.dataset.save)}/to-source`);
+        savedReplies.add(b.dataset.save);
+        b.textContent = 'Saved to Sources';
+      } catch (e) { b.disabled = false; b.textContent = "Couldn't save — try again"; }
+    });
     window.scrollTo(0, document.body.scrollHeight);
   }
   await renderMsgs();
@@ -533,34 +915,270 @@ async function renderChatTab(pane, nb, st) {
   composer = document.createElement('div');
   composer.className = 'composer write-only'; composer.id = 'composer';
   composer.innerHTML = `<div class="row">
-    <textarea rows="1" placeholder="Ask this notebook…" id="cta"></textarea>
+    <textarea rows="1" placeholder="Ask, or type / for commands" id="cta"></textarea>
+    <div class="think-wrap"><button class="think" type="button" aria-haspopup="menu" aria-expanded="false"
+      title="Thinking effort"></button></div>
     <button id="csend">Send</button></div>`;
   document.body.appendChild(composer);
+  mountThinking(composer.querySelector('.think-wrap'));
   const ta = composer.querySelector('#cta');
   const btn = composer.querySelector('#csend');
+  const picker = mountPicker(ta, composer.querySelector('.row'), nb);
   ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(110, ta.scrollHeight) + 'px'; });
 
-  btn.onclick = async () => {
-    const text = ta.value.trim();
-    if (!text || sending) return;
-    sending = true; btn.disabled = true; ta.value = '';
+  /* A note from this phone, not saved in the chat. */
+  const note = (markdown) => {
+    $msgs.querySelector('p.empty')?.remove();
+    $msgs.insertAdjacentHTML('beforeend', `<div class="msg bot note"><div class="body-md">${rich(markdown)}</div></div>`);
+    window.scrollTo(0, document.body.scrollHeight);
+  };
+
+  /* Commands this page handles itself. True when handled. */
+  async function localCommand(text) {
+    const m = /^\/(\w+)(?:\s+([\s\S]*))?$/.exec(text);
+    if (!m) return false;
+    const cmd = m[1].toLowerCase();
+    const arg = (m[2] || '').trim();
+    if (cmd === 'help') { note(HELP_MD); return true; }
+    if (cmd === 'new') { st.chatId = null; await renderNotebook(nb.id); return true; }
+    if (cmd === 'details') {
+      const on = arg === 'on' ? true : arg === 'off' ? false : !detailsOn();
+      try { localStorage.setItem(DETAILS_KEY, on ? 'on' : 'off'); } catch {}
+      note(on ? 'Details **on** — tokens and cost show under replies made on this phone. (`/details` toggles this.)'
+        : 'Details **off**. (`/details` toggles this.)');
+      return true;
+    }
+    if (cmd === 'theme') {
+      const want = arg.toLowerCase();
+      const id = Object.keys(M_THEMES).find(k => k === want || M_THEMES[k].name.toLowerCase() === want);
+      if (!id) {
+        note(`${arg ? `There's no “${esc(arg)}” theme. ` : ''}Themes: ${Object.values(M_THEMES).map(t => `**${t.name}**`).join(', ')} — e.g. \`/theme Cold Brew\`.`);
+      } else { applyMobileTheme(id, true); note(`Theme: **${M_THEMES[id].name}** (on this phone).`); }
+      return true;
+    }
+    if (cmd === 'rename') {
+      const t = arg.replace(/^["“](.*)["”]$/, '$1').trim();
+      if (!st.chatId) { note('Start the chat first, then rename it.'); return true; }
+      if (!t) { note('Give me the new title, e.g. `/rename Exam prep`.'); return true; }
+      await post(`/chats/${encodeURIComponent(st.chatId)}/rename`, { title: t });
+      await renderNotebook(nb.id);
+      return true;
+    }
+    if (cmd === 'clear') {
+      const c = chats.find(x => x.id === st.chatId);
+      if (!c) { note("There's no chat to delete yet."); return true; }
+      if (!confirm(`Delete “${c.title}”? Its messages are deleted for good — this can't be undone.`)) return true;
+      const { job_id } = await post(`/chats/${encodeURIComponent(c.id)}/delete`);
+      const job = await pollJob(job_id, 60);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't delete that chat.");
+      st.chatId = null;
+      await renderNotebook(nb.id);
+      return true;
+    }
+    if (STUDIO_CMDS[cmd]) {
+      // Studio tools run from the Generate sheet, with their options.
+      st.tab = 'studio'; st.openGen = STUDIO_CMDS[cmd];
+      await renderNotebook(nb.id);
+      return true;
+    }
+    return false;
+  }
+
+  let jobId = null;
+  async function send(text, imageId) {
+    picker.hide();
+    sending = true;
+    btn.textContent = 'Stop'; btn.classList.add('stop');
+    $msgs.querySelector('p.empty')?.remove();
     $msgs.insertAdjacentHTML('beforeend',
       `<div class="msg user"><div class="body-md">${esc(text)}</div></div>
        <div class="msg bot thinking" id="thinking">BrewLM is thinking…</div>`);
     window.scrollTo(0, document.body.scrollHeight);
     try {
-      const { job_id } = await post('/chat', { notebook_id: nb.id, content: text, chat_id: st.chatId });
-      const job = await pollJob(job_id, 120);
+      // No chat picked ("＋ New chat", or none yet) starts a new one rather than
+      // continuing the most recent.
+      const { job_id } = await post('/chat', { notebook_id: nb.id, content: text, chat_id: st.chatId,
+        new_chat: !st.chatId, thinking: getThinking(), image_id: imageId || null });
+      jobId = job_id;
+      // Chats share the computer's queue with Studio jobs, so a reply can wait
+      // behind a podcast; say so instead of looking stuck. A reply being
+      // written shows as it grows.
+      const asked = Date.now();
+      let streamed = '';
+      const job = await pollJob(job_id, CHAT_WAIT_S, (j) => {
+        const el = document.getElementById('thinking');
+        if (!el) return;
+        if (j.status === 'running' && j.progress && j.progress !== streamed) {
+          streamed = j.progress;
+          el.classList.remove('thinking');
+          el.innerHTML = `<div class="body-md">${rich(streamed)}</div>`;
+          window.scrollTo(0, document.body.scrollHeight);
+        } else if (!streamed) {
+          el.textContent = j.status === 'pending' && Date.now() - asked > 8000
+            ? 'Waiting for BrewLM on your computer to finish other work…'
+            : 'BrewLM is thinking…';
+        }
+      }, 1000);
+      if (job.status === 'cancelled') {
+        // A new chat may already hold the question: show whichever chat it went to.
+        if (!st.chatId) return renderNotebook(nb.id);
+        await renderMsgs();
+        $msgs.insertAdjacentHTML('beforeend', '<div class="msg bot thinking">Stopped — no answer was saved.</div>');
+        window.scrollTo(0, document.body.scrollHeight);
+        return;
+      }
       if (job.status !== 'done') throw new Error(job.result || 'Chat failed.');
       const result = JSON.parse(job.result || '{}');
       if (result.chat_id) st.chatId = result.chat_id;
+      lastDetails = { chatId: st.chatId, text: result.details || '' };
       await renderMsgs();
     } catch (e) {
       document.getElementById('thinking')?.remove();
-      $msgs.insertAdjacentHTML('beforeend',
-        `<div class="msg bot thinking" style="color:var(--bad)">${esc(e.message)}</div>`);
-    } finally { sending = false; btn.disabled = false; ta.focus(); }
+      $msgs.insertAdjacentHTML('beforeend', e.timedOut
+        ? `<div class="msg bot thinking">Still working on your computer — the answer will be in this chat when it's done. Open the chat again in a bit.</div>`
+        : `<div class="msg bot thinking" style="color:var(--bad)">${esc(e.message)}</div>`);
+    } finally {
+      sending = false; jobId = null;
+      btn.disabled = false; btn.textContent = 'Send'; btn.classList.remove('stop');
+    }
+  }
+
+  btn.onclick = async () => {
+    if (sending) {
+      // Stop: cancels the reply on the computer too.
+      if (!jobId) return;
+      btn.disabled = true; btn.textContent = 'Stopping…';
+      try { await post(`/jobs/${encodeURIComponent(jobId)}/cancel`); }
+      catch (e) { alert(e.message); btn.disabled = false; btn.textContent = 'Stop'; }
+      return;
+    }
+    const text = ta.value.trim();
+    if (!text) return;
+    ta.value = ''; ta.style.height = 'auto'; picker.hide();
+    try { if (await localCommand(text)) return; }
+    catch (e) { note(esc(e.message)); return; }
+    // An Edit/Remix tap picked the picture; it applies to that command only.
+    const imageId = /^\/(edit|remix|more)(\s|$)/i.test(text) ? pendingImage : null;
+    pendingImage = null;
+    await send(text, imageId);
+    ta.focus();
   };
+}
+
+/* An item edit (rename, pin, delete, add to sources): BrewLM on the computer
+   runs it with its own functions; this waits for it. */
+async function runEdit(path, body) {
+  const { job_id } = await post(path, body);
+  const job = await pollJob(job_id, 60);
+  if (job.status !== 'done') throw new Error(job.result || "Couldn't do that.");
+}
+
+/* A sheet of actions for one item. Each action: { label, danger?, confirm?, run } —
+   run() does the work; the sheet stays up showing "Working…" until it's done. */
+function actionSheet(root, title, actions, after) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>${esc(title)}</h3>
+    <div class="actions">${actions.map((a, i) =>
+      `<button class="btn ${a.danger ? 'btn-danger' : ''}" data-act="${i}">${esc(a.label)}</button>`).join('')}</div>
+    <button class="btn" id="a-cancel">Cancel</button>
+  </div></div>`;
+  root.querySelector('#a-cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
+    const a = actions[Number(b.dataset.act)];
+    if (a.confirm && !confirm(a.confirm)) return;
+    root.querySelectorAll('.sheet button').forEach(x => x.disabled = true);
+    b.textContent = 'Working…';
+    try { if (await a.run() === false) return close(); close(); after(); }
+    catch (e) {
+      alert(e.message);
+      root.querySelectorAll('.sheet button').forEach(x => x.disabled = false);
+      b.textContent = a.label;
+    }
+  });
+}
+
+/* The ⋯ menu on a source: as the desktop's Sources list offers. */
+function sourceActions(root, nb, s) {
+  const path = `/sources/${encodeURIComponent(s.id)}/edit`;
+  actionSheet(root, s.title, [
+    { label: 'Rename', run: async () => {
+      const t = (prompt('Rename source', s.title) || '').trim();
+      if (!t || t === s.title) return false;
+      await runEdit(path, { op: 'rename', title: t });
+    } },
+    { label: s.pinned ? 'Unpin' : 'Pin to top', run: () => runEdit(path, { op: s.pinned ? 'unpin' : 'pin' }) },
+    { label: 'Remove source', danger: true,
+      confirm: `“${s.title}” will be removed from this notebook. This can't be undone.`,
+      run: () => runEdit(path, { op: 'delete' }) },
+  ], () => renderNotebook(nb.id));
+}
+
+/* The ⋯ menu on a Studio output: as the desktop's Studio list and viewer offer. */
+function artifactActions(root, nb, a) {
+  const path = `/artifacts/${encodeURIComponent(a.id)}/edit`;
+  actionSheet(root, a.title, [
+    { label: 'Rename', run: async () => {
+      const t = (prompt('Rename output', a.title) || '').trim();
+      if (!t || t === a.title) return false;
+      await runEdit(path, { op: 'rename', title: t });
+    } },
+    { label: a.pinned ? 'Unpin' : 'Pin to top', run: () => runEdit(path, { op: a.pinned ? 'unpin' : 'pin' }) },
+    { label: 'Add to sources', run: async () => {
+      await runEdit(path, { op: 'to-source' });
+      alert(`Added “${a.title}” to Sources.`);
+    } },
+    { label: 'Delete', danger: true, confirm: `“${a.title}” will be deleted. This can't be undone.`,
+      run: () => runEdit(path, { op: 'delete' }) },
+  ], () => renderNotebook(nb.id));
+}
+
+/* Replies saved to Sources from this page (the desktop marks them the same way). */
+const savedReplies = new Set();
+
+/* How long the phone waits for a chat reply (high thinking can take minutes). */
+const CHAT_WAIT_S = 600;
+
+/* Every chat in this notebook (the server sends the 50 most recent), to open,
+   rename or delete. */
+function chatsSheet(root, nb, st, chats) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>Chats</h3>
+    ${chats.map(c => `<div class="chat-row ${c.id === st.chatId ? 'active' : ''}">
+      <button class="open" data-open="${esc(c.id)}">${esc(c.title)}</button>
+      <button class="btn write-only" data-rename="${esc(c.id)}">Rename</button>
+      <button class="btn btn-danger write-only" data-delete="${esc(c.id)}">Delete</button></div>`).join('')}
+    <div style="margin-top:14px"><button class="btn" id="c-close">Close</button></div>
+  </div></div>`;
+  root.querySelector('#c-close').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
+    st.chatId = b.dataset.open; close(); renderNotebook(nb.id);
+  });
+  root.querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
+    const c = chats.find(x => x.id === b.dataset.rename);
+    const t = (prompt('Rename chat', c.title) || '').trim();
+    if (!t || t === c.title) return;
+    post(`/chats/${encodeURIComponent(c.id)}/rename`, { title: t })
+      .then(() => { close(); renderNotebook(nb.id); })
+      .catch(e => alert(e.message));
+  });
+  // Gone for good, as on the desktop: BrewLM there deletes it the same way.
+  root.querySelectorAll('[data-delete]').forEach(b => b.onclick = async () => {
+    const c = chats.find(x => x.id === b.dataset.delete);
+    if (!confirm(`Delete “${c.title}”? Its messages are deleted for good — this can't be undone.`)) return;
+    b.disabled = true; b.textContent = 'Deleting…';
+    try {
+      const { job_id } = await post(`/chats/${encodeURIComponent(c.id)}/delete`);
+      const job = await pollJob(job_id, 60);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't delete that chat.");
+      // Like the desktop: deleting the open chat moves to the most recent one left.
+      if (st.chatId === c.id) st.chatId = null;
+      close(); renderNotebook(nb.id);
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = 'Delete'; }
+  });
 }
 
 /* -------------------- device-voice read aloud (TTS) --------------------- */
@@ -653,40 +1271,61 @@ async function readAloud(id, btn, statusEl) {
 window.addEventListener('pagehide', stopSpeaking);
 
 /* ------------------------------- studio tab ----------------------------- */
+/* Each tool's option rows: [key, values] picks one value; [key, 'text' | 'area',
+   placeholder] is free text; a fourth item { when: [key, value] } shows the row
+   only while that other option has that value. */
+const FOCUS = 'Focus (optional)…';
 const GEN_TOOLS = [
-  { kind: 'flashcards', label: 'Flashcards', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text']] },
-  { kind: 'quiz', label: 'Quiz', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text']] },
-  { kind: 'mindmap', label: 'Mind map', opts: [['focus', 'text']] },
-  { kind: 'report', label: 'Report', opts: [['report_type', ['study-guide', 'briefing-doc', 'analysis']]] },
-  { kind: 'research', label: 'Deep research', opts: [['topic', 'text']] },
-  { kind: 'audio', label: 'Audio overview', opts: [['format', ['deep-dive', 'brief', 'debate', 'critique']], ['length', ['short', 'standard', 'long']], ['focus', 'text']] },
+  { kind: 'flashcards', label: 'Flashcards', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text', FOCUS]] },
+  { kind: 'quiz', label: 'Quiz', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text', FOCUS]] },
+  { kind: 'mindmap', label: 'Mind map', opts: [['focus', 'text', FOCUS]] },
+  { kind: 'report', label: 'Report', opts: [['report_type', ['study-guide', 'briefing-doc', 'analysis', 'custom']],
+    ['custom_prompt', 'area', 'What should the report cover? e.g. “A glossary of every key term”', { when: ['report_type', 'custom'] }]] },
+  { kind: 'research', label: 'Deep research', opts: [['topic', 'text', 'Topic to research…']] },
+  { kind: 'audio', label: 'Audio overview', opts: [['mode', ['conversation', 'solo']], ['format', ['deep-dive', 'brief', 'debate', 'critique']], ['length', ['short', 'standard', 'long']], ['focus', 'text', FOCUS]] },
+  { kind: 'interactive', label: 'Interactive', opts: [['topic', 'area', 'What to build (optional) — a game, simulation, explorer… Leave it empty and BrewLM picks an idea from your sources.']] },
 ];
-const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0 };
+const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0, mode: 0 };
+// The desktop's names for each choice (src/lib/studio.ts).
+const OPT_LABELS = {
+  compact: 'Compact', default: 'Default', more: 'More', easy: 'Easy', medium: 'Medium', hard: 'Hard',
+  'study-guide': 'Study Guide', 'briefing-doc': 'Briefing Doc', analysis: 'Thorough Analysis', custom: 'Custom',
+  conversation: 'Conversation', solo: 'Solo', 'deep-dive': 'Deep Dive', brief: 'Brief', debate: 'Debate',
+  critique: 'Critique', short: 'Short', standard: 'Standard', long: 'Long',
+};
+// Long-running tools get longer before the phone stops waiting (the job keeps going).
+const GEN_WAIT_S = { audio: 900, research: 900, interactive: 900 };
 const activeJobs = {}; // jobId -> {label}
 
-async function pollJob(id, maxSeconds) {
+async function pollJob(id, maxSeconds, onTick, everyMs = 2000) {
   const deadline = Date.now() + maxSeconds * 1000;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, everyMs));
     const job = await api(`/jobs/${encodeURIComponent(id)}`);
     if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') return job;
     const a = activeJobs[id];
     if (a && a.el && !a.cancelling) a.el.querySelector('.p').textContent = job.progress || 'Working…';
+    onTick?.(job);
   }
-  throw new Error('Timed out waiting for the desktop — is BrewLM open there?');
+  const err = new Error('Timed out waiting for the desktop — is BrewLM open there?');
+  err.timedOut = true;
+  throw err;
 }
 
-function renderStudioTab(pane, nb) {
-  const groups = { audio: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
+function renderStudioTab(pane, nb, st) {
+  const groups = { audio: [], interactive: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
   for (const a of nb.artifacts) {
     if (a.kind === 'drawing') continue; // desktop-only sketchpad
     if (a.kind === 'audio') groups.audio.push(a);
+    else if (a.kind === 'interactive') groups.interactive.push(a);
     else if (a.kind === 'flashcards') groups.flashcards.push(a);
     else if (a.kind === 'quiz') groups.quiz.push(a);
     else if (a.kind === 'mindmap') groups.mindmap.push(a);
     else groups.docs.push(a);
   }
-  const artCard = (a, body) => `<div class="card"><h3>${esc(a.title)}<span class="pill">${a.kind}</span></h3>${body}</div>`;
+  const artCard = (a, body) => `<div class="card has-menu"><h3>${esc(a.title)}<span class="pill">${a.kind}</span>${
+      a.pinned ? '<span class="pill pin-pill">Pinned</span>' : ''}</h3>
+    <span class="menu write-only" data-amenu="${esc(a.id)}" aria-label="More for ${esc(a.title)}">⋯</span>${body}</div>`;
   let h = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
       <button class="btn btn-primary write-only" id="gen-open">＋ Generate</button></div>
     <div id="jobs"></div>`;
@@ -700,6 +1339,12 @@ function renderStudioTab(pane, nb) {
         <span class="tts-status"></span>
       </div>
       <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
+  }
+  if (groups.interactive.length) {
+    h += `<div class="sec">Interactive pages</div>`;
+    for (const a of groups.interactive) h += artCard(a, `
+      <div class="tts-row"><button class="btn btn-primary" data-page="${esc(a.id)}">▶ Open page</button></div>
+      <details><summary>Read the plan</summary><div class="body-md" data-plan="${esc(a.id)}"></div></details>`);
   }
   if (groups.docs.length) {
     h += `<div class="sec">Documents</div>`;
@@ -715,7 +1360,7 @@ function renderStudioTab(pane, nb) {
   }
   if (groups.mindmap.length) {
     h += `<div class="sec">Mind maps</div>`;
-    for (const a of groups.mindmap) h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+    for (const a of groups.mindmap) h += artCard(a, `<div data-mind="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
   }
   if (!nb.artifacts.length) h += `<p class="empty">${SCOPE !== 'full' ? 'Nothing here yet.' : 'Nothing here yet — tap ＋ Generate to create something from your sources.'}</p>`;
   h += '<div id="sheetroot"></div>';
@@ -724,8 +1369,14 @@ function renderStudioTab(pane, nb) {
   pane.querySelectorAll('[data-doc]').forEach(el => el.parentElement.addEventListener('click', () => loadDoc(el), { once: true }));
   pane.querySelectorAll('[data-fc]').forEach(el => el.parentElement.addEventListener('click', () => loadCards(el), { once: true }));
   pane.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
+  pane.querySelectorAll('[data-mind]').forEach(el => el.parentElement.addEventListener('click', () => loadMind(el), { once: true }));
+  pane.querySelectorAll('[data-page]').forEach(b => b.onclick = () => openPage(b));
   pane.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
-    if (d.open) { const el = d.querySelector('[data-script]'); if (el && !el.dataset.done) loadScript(el); }
+    if (!d.open) return;
+    const el = d.querySelector('[data-script]');
+    if (el && !el.dataset.done) loadScript(el);
+    const plan = d.querySelector('[data-plan]');
+    if (plan && !plan.dataset.done) loadPlan(plan);
   }));
   pane.querySelectorAll('audio').forEach(a => {
     a.addEventListener('play', () => {
@@ -752,9 +1403,15 @@ function renderStudioTab(pane, nb) {
   }));
 
   pane.querySelector('#gen-open').onclick = () => generateSheet(pane, nb);
+  // A Studio command typed in chat (/flashcards…) opens Generate with that tool picked.
+  if (st?.openGen) { const kind = st.openGen; st.openGen = null; generateSheet(pane, nb, kind); }
+  pane.querySelectorAll('[data-amenu]').forEach(m => m.addEventListener('click', (e) => {
+    e.stopPropagation(); // not a tap on the card (which loads it)
+    artifactActions(pane.querySelector('#sheetroot'), nb, nb.artifacts.find(a => a.id === m.dataset.amenu));
+  }));
 }
 
-function generateSheet(pane, nb) {
+function generateSheet(pane, nb, preKind) {
   const root = pane.querySelector('#sheetroot');
   let picked = null;
   root.innerHTML = `<div class="sheet" id="sheet"><div>
@@ -771,33 +1428,50 @@ function generateSheet(pane, nb) {
   root.querySelector('#cancel').onclick = close;
   root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
   const go = root.querySelector('#go');
+  const valueOf = (key) => {
+    const opt = picked.opts.find(o => o[0] === key);
+    if (!opt) return '';
+    return Array.isArray(opt[1])
+      ? root.querySelector(`[data-opt-group="${key}"] .chip.active`)?.dataset.val || ''
+      : root.querySelector(`[data-opt="${key}"]`)?.value.trim() || '';
+  };
+  const shows = ([, , , cond]) => !cond || valueOf(cond.when[0]) === cond.when[1];
+  const syncWhen = () => picked.opts.forEach(o => {
+    const row = root.querySelector(`[data-row="${o[0]}"]`);
+    if (row) row.hidden = !shows(o);
+  });
   root.querySelectorAll('[data-kind]').forEach(chip => chip.onclick = () => {
     root.querySelectorAll('[data-kind]').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
     picked = GEN_TOOLS.find(t => t.kind === chip.dataset.kind);
-    root.querySelector('#optrows').innerHTML = picked.opts.map(([key, vals]) => {
-      if (vals === 'text') {
-        return `<input class="field" data-opt="${key}" placeholder="${key === 'topic' ? 'Topic to research…' : 'Focus (optional)…'}">`;
+    root.querySelector('#optrows').innerHTML = picked.opts.map(([key, vals, ph]) => {
+      let row;
+      if (vals === 'text') row = `<input class="field" data-opt="${key}" placeholder="${esc(ph)}">`;
+      else if (vals === 'area') row = `<textarea class="field" data-opt="${key}" rows="3" style="min-height:84px" placeholder="${esc(ph)}"></textarea>`;
+      else {
+        const def = GEN_OPT_DEFAULT[key] ?? 0;
+        row = `<div class="chips" data-opt-group="${key}">${vals.map((v, i) =>
+          `<span class="chip ${i === def ? 'active' : ''}" data-val="${v}">${esc(OPT_LABELS[v] || v)}</span>`).join('')}</div>`;
       }
-      const def = GEN_OPT_DEFAULT[key] ?? 0;
-      return `<div class="chips" data-opt-group="${key}">${vals.map((v, i) =>
-        `<span class="chip ${i === def ? 'active' : ''}" data-val="${v}">${v}</span>`).join('')}</div>`;
+      return `<div data-row="${key}">${row}</div>`;
     }).join('');
     root.querySelectorAll('[data-opt-group] .chip').forEach(c => c.onclick = () => {
       c.parentElement.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
       c.classList.add('active');
+      syncWhen();
     });
+    syncWhen();
     go.disabled = false;
   });
+  if (preKind) root.querySelector(`[data-kind="${preKind}"]`)?.click();
   go.onclick = async () => {
     if (!picked) return;
     const options = {};
-    for (const [key, vals] of picked.opts) {
-      options[key] = vals === 'text'
-        ? root.querySelector(`[data-opt="${key}"]`)?.value.trim() || ''
-        : root.querySelector(`[data-opt-group="${key}"] .chip.active`)?.dataset.val || '';
-    }
+    for (const o of picked.opts) options[o[0]] = shows(o) ? valueOf(o[0]) : '';
     if (picked.kind === 'research' && !options.topic) { alert('Research needs a topic.'); return; }
+    if (picked.kind === 'report' && options.report_type === 'custom' && !options.custom_prompt) {
+      alert('Say what the custom report should cover.'); return;
+    }
     close();
     try {
       const { job_id } = await post('/generate', { notebook_id: nb.id, kind: picked.kind, options });
@@ -816,12 +1490,15 @@ function generateSheet(pane, nb) {
         try { await post(`/jobs/${encodeURIComponent(job_id)}/cancel`); }
         catch (err) { x.disabled = false; activeJobs[job_id].cancelling = false; alert(err.message); }
       };
-      const job = await pollJob(job_id, picked.kind === 'audio' || picked.kind === 'research' ? 600 : 180);
-      document.getElementById(`job-${job_id}`)?.remove();
-      delete activeJobs[job_id];
+      let job;
+      try { job = await pollJob(job_id, GEN_WAIT_S[picked.kind] || 180); }
+      finally { document.getElementById(`job-${job_id}`)?.remove(); delete activeJobs[job_id]; }
       if (job.status === 'error') alert(job.result || 'Generation failed.');
       renderNotebook(nb.id);
-    } catch (e) { alert(e.message); renderNotebook(nb.id); }
+    } catch (e) {
+      alert(e.timedOut ? `${picked.label} is still being made on your computer — it will be in Studio when it's done.` : e.message);
+      renderNotebook(nb.id);
+    }
   };
 }
 
@@ -831,14 +1508,143 @@ async function loadDoc(el) {
     const a = await api(`/artifacts/${encodeURIComponent(el.dataset.doc)}`);
     let text;
     if (a.kind === 'research' && typeof a.data === 'object') {
-      text = md(a.data.md) + (a.data.sources?.length
+      text = rich(a.data.md) + (a.data.sources?.length
         ? `<div class="sec">Sources read</div>` + a.data.sources.map(s =>
             `<p style="font-size:13px"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a></p>`).join('')
         : '');
     } else {
-      text = md(typeof a.data === 'string' ? a.data : '```' + JSON.stringify(a.data, null, 2) + '```');
+      text = rich(typeof a.data === 'string' ? a.data : '```' + JSON.stringify(a.data, null, 2) + '```');
     }
     el.innerHTML = text || '<p class="empty">Empty.</p>';
+    hydrate(el);
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---------------------------- interactive pages --------------------------- */
+/* Same sandbox as the desktop (src/lib/interactive.ts sandboxDoc): scripts run
+   in an opaque-origin frame with the network off, so the page can't reach this
+   one, the device key or anything online. */
+const PAGE_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+const PAGE_ERROR = 'brewlm-interactive-error';
+function pageDoc(html, dark) {
+  const theme = dark ? 'dark' : 'light';
+  const head = `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">
+<meta name="color-scheme" content="${theme}">
+<script>(function(){document.documentElement.setAttribute("data-theme","${theme}");
+var send=function(m){try{parent.postMessage({type:"${PAGE_ERROR}",message:String(m).slice(0,400)},"*")}catch(e){}};
+addEventListener("error",function(e){send((e.message||"Script error")+(e.lineno?" (line "+e.lineno+")":""))});
+addEventListener("unhandledrejection",function(e){send((e.reason&&e.reason.message)||e.reason||"Unhandled promise rejection")});
+addEventListener("securitypolicyviolation",function(e){send("Blocked loading "+(e.blockedURI||"a resource")+" - the page must be fully self-contained")});})();<\/script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) {
+    const at = m.index + m[0].length;
+    return html.slice(0, at) + head + html.slice(at);
+  }
+  return head + html;
+}
+
+let closeViewer = null;
+async function openPage(btn) {
+  btn.disabled = true;
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(btn.dataset.page)}`);
+    const html = a.data && typeof a.data.html === 'string' ? a.data.html : '';
+    if (!html.trim()) throw new Error("This page's data looks malformed.");
+    showPage(a.title, html);
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; }
+}
+
+function showPage(title, html) {
+  closeViewer?.();
+  const v = document.createElement('div');
+  v.className = 'viewer';
+  v.innerHTML = `<div class="bar"><h3>${esc(title)}</h3><button class="btn" id="v-close">Done</button></div>
+    <iframe sandbox="allow-scripts" title="${esc(title)}"></iframe><p class="warn" hidden></p>`;
+  const frame = v.querySelector('iframe');
+  frame.srcdoc = pageDoc(html, M_THEMES[currentTheme]?.scheme === 'dark');
+  const warn = v.querySelector('.warn');
+  const onMsg = (e) => {
+    if (e.source !== frame.contentWindow || e.data?.type !== PAGE_ERROR || !warn.hidden) return;
+    warn.hidden = false;
+    warn.textContent = `This page hit an error (${String(e.data.message || 'unknown').slice(0, 200)}). Use Fix with AI on it in BrewLM on your computer.`;
+  };
+  window.addEventListener('message', onMsg);
+  closeViewer = () => {
+    window.removeEventListener('message', onMsg);
+    v.remove();
+    document.body.classList.remove('viewing');
+    closeViewer = null;
+  };
+  v.querySelector('#v-close').onclick = () => closeViewer();
+  document.body.appendChild(v);
+  document.body.classList.add('viewing');
+}
+
+async function loadPlan(el) {
+  el.dataset.done = '1';
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.plan)}`);
+    el.innerHTML = rich(a.data?.storyboard || '') || '<p class="empty">No plan saved.</p>';
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; delete el.dataset.done; }
+}
+
+/* -------------------------------- mind maps ------------------------------- */
+/* Stored as a nested bullet outline, "Label: definition" per bullet; parsed
+   the way the desktop does it (src/lib/mindmap.ts parseMindmap) and shown as
+   a tree you open branch by branch. */
+const mmPlain = (s) => s.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/`(.+?)`/g, '$1').trim();
+function mmSplit(text) {
+  const t = mmPlain(text);
+  const m = t.match(/^(.+?)(?::[ \t]+| [—–] )(.+)$/);
+  return m ? { label: m[1].trim(), note: m[2].trim() } : { label: t, note: '' };
+}
+function parseMindmap(data, title) {
+  const roots = [], stack = [];
+  for (const raw of data.split('\n')) {
+    const line = raw.replace(/\t/g, '  ');
+    const m = line.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (!m) {
+      // an indented plain line under a bullet continues its definition
+      const cont = line.trim();
+      const last = stack[stack.length - 1];
+      if (cont && last && /^\s+/.test(line) && !/^#/.test(cont))
+        last.node.note = [last.node.note, mmPlain(cont)].filter(Boolean).join(' ');
+      continue;
+    }
+    const indent = m[1].length;
+    const { label, note } = mmSplit(m[2]);
+    if (!label) continue;
+    const node = { label, note, children: [] };
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    if (!stack.length) roots.push(node);
+    else stack[stack.length - 1].node.children.push(node);
+    stack.push({ node, indent });
+  }
+  if (!roots.length) return null;
+  return roots.length === 1 ? roots[0] : { label: title.trim() || 'Mind map', note: '', children: roots };
+}
+function mindTree(root) {
+  const count = (n) => n.children.reduce((k, c) => k + 1 + count(c), 0);
+  const node = (n, depth) => {
+    const note = n.note ? `<span class="nt">${esc(n.note)}</span>` : '';
+    if (!n.children.length) return `<li><div class="leaf"><span class="lb">${esc(n.label)}</span>${note}</div></li>`;
+    // The main branches start open; deeper ones open on tap.
+    return `<li><details${depth === 0 ? ' open' : ''}><summary><span class="lb">${esc(n.label)}</span>` +
+      `<span class="count">${count(n)}</span></summary>${note}<ul>${n.children.map(c => node(c, depth + 1)).join('')}</ul></details></li>`;
+  };
+  return `<div class="mm"><div class="root">${esc(root.label)}</div>` +
+    (root.note ? `<div class="root-note">${esc(root.note)}</div>` : '') +
+    `<ul>${root.children.map(c => node(c, 0)).join('')}</ul></div>`;
+}
+async function loadMind(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.mind)}`);
+    const text = typeof a.data === 'string' ? a.data : '';
+    const root = parseMindmap(text, a.title);
+    el.innerHTML = root ? mindTree(root) : (rich(text) || '<p class="empty">Empty.</p>');
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
@@ -854,7 +1660,7 @@ async function loadScript(el) {
         script = d.script.map(t => `**${t.speaker}:** ${t.text}`).join('\n');
       else if (typeof d.script === 'string') script = d.script;
     }
-    el.innerHTML = md(script) || '<p class="empty">No script saved.</p>';
+    el.innerHTML = rich(script) || '<p class="empty">No script saved.</p>';
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
@@ -927,9 +1733,16 @@ function renderSourcesTab(pane, nb, st) {
     </div>
     </div>
     <div class="sec">Sources · ${nb.sources.length}</div>
-    ${nb.sources.map(s => `<div class="card src-item"><p class="t">📄 ${esc(s.title)}</p>
-      <span class="date">${esc(s.type)} · ${fmtDate(s.created_at)}</span></div>`).join('') || '<p class="empty">No sources yet.</p>'}`;
+    ${nb.sources.map(s => `<button class="card src-item has-menu" data-src="${esc(s.id)}"><p class="t">📄 ${esc(s.title)}</p>
+      <span class="date">${esc(s.type)} · ${fmtDate(s.created_at)}${s.pinned ? ' · Pinned' : ''}</span>
+      <span class="menu write-only" data-smenu="${esc(s.id)}" aria-label="More for ${esc(s.title)}">⋯</span></button>`).join('') || '<p class="empty">No sources yet.</p>'}
+    <div id="sheetroot"></div>`;
   pane.innerHTML = h;
+  pane.querySelectorAll('[data-src]').forEach(c => c.onclick = (e) => {
+    const root = pane.querySelector('#sheetroot');
+    if (e.target.closest('[data-smenu]')) return sourceActions(root, nb, nb.sources.find(s => s.id === c.dataset.src));
+    openSource(root, c.dataset.src);
+  });
 
   pane.querySelector('#src-add').onclick = async (e) => {
     const text = pane.querySelector('#src-text').value.trim();
@@ -946,10 +1759,38 @@ function renderSourcesTab(pane, nb, st) {
     if (!url) return;
     e.target.disabled = true; e.target.textContent = 'Fetching…';
     try {
-      await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url });
+      // BrewLM on the computer reads the page (same reader as Add link there:
+      // video transcripts, PDFs, Office files); this waits for it.
+      const { job_id } = await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url });
+      const job = await pollJob(job_id, 120);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't read that link.");
       renderNotebook(nb.id);
     } catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = 'Fetch link'; }
   };
+}
+
+/* What the AI reads from one source — the desktop's "What the AI sees". */
+async function openSource(root, id) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = '<div class="sheet" id="sheet"><div><p class="empty">Loading…</p></div></div>';
+  const box = root.querySelector('#sheet > div');
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  let s;
+  try { s = await api(`/sources/${encodeURIComponent(id)}`); }
+  catch (e) { s = null; box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (s) {
+    const meta = [esc(s.type), fmtDate(s.created_at),
+      s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a>` : '']
+      .filter(Boolean).join(' · ');
+    box.innerHTML = `<h3>${esc(s.title)}</h3><p class="meta">${meta}</p>
+      ${s.image ? `<img class="src-img" alt="${esc(s.title)}" src="${esc(s.image)}">` : ''}
+      <div class="sec" style="margin-top:4px">What the AI sees</div>
+      ${s.text.trim() ? `<div class="src-text">${esc(s.text)}</div>`
+        : '<p class="empty">Nothing readable yet — BrewLM on your computer reads it before the next question.</p>'}
+      ${s.truncated ? `<p class="empty">Showing the first 200,000 of ${Number(s.chars).toLocaleString()} characters — the rest is on your computer.</p>` : ''}`;
+  }
+  box.insertAdjacentHTML('beforeend', '<div style="margin-top:12px"><button class="btn" id="s-close">Close</button></div>');
+  root.querySelector('#s-close').onclick = close;
 }
 
 /* --------------------------------- router -------------------------------- */
@@ -961,6 +1802,7 @@ function route() {
 }
 window.addEventListener('hashchange', () => {
   document.getElementById('composer')?.remove();
+  closeViewer?.();
   route();
 });
 

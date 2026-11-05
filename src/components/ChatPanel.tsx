@@ -47,7 +47,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addMessage,
   findFolderByName,
-  getImage,
   listFolders,
   listReasoning,
   moveNotebookToFolder,
@@ -71,33 +70,31 @@ import {
   segmentMentions,
   type MentionItem,
 } from "../lib/mentions";
-import { canPrewarm, isAbortError, prewarmCache, streamChat, takesThinking, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
-  imageIdsIn,
-  imageRef,
-  libraryImageAsReference,
   libraryImageUrl,
-  saveImageToLibrary,
   storeGeneratedImages,
   stripHistoryImages,
   unresolvedImageIds,
   withLibraryImages,
 } from "../lib/genImage";
-import {
-  editCapableModels,
-  generateImages,
-  isImageApiModel,
-  maxImagesPerRequest,
-  maxInputReferences,
-  supportedAspectRatios,
-} from "../lib/imageApi";
+import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
 import { ensureMediaText } from "../lib/media";
-import { fetchSources, webAnswer } from "../lib/research";
 import {
-  encodeFetchMessage,
+  constitutionTurn,
+  fetchTurn,
+  groundReply,
+  imageTurn,
+  isImageTurn,
+  searchTurn,
+  stripOuterQuotes,
+  SUMMARIZE_PROMPT,
+  SUMMARIZE_RE,
+} from "../lib/chatTurns";
+import {
   parseFetchMessage,
   siteOf,
   stripFetchMarker,
@@ -365,25 +362,6 @@ const COMMANDS: ChatCommand[] = [
     icon: Info,
     takesArgs: false,
   },
-  {
-    cmd: "/thinking",
-    usage: "/thinking [auto|low|medium|high|show|hide]",
-    desc: "Show how hard reasoning models think",
-    icon: Brain,
-    takesArgs: false,
-  },
-  ...(["low", "medium", "high", "auto"] as const).map((level) => ({
-    cmd: `/thinking ${level}`,
-    usage: `/thinking ${level}`,
-    desc: {
-      low: "Think briefly — faster and cheaper",
-      medium: "Balanced thinking",
-      high: "Think longest — best for hard questions, slower and costs more",
-      auto: "Each model's own default",
-    }[level],
-    icon: Brain,
-    takesArgs: false,
-  })),
   ...(["show", "hide"] as const).map((mode) => ({
     cmd: `/thinking ${mode}`,
     usage: `/thinking ${mode}`,
@@ -643,7 +621,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/voice\` — shows which voices the Audio overview hosts use. \`/voicehost <name>\` and \`/voicecohost <name>\` switch the Host's and Co-Host's voice, and \`/voice swap\` trades them. \`/voice add <name>\` saves a voice — on OpenRouter use the model's own voice name (e.g. \`voice_3150\` for Voxtral TTS 3), for ElevenLabs add its voice ID too, e.g. \`/voice add Rachel 21m00Tcm4TlvDq8ikWAM\` — and \`/voice remove <name>\` deletes one. Also in Settings → Audio Voices.
 - \`/star\` — stars or un-stars this notebook (pinned order on the homepage).
 - \`/details [on|off]\` — shows or hides the token counts and cost under each AI reply and at the foot of each Studio output (e.g. "9.8k in · 637 out · $0.0042"). The cost is what OpenRouter billed; other providers show an estimate marked "~". Also in Settings → Appearance.
-- \`/thinking [auto|low|medium|high]\` — sets how hard reasoning models think before answering, app-wide: Low is faster and cheaper, High is slower and better on hard questions, Auto leaves it to each model. Models that don't reason ignore it. When it isn't Auto it shows in the composer footer; click it there to go back to Auto. Also in Settings → AI Model.
+- **Thinking effort** — the brain button beside Send in the chat box picks how hard reasoning models think before answering, app-wide: Auto (each model's own default), Low (faster and cheaper), Medium, or High (slower, better on hard questions). Models that don't reason ignore it, and local models don't show it. When it isn't Auto the button shows the level. Also in Settings → AI Model.
 - \`/thinking show\` / \`/thinking hide\` — opens or folds the **Reasoning** above each reply by default (click it to open one either way). Local reasoning models show their full reasoning, Claude and some OpenRouter models a summary; OpenAI's own API shares none. Reasoning stays on this computer: it isn't synced and isn't sent back to the model. Also in Settings → Appearance.
 - \`/provider\` — OpenRouter only: shows which providers may run your model and which one answered last. \`/provider cheapest\`, \`fastest\`, \`quickest\` or \`default\` sets the priority for every model; \`/provider private\` skips providers that may train on your prompts and \`/provider zdr\` keeps to zero-data-retention ones (each toggles); \`/provider block <provider>\` never uses one (\`/provider unblock\` undoes). \`/provider pin groq, deepinfra\` tries those first for the current model, \`/provider only groq\` allows nothing else for it, and \`/provider unpin\` clears that. \`/provider off\` goes back to OpenRouter's default for the current model. Also in Settings → AI Model → Provider routing; rules in your OpenRouter account apply too.
 - \`/ground\` — toggles **source grounding** for this notebook. Off = free-form answers from the model's own knowledge (no sources sent, no citations, cheaper); @mention a source anytime to pull it into one answer. The state shows in the composer footer and sticks per notebook.
@@ -1087,9 +1065,43 @@ export default function ChatPanel({
   // Mirror of settings.showReasoning so /thinking show|hide applies instantly.
   const [showReasoning, setShowReasoning] = useState(settings.showReasoning);
   useEffect(() => setShowReasoning(settings.showReasoning), [settings.showReasoning]);
-  // Mirror of settings.thinking so /thinking and the footer chip update instantly.
+  // Mirror of settings.thinking so the composer's brain button updates instantly.
   const [thinking, setThinking] = useState(settings.thinking);
   useEffect(() => setThinking(settings.thinking), [settings.thinking]);
+  // Phone-width screens get a short placeholder so it fits on one line
+  // (a wrapped placeholder makes the empty chat box two lines tall).
+  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 640px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  /** The composer's thinking-effort menu is open. */
+  const [thinkingMenu, setThinkingMenu] = useState(false);
+  const thinkingMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!thinkingMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!thinkingMenuRef.current?.contains(e.target as Node)) setThinkingMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setThinkingMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [thinkingMenu]);
+  const pickThinking = async (level: Thinking) => {
+    setThinkingMenu(false);
+    setThinking(level);
+    await setSetting("thinking", level);
+    onSettingsChanged();
+    textareaRef.current?.focus();
+  };
   const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
@@ -1470,10 +1482,9 @@ export default function ChatPanel({
     setModels(next);
   };
 
-  /** /thinking [level|show|hide] — show or set the Thinking effort, or how reasoning is shown (app-wide, no LLM). */
+  /** /thinking show|hide — open or fold the reasoning above replies (app-wide, no LLM). Effort lives on the composer's brain button. */
   const runThinkingCommand = async (text: string): Promise<void> => {
     const arg = text.replace(/^\/thinking\s*/i, "").trim().toLowerCase();
-    const levels = Object.keys(THINKING_LABELS) as Thinking[];
     if (arg === "show" || arg === "hide") {
       const on = arg === "show";
       await setSetting("showReasoning", on ? "1" : "0");
@@ -1491,29 +1502,9 @@ export default function ChatPanel({
           : "Reasoning now stays folded above each reply; click **Reasoning** to open one."
       );
     }
-    if (arg && !levels.includes(arg as Thinking))
-      return say(`\`${arg}\` isn't a thinking level. Use ${levels.map((l) => `\`/thinking ${l}\``).join(", ")}, or \`/thinking show\` / \`/thinking hide\` for the reasoning above replies.`);
-    const level = (arg || thinking) as Thinking;
-    if (arg) {
-      await setSetting("thinking", level);
-      setThinking(level);
-      onSettingsChanged();
-    }
-    const what = {
-      auto: "each model thinks as much as it normally does",
-      low: "reasoning models think briefly, so replies are faster and cheaper",
-      medium: "reasoning models think a moderate amount",
-      high: "reasoning models think longest, which is slower and costs more but helps on hard questions",
-    }[level];
-    const head = arg
-      ? `Thinking effort set to **${THINKING_LABELS[level]}**: ${what}.`
-      : `Thinking effort: **${THINKING_LABELS[level]}** (${what}). Change it with ${levels.filter((l) => l !== level).map((l) => `\`/thinking ${l}\``).join(", ")}. Reasoning above replies is ${showReasoning ? "open (`/thinking hide` folds it)" : "folded (`/thinking show` opens it)"}.`;
-    if (level === "auto") return say(head);
-    const takes = await takesThinking(settings.provider, keyed, model);
-    await say(
-      takes === false
-        ? `${head} \`${model}\` doesn't take a thinking level, so it ignores this. It applies once you switch to a reasoning model that does.`
-        : head
+    const effort = settings.provider === "local" ? "" : ` Thinking effort is **${THINKING_LABELS[thinking]}**; change it with the brain button beside Send.`;
+    return say(
+      `Reasoning above replies is ${showReasoning ? "open (\`/thinking hide\` folds it)" : "folded (\`/thinking show\` opens it)"}.${effort}`
     );
   };
 
@@ -1942,14 +1933,6 @@ export default function ChatPanel({
     setMessages(messagesRef.current);
   };
 
-  /** Strip one pair of matching outer quotes: /queue "…" / /rename "…". */
-  const stripOuterQuotes = (s: string): string => {
-    if (s.length >= 2 && ((s[0] === '"' && s.endsWith('"')) || (s[0] === '"' && s.endsWith('"')))) {
-      return s.slice(1, -1).trim();
-    }
-    return s;
-  };
-
   const removeFromQueue = (i: number) => {
     queueRef.current.splice(i, 1);
     setQueue([...queueRef.current]);
@@ -2331,7 +2314,7 @@ export default function ChatPanel({
       return;
     }
 
-    // /thinking [level] — show or set how hard reasoning models think (app-wide).
+    // /thinking show|hide — open or fold reasoning above replies (app-wide).
     if (/^\/thinking(\s|$)/i.test(text)) {
       await runThinkingCommand(text);
       onChatActivity?.(chatId, isFirst ? text : undefined);
@@ -2361,9 +2344,7 @@ export default function ChatPanel({
         chatId,
         notebookId,
         "assistant",
-        next
-          ? `📚 Grounding **on** — answers will be grounded in your sources and cite them. (\`/ground\` toggles this.)`
-          : `🌐 Grounding **off** — I'll answer from my own knowledge and skip your sources entirely (cheaper and faster — no retrieval runs). @mention a source anytime to pull it into a single answer. (\`/ground\` toggles this.)`
+        groundReply(next)
       );
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, isFirst ? text : undefined);
@@ -2373,23 +2354,15 @@ export default function ChatPanel({
 
     // /constitution [on|off] — use or ignore this notebook's constitution (it stays put).
     if (/^\/constitution(\s|$)/i.test(text)) {
-      const arg = text.replace(/^\/constitution\s*/i, "").trim().toLowerCase();
       const isOn = (notebookConstitutionOn ?? 1) !== 0;
-      const hasConstitution = sources.some((s) => s.type === "context");
-      const next = arg === "on" ? true : arg === "off" ? false : !isOn;
-      let reply: string;
-      if (!hasConstitution) {
-        reply = "This notebook has no constitution, so there's nothing to turn on or off. Add one from the **+** menu in the Sources panel → **Add constitution**.";
-      } else if (arg && arg !== "on" && arg !== "off") {
-        reply = `Use \`/constitution on\` or \`/constitution off\` — or just \`/constitution\` to flip it. It's currently **${isOn ? "on" : "off"}**.`;
-      } else {
-        if (next !== isOn) {
-          await setNotebookConstitutionOn(notebookId, next);
-          onNotebookMoved();
-        }
-        reply = next
-          ? `🏛️ Constitution **on** — replies follow this notebook's constitution again. (\`/constitution\` toggles this.)`
-          : `Constitution **off** — replies ignore it until you turn it back on. Your constitution is still in the Sources panel, untouched. (\`/constitution\` toggles this.)`;
+      const { reply, next } = constitutionTurn(
+        text.replace(/^\/constitution\s*/i, ""),
+        isOn,
+        sources.some((s) => s.type === "context")
+      );
+      if (next !== null) {
+        await setNotebookConstitutionOn(notebookId, next);
+        onNotebookMoved();
       }
       const replyMsg = await addMessage(chatId, notebookId, "assistant", reply);
       setMsgs((prev) => [...prev, replyMsg]);
@@ -2398,171 +2371,27 @@ export default function ChatPanel({
       return;
     }
 
-    // Image API turns, each carrying ONLY the prompt (no sources, no history):
-    // /image draws fresh; /edit and /remix add the single picture being
-    // changed as a reference; /more reruns a picture's stored prompt. Every
-    // picture costs just the image, and later chat turns see a one-line
-    // description of it, never the pixels. With an image model selected as
-    // the active model, plain messages work the same way — and a message
-    // right after a picture edits that picture.
-    const activeIsImageModel =
-      settings.provider === "openrouter" && (await isImageApiModel(settings.model));
-    const imgCmd = /^\/(image|img|edit|remix|more)(?=\s|$)/i.exec(text)?.[1].toLowerCase();
-    if (imgCmd || (activeIsImageModel && !text.startsWith("/"))) {
-      let prompt = imgCmd ? text.replace(/^\/\w+\s*/, "").trim() : text;
-      let ratio: string | undefined;
-      const rm = /^(\d+(?:\.\d+)?:\d+(?:\.\d+)?)(\s+|$)/.exec(prompt);
-      if (rm) {
-        ratio = rm[1];
-        prompt = prompt.slice(rm[0].length).trim();
-      }
-      const say = async (body: string) => {
-        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
-        setMsgs((prev) => [...prev, replyMsg]);
-      };
-      // The selected model wins when it is an image model; otherwise the
-      // dedicated Image model setting.
-      let model = activeIsImageModel ? settings.model : settings.imageModel;
-      let mode: "new" | "edit" | "remix" | "more" =
-        imgCmd === "edit" || imgCmd === "remix" || imgCmd === "more" ? imgCmd : "new";
-      // Target: the picture a hover action picked, else the chat's latest one.
-      let targetId: string | undefined;
-      if (mode !== "new") {
-        targetId = opts?.imageId;
-        for (let i = history.length - 1; !targetId && i >= 0; i--) {
-          if (history[i].role === "assistant") targetId = imageIdsIn(history[i].content).pop();
+    // Pictures (/image /edit /remix /more, or plain text on an image model):
+    // shared with phone chats — see chatTurns.ts.
+    if (await isImageTurn(text, settings)) {
+      streamingRef.current.add(chatId);
+      setStreaming("");
+      const ctrl = new AbortController();
+      abortRef.current.set(chatId, ctrl);
+      try {
+        const reply = await imageTurn({ text, history, settings, notebookId, chatId, imageId: opts?.imageId, signal: ctrl.signal });
+        await say(reply);
+      } catch (e) {
+        if (!(isAbortError(e) || ctrl.signal.aborted)) {
+          setError(e instanceof Error ? e.message : String(e));
         }
+      } finally {
+        abortRef.current.delete(chatId);
+        streamingRef.current.delete(chatId);
+        setStreaming(null);
       }
-      // Plain message right after a picture → edit that picture (when the
-      // model can take a reference; otherwise it simply draws fresh).
-      let followUp = false;
-      const prev = history[history.length - 2];
-      if (!imgCmd && prev?.role === "assistant" && (await maxInputReferences(model)) > 0) {
-        const prevId = imageIdsIn(prev.content).pop();
-        if (prevId) {
-          mode = "edit";
-          targetId = prevId;
-          followUp = true;
-        }
-      }
-      const source = targetId ? await getImage(targetId) : null;
-      if (followUp && !source) {
-        mode = "new"; // picture above is gone — just draw fresh
-        followUp = false;
-      }
-
-      if (!settings.openrouterKey) {
-        await say(
-          "Pictures use OpenRouter's image models. Add an OpenRouter API key in **Settings → AI Model** (select OpenRouter to enter it — you can switch your chat provider back afterwards)."
-        );
-      } else if (mode === "new" && !prompt) {
-        await say(
-          "What should I draw? e.g. `/image a watercolor fox in snow`, or add a shape first: `/image 16:9 a misty mountain lake at dawn`."
-        );
-      } else if (mode !== "new" && !targetId) {
-        await say("There's no picture in this chat yet — make one first with `/image <prompt>`.");
-      } else if (mode !== "new" && !source) {
-        await say("That picture is no longer in the image library, so there's nothing to work from.");
-      } else if ((mode === "edit" || mode === "remix") && !prompt) {
-        await say(
-          mode === "edit"
-            ? "What should I change? e.g. `/edit make the sky stormy` or `/edit remove the text`."
-            : "What should the remix be? e.g. `/remix same style, but a city at night`."
-        );
-      } else {
-        // "More like this" stays on the model that drew the original.
-        if (mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
-          model = source.model;
-        }
-        const canReference = (await maxInputReferences(model)) > 0;
-        if ((mode === "edit" || mode === "remix") && !canReference) {
-          const alts = (await editCapableModels()).map((m) => `\`${m}\``).join(", ");
-          await say(
-            `**${model}** can't edit pictures — it doesn't accept a reference image. ${
-              alts ? `Models that can: ${alts}. ` : ""
-            }Pick one under **Settings → AI Model → Image model**${
-              activeIsImageModel ? " or switch with `/model <id>`" : ""
-            }.`
-          );
-        } else {
-          streamingRef.current.add(chatId);
-          setStreaming("");
-          const ctrl = new AbortController();
-          abortRef.current.set(chatId, ctrl);
-          try {
-            // The one picture sent as a reference: the target for edit/remix;
-            // for "more", whatever the original itself was made from.
-            const refId =
-              mode === "edit" || mode === "remix" ? source!.id : mode === "more" && canReference ? source!.parent_id : "";
-            const refUri = refId ? await libraryImageAsReference(refId) : null;
-            const apiPrompt =
-              mode === "more"
-                ? source!.prompt
-                : mode === "remix"
-                  ? `Create a new image inspired by the reference image (keep its style and mood): ${prompt}`
-                  : prompt;
-            // Keep the original's shape unless the user named one.
-            if (!ratio && source && source.width > 0 && source.height > 0) {
-              const want = source.width / source.height;
-              const best = (await supportedAspectRatios(model))
-                ?.map((r) => {
-                  const [w, h] = r.split(":").map(Number);
-                  return { r, diff: Math.abs(w / h - want) / want };
-                })
-                .filter((x) => Number.isFinite(x.diff))
-                .sort((a, b) => a.diff - b.diff)[0];
-              if (best && best.diff < 0.05) ratio = best.r;
-            }
-            const result = await generateImages({
-              apiKey: settings.openrouterKey,
-              model,
-              prompt: apiPrompt,
-              aspectRatio: ratio,
-              references: refUri ? [refUri] : undefined,
-              n: mode === "more" ? Math.min(2, await maxImagesPerRequest(model)) : 1,
-              signal: ctrl.signal,
-            });
-            if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-            void recordUsage("image", "openrouter", model, result.usage);
-            // Alt text is the description later chat turns see.
-            const alt =
-              mode === "edit"
-                ? `${prompt} (edit of: ${source!.prompt})`
-                : mode === "remix"
-                  ? `${prompt} (remix of: ${source!.prompt})`
-                  : apiPrompt;
-            const refs: string[] = [];
-            for (const uri of result.images) {
-              const id = await saveImageToLibrary(uri, {
-                notebookId,
-                chatId,
-                prompt: apiPrompt,
-                model,
-                parentId: refUri ? refId : undefined,
-              });
-              refs.push(imageRef(id, alt));
-            }
-            const cost = result.usage.costUsd;
-            const label = { new: null, edit: "edit", remix: "remix", more: "more like this" }[mode];
-            const caption = [label, model, result.aspectRatio, cost != null ? `$${cost.toFixed(3)}` : null]
-              .filter(Boolean)
-              .join(" · ");
-            const unsupported =
-              ratio && !result.aspectRatio && rm ? ` — ${ratio} isn't available on this model, so it used its default shape` : "";
-            const hint = followUp ? " — edited the picture above; start with `/image` for a fresh one" : "";
-            await say(`${refs.join("\n\n")}\n\n*${caption}${unsupported}*${hint}`);
-          } catch (e) {
-            if (!(isAbortError(e) || ctrl.signal.aborted)) {
-              setError(e instanceof Error ? e.message : String(e));
-            }
-          } finally {
-            abortRef.current.delete(chatId);
-            streamingRef.current.delete(chatId);
-            setStreaming(null);
-          }
-        }
-      }
-      onChatActivity?.(chatId, isFirst ? `Image: ${imageAlt(prompt || source?.prompt || "…")}` : undefined);
+      const shown = text.replace(/^\/(image|img|edit|remix|more)(?=\s|$)\s*/i, "").replace(/^\d+(?:\.\d+)?:\d+(?:\.\d+)?(\s+|$)/, "");
+      onChatActivity?.(chatId, isFirst ? `Image: ${imageAlt(shown || "…")}` : undefined);
       textareaRef.current?.focus();
       return;
     }
@@ -2571,27 +2400,12 @@ export default function ChatPanel({
     // cards the user opens and adds one by one (provider search, billed per query).
     if (/^\/fetch(\s|$)/i.test(text)) {
       const request = stripOuterQuotes(text.replace(/^\/fetch\s*/i, "").trim());
-      if (!request) {
-        await say(
-          "What do you want to learn about? e.g. `/fetch \"Attention Is All You Need\"` or `/fetch how transformers work in LLMs`. I'll find sources you can open and add to this notebook."
-        );
-        onChatActivity?.(chatId, isFirst ? text : undefined);
-        textareaRef.current?.focus();
-        return;
-      }
       streamingRef.current.add(chatId);
       setStreaming("");
       const ctrl = new AbortController();
       abortRef.current.set(chatId, ctrl);
       try {
-        const items = await fetchSources({ request, settings, signal: ctrl.signal });
-        if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-        const body =
-          items.length > 0
-            ? encodeFetchMessage({ query: request, items })
-            : `I couldn't find sources for “${request}”. Your provider's web search may have come back empty — try rephrasing, or use \`/url <link>\` to add a page you already know.`;
-        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
-        setMsgs((prev) => [...prev, replyMsg]);
+        await say(await fetchTurn({ request, settings, signal: ctrl.signal }));
       } catch (e) {
         if (!(isAbortError(e) || ctrl.signal.aborted)) {
           setError(e instanceof Error ? e.message : String(e));
@@ -2602,7 +2416,7 @@ export default function ChatPanel({
         setStreaming(null);
         textareaRef.current?.focus();
       }
-      onChatActivity?.(chatId, isFirst ? `Fetch: ${request}` : undefined);
+      onChatActivity?.(chatId, isFirst ? (request ? `Fetch: ${request}` : text) : undefined);
       return;
     }
 
@@ -2610,51 +2424,22 @@ export default function ChatPanel({
     // billed per query — that's why it's a command, not a background toggle).
     if (/^\/search(\s|$)/i.test(text)) {
       const query = text.replace(/^\/search\s*/i, "").trim();
-      if (!query) {
-        const replyMsg = await addMessage(
-          chatId,
-          notebookId,
-          "assistant",
-          "What should I look up? e.g. `/search best budget e-ink tablets 2026`. For a deep multi-source dossier saved to Studio, use `/research <topic>` instead."
-        );
-        setMsgs((prev) => [...prev, replyMsg]);
-        onChatActivity?.(chatId, isFirst ? text : undefined);
-        textareaRef.current?.focus();
-        return;
-      }
       streamingRef.current.add(chatId);
       setStreaming("");
       const ctrl = new AbortController();
       abortRef.current.set(chatId, ctrl);
       try {
-        const groundedNow = (notebookGrounded ?? 1) !== 0;
-        const mentionedNow = resolveMentions(query, catalog);
-        // Same grounding as chat — web results can weave into notebook context.
-        let retrieved: RetrievedChunk[] | undefined;
-        if (groundedNow) {
-          try {
-            await ensureIndexed(sources, settings);
-            const ranked = await rankChunks(sources, query, settings, contextBudget(settings).sources);
-            if (ranked.length > 0) retrieved = ranked;
-          } catch {
-            /* search proceeds without notebook context */
-          }
-        }
-        const { text: answer, hits } = await webAnswer({
-          query,
-          settings,
-          system: buildSystemPrompt(sources, mentionedNow, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings) }),
-          signal: ctrl.signal,
-        });
-        if (ctrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-        let body = answer || "(no answer came back — try rephrasing)";
-        if (hits.length > 0) {
-          body += `\n\n---\n\n##### Sources from the web\n${hits
-            .map((h, i) => `${i + 1}. [${h.title}](${h.url})`)
-            .join("\n")}`;
-        }
-        const replyMsg = await addMessage(chatId, notebookId, "assistant", body);
-        setMsgs((prev) => [...prev, replyMsg]);
+        await say(
+          await searchTurn({
+            query,
+            settings,
+            sources,
+            mentioned: resolveMentions(query, catalog),
+            grounded: (notebookGrounded ?? 1) !== 0,
+            constitution: (notebookConstitutionOn ?? 1) !== 0,
+            signal: ctrl.signal,
+          })
+        );
       } catch (e) {
         if (!(isAbortError(e) || ctrl.signal.aborted)) {
           setError(e instanceof Error ? e.message : String(e));
@@ -2666,7 +2451,7 @@ export default function ChatPanel({
         setStreaming(null);
         textareaRef.current?.focus();
       }
-      onChatActivity?.(chatId, isFirst ? `Search: ${query}` : undefined);
+      onChatActivity?.(chatId, isFirst ? (query ? `Search: ${query}` : text) : undefined);
       return;
     }
 
@@ -2739,7 +2524,7 @@ export default function ChatPanel({
     }
 
     // /summarize — LLM call, but with a dedicated notebook-wide prompt.
-    const isSummarize = /^\/summarize(\s|$)/i.test(text);
+    const isSummarize = SUMMARIZE_RE.test(text);
 
     streamingRef.current.add(chatId);
     setStreaming("");
@@ -2801,7 +2586,7 @@ export default function ChatPanel({
         // The visible bubble says "/summarize"; the model gets the real prompt.
         content: stripFetchMarker(stripHistoryImages(
           isSummarize && i === arr.length - 1 && m.role === "user"
-            ? `Write a clear, well-structured summary of this whole notebook: the core ideas, why they matter, and the key details worth remembering. Cover every source.`
+            ? SUMMARIZE_PROMPT
             : m.content
         )),
       })),
@@ -3719,11 +3504,70 @@ export default function ChatPanel({
               rows={1}
               placeholder={
                 sources.length > 0
-                  ? "Ask about your sources… (@ to reference · / for commands)"
-                  : "Ask anything… (type / for commands)"
+                  ? narrow
+                    ? "Ask about your sources…"
+                    : "Ask about your sources… (@ to reference · / for commands)"
+                  : narrow
+                    ? "Ask anything…"
+                    : "Ask anything… (type / for commands)"
               }
               className="max-h-80 flex-1 resize-none overflow-hidden bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
+            {settings.provider !== "local" && (
+              <div ref={thinkingMenuRef} className="relative shrink-0">
+                <button
+                  onClick={() => setThinkingMenu((o) => !o)}
+                  className={`flex h-8 items-center gap-1 rounded-full transition-colors hover:bg-hover ${
+                    thinking === "auto" ? "w-8 justify-center text-ink-3 hover:text-ink" : "px-2.5 text-ink-2 hover:text-ink"
+                  } ${thinkingMenu ? "bg-hover text-ink" : ""}`}
+                  aria-label={`Thinking effort: ${THINKING_LABELS[thinking]}`}
+                  aria-haspopup="menu"
+                  aria-expanded={thinkingMenu}
+                  title={`Thinking effort: ${THINKING_LABELS[thinking]}`}
+                >
+                  <Brain size={16} strokeWidth={1.9} />
+                  {thinking !== "auto" && <span className="text-[12px] font-medium">{THINKING_LABELS[thinking]}</span>}
+                </button>
+                {thinkingMenu && (
+                  <div
+                    role="menu"
+                    className="absolute bottom-full right-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-lg"
+                  >
+                    <p className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
+                      Thinking effort
+                    </p>
+                    {(Object.keys(THINKING_LABELS) as Thinking[]).map((level) => (
+                      <button
+                        key={level}
+                        role="menuitemradio"
+                        aria-checked={thinking === level}
+                        onClick={() => pickThinking(level)}
+                        className={`flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover ${
+                          thinking === level ? "text-ink" : "text-ink-2"
+                        }`}
+                      >
+                        <span className="mt-0.5 flex w-3.5 shrink-0 justify-center">
+                          {thinking === level && <Check size={13} strokeWidth={2.4} />}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-medium">{THINKING_LABELS[level]}</span>
+                          <span className="block text-[11.5px] text-ink-3">
+                            {
+                              {
+                                auto: "Each model's own default",
+                                low: "Brief — faster and cheaper",
+                                medium: "Balanced",
+                                high: "Longest — best for hard questions",
+                              }[level]
+                            }
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <button
               onClick={() => (streaming !== null ? stopGenerating() : send())}
               disabled={streaming === null && !draft.trim()}
@@ -3740,22 +3584,6 @@ export default function ChatPanel({
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
             {model || "no model picked"} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
-            {thinking !== "auto" && settings.provider !== "local" && (
-              <>
-                {" · "}
-                <button
-                  onClick={async () => {
-                    await setSetting("thinking", "auto");
-                    setThinking("auto");
-                    onSettingsChanged();
-                  }}
-                  className="rounded hover:text-ink-2 hover:underline"
-                  title="Thinking effort for reasoning models. Click to go back to Auto."
-                >
-                  thinking {THINKING_LABELS[thinking].toLowerCase()}
-                </button>
-              </>
-            )}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}
@@ -3898,7 +3726,7 @@ function keepInView(row: HTMLElement | null) {
 }
 
 /** Source title for a saved reply: its first heading or line, markdown stripped. */
-function replySourceTitle(content: string): string {
+export function replySourceTitle(content: string): string {
   const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
   const line = lines.find((l) => /^#{1,6}\s/.test(l)) ?? lines[0] ?? "";
   const flat = line

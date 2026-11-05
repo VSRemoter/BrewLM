@@ -1,28 +1,58 @@
 /**
- * Mobile job runner: phones queue chat/generate jobs into the `jobs` table
- * (via the sharing server); this loop — running in the desktop webview — drains
- * them with the exact same LLM pipelines as the Studio panel, writing results
- * (chat messages, artifacts) straight into the shared SQLite database.
+ * Mobile job runner: phones queue chat/generate/link jobs into the `jobs`
+ * table (via the sharing server); this loop — running in the desktop webview —
+ * drains them with the exact same pipelines as the desktop (LLM chat, Studio,
+ * the Add link reader), writing results (chat messages, artifacts, sources)
+ * straight into the shared SQLite database.
+ *
+ * Quick jobs (links, chat deletes, item edits) run in a lane of their own: reading a page
+ * takes seconds, and shouldn't wait behind a podcast or deep research the
+ * phone also queued. Every finished job announces what it changed, so the
+ * desktop's open screens refresh as they do for Sync.
  */
-import { buildSystemParts, buildSystemPrompt, selectChatHistory } from "../components/ChatPanel";
+import { buildSystemParts, buildSystemPrompt, replySourceTitle, selectChatHistory } from "../components/ChatPanel";
 import {
   addArtifact,
   addMessage,
   addSource,
   createChat,
+  deleteArtifact,
+  deleteChat,
+  deleteSource,
+  getArtifact,
   getDb,
   getNotebookConstitutionOn,
   getNotebookGrounded,
   listArtifacts,
   listMessages,
   listSources,
+  renameArtifact,
   renameChat,
+  setArtifactPinned,
+  setMessageReasoning,
+  setNotebookConstitutionOn,
+  setNotebookGrounded,
+  setSourcePinned,
   sourceText,
   touchChat,
   touchNotebook,
+  updateSource,
 } from "./db";
-import { complete, extractJson, isAbortError, type StreamUsage } from "./llm";
-import { shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
+import { artifactText, buildMentionCatalog, resolveMentions, type MentionItem } from "./mentions";
+import { complete, extractJson, isAbortError, streamChat, type StreamUsage } from "./llm";
+import {
+  constitutionTurn,
+  fetchTurn,
+  groundReply,
+  imageTurn,
+  isImageTurn,
+  searchTurn,
+  SUMMARIZE_PROMPT,
+  SUMMARIZE_RE,
+} from "./chatTurns";
+import { stripFetchMarker } from "./fetchList";
+import { interactivePrior, pickAngle, pickFormat, shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
+import { buildPagePrompt, buildStoryboardPrompt, PAGE_SYSTEM, writePage } from "./interactive";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -35,6 +65,7 @@ import {
   wholeNotebookFits,
 } from "./rag";
 import { ensureMediaText } from "./media";
+import { fetchLinkContent } from "./source";
 import { deepResearch } from "./research";
 import { contextBudget } from "./local";
 import { activeKey, loadSettings } from "./settings";
@@ -47,13 +78,15 @@ import {
   type Amount,
   type AudioFormat,
   type AudioLength,
+  type AudioMode,
   type AudioOptions,
   type Difficulty,
 } from "./studio";
 import { writeAudioScript } from "./audioScript";
 import { synthesizeScript } from "./tts";
-import { meterTotal, meterUsage, newUsageMeter, recordUsage } from "./usage";
-import type { Source } from "./types";
+import { fmtUsageLine, meterTotal, meterUsage, newUsageMeter, recordUsage, replyCostUsd } from "./usage";
+import { announceChanges } from "./sync";
+import type { ChatMessage, Source, Thinking } from "./types";
 
 const POLL_MS = 3000;
 
@@ -65,22 +98,38 @@ interface JobRow {
   payload: string;
 }
 
+/** Job kinds the quick lane runs; everything else (chat, generate) is the main lane. */
+const QUICK = "kind IN ('link', 'chat.delete', 'edit')";
+
 let timer: number | null = null;
 let busy = false;
+let linkBusy = false;
+
+/** Tell the desktop's open screens what a phone job changed (as Sync does). */
+function announce(tables: string[], notebookId: string, chatId?: string | null): void {
+  announceChanges({
+    tables: new Set(tables),
+    notebookIds: new Set([notebookId]),
+    chatIds: new Set(chatId ? [chatId] : []),
+  });
+}
 
 /** Call once on app boot; safe to call again (idempotent). */
 export function startJobRunner(): void {
   if (timer !== null) return;
   console.info("MOBILE_JOB_RUNNER_STARTED");
-  const tick = () => void drainOnce().catch((e) => console.warn("job runner:", e));
+  const tick = () => {
+    void drainOnce().catch((e) => console.warn("job runner:", e));
+    void drainLinksOnce().catch((e) => console.warn("job runner (links):", e));
+  };
   timer = window.setInterval(tick, POLL_MS);
   // Fail anything the last run left mid-flight before draining, so the
   // first drain can't race it.
-  busy = true;
+  busy = linkBusy = true;
   void failInterruptedJobs()
     .catch((e) => console.warn("job runner:", e))
     .finally(() => {
-      busy = false;
+      busy = linkBusy = false;
       tick();
     });
 }
@@ -103,61 +152,94 @@ export function stopJobRunner(): void {
   timer = null;
 }
 
-/** How often a running job checks whether the phone cancelled it. */
-const CANCEL_POLL_MS = 1500;
-
+/** Chat and Studio jobs, one at a time. */
 async function drainOnce(): Promise<void> {
   if (busy) return;
   busy = true;
   try {
-    const d = await getDb();
-    const rows = await d.select<JobRow[]>(
-      "SELECT id, kind, notebook_id, status, payload FROM jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1"
-    );
-    const job = rows[0];
-    if (!job) return;
-    // Only if still pending: the phone may have cancelled it since the select.
-    const claimed = await d.execute(
-      "UPDATE jobs SET status = 'running', updated_at = $1 WHERE id = $2 AND status = 'pending'",
-      [Date.now(), job.id]
-    );
-    if (claimed.rowsAffected === 0) return;
-    console.info("MOBILE_JOB_RUNNING", job.kind, job.id);
-    // The phone cancels by setting the row's status (see the sharing server).
-    const ctrl = new AbortController();
-    const watch = window.setInterval(() => {
-      void d
-        .select<{ status: string }[]>("SELECT status FROM jobs WHERE id = $1", [job.id])
-        .then((r) => {
-          if (r[0]?.status === "cancelled") ctrl.abort();
-        })
-        .catch(() => {});
-    }, CANCEL_POLL_MS);
-    // Outcomes only land on a job still running, so a cancel is never overwritten.
-    try {
-      const result = await runJob(JSON.parse(job.payload), ctrl.signal);
-      await d.execute(
-        "UPDATE jobs SET status = 'done', result = $1, progress = '', updated_at = $2 WHERE id = $3 AND status = 'running'",
-        [result, Date.now(), job.id]
-      );
-      console.info("MOBILE_JOB_DONE", job.id);
-    } catch (e) {
-      if (ctrl.signal.aborted) {
-        console.info("MOBILE_JOB_CANCELLED", job.id);
-        return;
-      }
-      const msg = e instanceof Error ? e.message : String(e);
-      await d.execute(
-        "UPDATE jobs SET status = 'error', result = $1, updated_at = $2 WHERE id = $3 AND status = 'running'",
-        [msg, Date.now(), job.id]
-      );
-      console.warn("MOBILE_JOB_ERROR", job.id, msg);
-    } finally {
-      window.clearInterval(watch);
-    }
+    await runNext(`NOT (${QUICK})`, (payload, signal) => runJob(payload, signal));
   } finally {
     busy = false;
   }
+}
+
+/** Phone-added links, chat deletes and item edits, one at a time, beside the chat/Studio lane. */
+async function drainLinksOnce(): Promise<void> {
+  if (linkBusy) return;
+  linkBusy = true;
+  try {
+    // Quick jobs back to back, so a few taps on the phone don't each wait a tick.
+    while (
+      await runNext(QUICK, (payload, signal) =>
+        payload.kind === "chat.delete"
+          ? runChatDeleteJob(payload as never)
+          : payload.kind === "edit"
+            ? runEditJob(payload as never)
+            : runLinkJob(payload as never, signal)
+      )
+    );
+  } finally {
+    linkBusy = false;
+  }
+}
+
+/** How often a running job checks whether the phone cancelled it. */
+const CANCEL_POLL_MS = 1500;
+
+/**
+ * Claim the oldest pending job matching `where`, run it, and record the
+ * outcome. False when there was nothing to run.
+ */
+async function runNext(
+  where: string,
+  run: (payload: { notebook_id: string } & Record<string, unknown>, signal: AbortSignal) => Promise<string>
+): Promise<boolean> {
+  const d = await getDb();
+  const rows = await d.select<JobRow[]>(
+    `SELECT id, kind, notebook_id, status, payload FROM jobs WHERE status = 'pending' AND ${where} ORDER BY created_at ASC LIMIT 1`
+  );
+  const job = rows[0];
+  if (!job) return false;
+  // Only if still pending: the phone may have cancelled it since the select.
+  const claimed = await d.execute(
+    "UPDATE jobs SET status = 'running', updated_at = $1 WHERE id = $2 AND status = 'pending'",
+    [Date.now(), job.id]
+  );
+  if (claimed.rowsAffected === 0) return true; // taken or cancelled meanwhile: look again
+  console.info("MOBILE_JOB_RUNNING", job.kind, job.id);
+  // The phone cancels by setting the row's status (see the sharing server).
+  const ctrl = new AbortController();
+  const watch = window.setInterval(() => {
+    void d
+      .select<{ status: string }[]>("SELECT status FROM jobs WHERE id = $1", [job.id])
+      .then((r) => {
+        if (r[0]?.status === "cancelled") ctrl.abort();
+      })
+      .catch(() => {});
+  }, CANCEL_POLL_MS);
+  // Outcomes only land on a job still running, so a cancel is never overwritten.
+  try {
+    const result = await run(JSON.parse(job.payload), ctrl.signal);
+    await d.execute(
+      "UPDATE jobs SET status = 'done', result = $1, progress = '', updated_at = $2 WHERE id = $3 AND status = 'running'",
+      [result, Date.now(), job.id]
+    );
+    console.info("MOBILE_JOB_DONE", job.id);
+  } catch (e) {
+    if (ctrl.signal.aborted) {
+      console.info("MOBILE_JOB_CANCELLED", job.id);
+      return true;
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    await d.execute(
+      "UPDATE jobs SET status = 'error', result = $1, updated_at = $2 WHERE id = $3 AND status = 'running'",
+      [msg, Date.now(), job.id]
+    );
+    console.warn("MOBILE_JOB_ERROR", job.id, msg);
+  } finally {
+    window.clearInterval(watch);
+  }
+  return true;
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -172,17 +254,211 @@ async function runJob(
   return runGenerateJob(payload as never, signal);
 }
 
+/* ---------------------------------- link ---------------------------------- */
+
+/** A link added from the phone: read exactly as Add link on the desktop does, then saved as a source. */
+async function runLinkJob(p: { notebook_id: string; url: string }, signal: AbortSignal): Promise<string> {
+  const { title, text, finalUrl } = await fetchLinkContent(p.url);
+  throwIfAborted(signal);
+  const src = await addSource(p.notebook_id, "link", title, text, finalUrl);
+  await touchNotebook(p.notebook_id);
+  announce(["sources", "notebooks"], p.notebook_id);
+  void loadSettings()
+    .then((settings) => indexSource(src, settings))
+    .catch(() => {});
+  return JSON.stringify({ id: src.id, title: src.title });
+}
+
+/* ------------------------------- chat delete ------------------------------ */
+
+/**
+ * A chat deleted from the phone: the desktop's own deleteChat, as Delete in
+ * its chat list runs it — the messages, their stored reasoning and any
+ * picture only this chat used go with it. Already gone counts as done.
+ */
+async function runChatDeleteJob(p: { notebook_id: string; chat_id: string }): Promise<string> {
+  const d = await getDb();
+  const rows = await d.select<{ id: string }[]>(
+    "SELECT id FROM chats WHERE id = $1 AND notebook_id = $2",
+    [p.chat_id, p.notebook_id]
+  );
+  if (rows.length > 0) await deleteChat(p.chat_id);
+  announce(["chats", "messages"], p.notebook_id, p.chat_id);
+  return JSON.stringify({ deleted: p.chat_id });
+}
+
+/* ------------------------------- item edits ------------------------------- */
+
+interface EditJob {
+  notebook_id: string;
+  target: "source" | "artifact" | "message";
+  id: string;
+  op: "rename" | "pin" | "unpin" | "delete" | "to-source";
+  title: string;
+}
+
+/**
+ * One edit from the phone, run with the same functions as the desktop's own
+ * buttons: the Sources list (rename, pin, remove), the Studio list (rename,
+ * pin, delete), an output's "Add to sources" and a reply's "Save to Sources".
+ */
+async function runEditJob(p: EditJob): Promise<string> {
+  const d = await getDb();
+  if (p.target === "source") {
+    const rows = await d.select<Source[]>("SELECT * FROM sources WHERE id = $1 AND notebook_id = $2", [
+      p.id,
+      p.notebook_id,
+    ]);
+    const s = rows[0];
+    if (!s) throw new Error("That source is gone.");
+    if (p.op === "rename") await updateSource(s.id, p.title, s.content);
+    else if (p.op === "pin" || p.op === "unpin") await setSourcePinned(s.id, p.op === "pin");
+    else if (p.op === "delete") await deleteSource(s.id);
+    else throw new Error(`Unknown action: ${p.op}`);
+    announce(["sources"], p.notebook_id);
+    return JSON.stringify({ ok: true });
+  }
+
+  if (p.target === "artifact") {
+    const a = await getArtifact(p.id);
+    if (!a || a.notebook_id !== p.notebook_id) throw new Error("That output is gone.");
+    if (p.op === "to-source") {
+      const text = artifactText(a);
+      if (!text) throw new Error("This output has no readable text to add as a source.");
+      await addSource(a.notebook_id, "text", a.title, text);
+      announce(["sources"], p.notebook_id);
+      return JSON.stringify({ ok: true });
+    }
+    if (p.op === "rename") await renameArtifact(a.id, p.title);
+    else if (p.op === "pin" || p.op === "unpin") await setArtifactPinned(a.id, p.op === "pin");
+    else if (p.op === "delete") await deleteArtifact(a.id);
+    else throw new Error(`Unknown action: ${p.op}`);
+    announce(["artifacts"], p.notebook_id);
+    return JSON.stringify({ ok: true });
+  }
+
+  if (p.target === "message" && p.op === "to-source") {
+    const rows = await d.select<{ content: string }[]>(
+      "SELECT content FROM messages WHERE id = $1 AND notebook_id = $2 AND role = 'assistant'",
+      [p.id, p.notebook_id]
+    );
+    const content = rows[0]?.content ?? "";
+    if (!content.trim()) throw new Error("That reply is gone.");
+    await addSource(p.notebook_id, "text", replySourceTitle(content), content);
+    announce(["sources"], p.notebook_id);
+    return JSON.stringify({ ok: true });
+  }
+  throw new Error(`Unknown action: ${p.target} ${p.op}`);
+}
+
 /* ---------------------------------- chat ---------------------------------- */
+
+/** Desktop chat commands that only make sense on the computer (settings, windows). */
+const DESKTOP_ONLY_COMMANDS = /^\/(model|imagemodel|researchmodel|voice|voicehost|voicecohost|provider|thinking|font|fonts|move|clone|remove|queue|return|star)(?=\s|$)/i;
+
+/**
+ * A chat command from the phone, answered as the desktop chat answers it (the
+ * same code, in chatTurns.ts): pictures, /search, /fetch, /ground,
+ * /constitution, /note, /url. Null = not a command; send it to the model.
+ */
+async function runChatCommand(
+  text: string,
+  c: {
+    notebookId: string;
+    chatId: string;
+    history: ChatMessage[];
+    sources: Source[];
+    catalog: MentionItem[];
+    grounded: boolean;
+    constitutionOn: boolean;
+    imageId?: string | null;
+    signal: AbortSignal;
+  }
+): Promise<string | null> {
+  const settings = await loadSettings();
+  if (await isImageTurn(text, settings)) {
+    return imageTurn({
+      text,
+      history: c.history,
+      settings,
+      notebookId: c.notebookId,
+      chatId: c.chatId,
+      imageId: c.imageId ?? undefined,
+      signal: c.signal,
+    });
+  }
+  if (/^\/search(\s|$)/i.test(text)) {
+    const query = text.replace(/^\/search\s*/i, "").trim();
+    return searchTurn({
+      query,
+      settings,
+      sources: c.sources,
+      mentioned: resolveMentions(query, c.catalog),
+      grounded: c.grounded,
+      constitution: c.constitutionOn,
+      signal: c.signal,
+    });
+  }
+  if (/^\/fetch(\s|$)/i.test(text)) {
+    return fetchTurn({ request: text.replace(/^\/fetch\s*/i, ""), settings, signal: c.signal });
+  }
+  if (/^\/ground(\s|$)/i.test(text)) {
+    await setNotebookGrounded(c.notebookId, !c.grounded);
+    announce(["notebooks"], c.notebookId);
+    return groundReply(!c.grounded);
+  }
+  if (/^\/constitution(\s|$)/i.test(text)) {
+    const { reply, next } = constitutionTurn(
+      text.replace(/^\/constitution\s*/i, ""),
+      c.constitutionOn,
+      c.sources.some((s) => s.type === "context")
+    );
+    if (next !== null) {
+      await setNotebookConstitutionOn(c.notebookId, next);
+      announce(["notebooks"], c.notebookId);
+    }
+    return reply;
+  }
+  if (/^\/note(\s|$)/i.test(text)) {
+    const body = text.replace(/^\/note\s*/i, "").trim();
+    if (!body) return "Paste your note right after the command, e.g. `/note today's lecture covered…`";
+    // Titled as the desktop titles /note (NotebookView's handleAddNote).
+    const flat = body.replace(/\s+/g, " ").trim();
+    const title = flat.length > 42 ? flat.slice(0, 42).trimEnd() + "…" : flat || "Pasted note";
+    const src = await addSource(c.notebookId, "text", title, body);
+    announce(["sources"], c.notebookId);
+    return `Saved “${src.title}” as a source — it's in Sources, and the AI can now ground answers in it.`;
+  }
+  if (/^\/url(\s|$)/i.test(text)) {
+    const raw = text.replace(/^\/url\s*/i, "").trim();
+    if (!raw) return "Give me a link to add, e.g. `/url https://en.wikipedia.org/wiki/Photosynthesis`";
+    if (!/^https?:\/\//i.test(raw)) return "Links need to start with http:// or https:// — try again with the full URL.";
+    const { title, text: body, finalUrl } = await fetchLinkContent(raw);
+    const src = await addSource(c.notebookId, "link", title, body, finalUrl);
+    void indexSource(src, settings).catch(() => {});
+    announce(["sources"], c.notebookId);
+    return `Saved “${src.title}” as a source — it's in Sources, and the AI can now ground answers in it.`;
+  }
+  const desktopOnly = DESKTOP_ONLY_COMMANDS.exec(text)?.[0];
+  if (desktopOnly)
+    return `\`${desktopOnly}\` changes BrewLM on your computer — use it in the chat there. Type \`/help\` here to see what works from your phone.`;
+  return null;
+}
+
+/** How often a streaming phone reply is written out for the phone to show. */
+const STREAM_PROGRESS_MS = 500;
 
 async function runChatJob(p: {
   notebook_id: string;
   content: string;
   chat_id?: string | null;
   new_chat?: boolean;
+  /** The phone's Thinking effort pick; absent (older phone page) = the desktop's. */
+  thinking?: Thinking | null;
+  /** The picture an image action works on (/edit, /remix, /more); else the chat's latest. */
+  image_id?: string | null;
 }, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
-  const key = activeKey(settings);
-  if (!key) throw new Error("Add an API key in Settings on the desktop first.");
 
   let chatId: string | null = p.chat_id ?? null;
   if (!chatId && !p.new_chat) {
@@ -199,66 +475,143 @@ async function runChatJob(p: {
   }
 
   await addMessage(chatId, p.notebook_id, "user", p.content);
-  const [history, allSources] = await Promise.all([
+  const [history, allSources, artifacts] = await Promise.all([
     listMessages(chatId),
     listSources(p.notebook_id),
+    listArtifacts(p.notebook_id),
   ]);
-  const sources = await withoutConstitutionIfOff(p.notebook_id, allSources);
+  const text = p.content.trim();
   const grounded = (await getNotebookGrounded(p.notebook_id)) !== 0;
-  // Same prompt layout as desktop chat: a notebook that fits is sent whole and
-  // unchanged on every message (served from the prompt cache); a bigger one
-  // gets per-question excerpts in a second system message after the cached part.
-  const budget = contextBudget(settings);
-  let retrieved: Awaited<ReturnType<typeof rankChunks>> | undefined;
-  let whole = false;
-  if (grounded) {
-    try {
-      await ensureMediaText(sources, settings);
-      whole = wholeNotebookFits(sources, budget.sources);
-      if (whole) {
-        void ensureIndexed(sources, settings).catch(() => {});
-      } else {
-        await ensureIndexed(sources, settings);
-        const ranked = await rankChunks(sources, p.content, settings, budget.sources);
-        if (ranked.length) retrieved = ranked;
-      }
-    } catch (e) {
-      console.warn("rag: retrieval skipped", e);
-    }
-  }
-  const system = buildSystemParts(sources, [], retrieved, { grounded, budget, whole });
-  const reply = (
-    await complete({
-      provider: settings.provider,
-      apiKey: key,
-      model: settings.model,
-      temperature: settings.temperature ?? undefined,
-      thinking: settings.thinking,
-      maxOutput: settings.maxOutput,
-      signal,
-      onUsage: (u) => void recordUsage("chat", settings.provider, settings.model, u),
-      cacheKey: p.notebook_id,
-      // Per-question excerpts sit before the history, so a history breakpoint
-      // would only pay the cache-write premium (see ChatPanel).
-      cacheHistory: !retrieved,
-      messages: [
-        { role: "system", content: system.stable },
-        ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
-        ...selectChatHistory(history, contextBudget(settings).history).map((m) => ({
-          role: m.role,
-          content: stripHistoryImages(m.content),
-        })),
-      ],
-    })
-  ).trim();
-  const answer = await storeGeneratedImages(reply || "(no response)", {
+  const constitutionOn = (await getNotebookConstitutionOn(p.notebook_id)) !== 0;
+  const catalog = buildMentionCatalog(allSources, artifacts);
+
+  let answer: string;
+  /** The usage line under the reply ("9.8k in · 637 out · $0.0042"), as /details shows it. */
+  let details = "";
+  const command = await runChatCommand(text, {
     notebookId: p.notebook_id,
     chatId,
-    prompt: p.content,
-    model: settings.model,
+    history,
+    sources: allSources,
+    catalog,
+    grounded,
+    constitutionOn,
+    imageId: p.image_id,
+    signal,
   });
-  throwIfAborted(signal);
-  await addMessage(chatId, p.notebook_id, "assistant", answer);
+  if (command !== null) {
+    throwIfAborted(signal);
+    answer = command;
+    await addMessage(chatId, p.notebook_id, "assistant", answer);
+  } else {
+    const key = activeKey(settings);
+    if (!key) throw new Error("Add an API key in Settings on the desktop first.");
+    const isSummarize = SUMMARIZE_RE.test(text);
+    // Mentions from recent user turns keep their priority across follow-ups.
+    const mentioned = resolveMentions(
+      history
+        .filter((m) => m.role === "user")
+        .slice(-8)
+        .map((m) => m.content)
+        .join("\n"),
+      catalog
+    );
+    const sources = await withoutConstitutionIfOff(p.notebook_id, allSources);
+    // Same prompt layout as desktop chat: a notebook that fits is sent whole and
+    // unchanged on every message (served from the prompt cache); a bigger one
+    // gets per-question excerpts in a second system message after the cached part.
+    const budget = contextBudget(settings);
+    let retrieved: Awaited<ReturnType<typeof rankChunks>> | undefined;
+    let whole = false;
+    if (grounded) {
+      try {
+        await ensureMediaText(sources, settings);
+        whole = wholeNotebookFits(sources, budget.sources);
+        if (whole) {
+          void ensureIndexed(sources, settings).catch(() => {});
+        } else {
+          await ensureIndexed(sources, settings);
+          const ranked = await rankChunks(sources, p.content, settings, budget.sources);
+          const mentionedIds = new Set(mentioned.filter((m) => m.group === "source").map((m) => m.id));
+          const filtered = ranked.filter((r) => !mentionedIds.has(r.sourceId));
+          if (filtered.length) retrieved = filtered;
+        }
+      } catch (e) {
+        console.warn("rag: retrieval skipped", e);
+      }
+    }
+    const system = buildSystemParts(sources, mentioned, retrieved, { grounded, budget, whole });
+    const turns = selectChatHistory(history, budget.history);
+    let acc = "";
+    let thought = "";
+    let usage: StreamUsage | null = null;
+    let shown = 0;
+    try {
+      for await (const delta of streamChat({
+        provider: settings.provider,
+        apiKey: key,
+        model: settings.model,
+        temperature: settings.temperature ?? undefined,
+        thinking: p.thinking ?? settings.thinking,
+        maxOutput: settings.maxOutput,
+        signal,
+        onUsage: (u) => {
+          usage = u;
+          void recordUsage("chat", settings.provider, settings.model, u);
+        },
+        onReasoning: (r) => {
+          thought = r;
+        },
+        cacheKey: p.notebook_id,
+        // Per-question excerpts sit before the history, so a history breakpoint
+        // would only pay the cache-write premium (see ChatPanel).
+        cacheHistory: !retrieved,
+        messages: [
+          { role: "system", content: system.stable },
+          ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
+          ...turns.map((m, i) => ({
+            role: m.role,
+            // The bubble keeps "/summarize"; the model gets the real prompt.
+            content: stripFetchMarker(
+              stripHistoryImages(
+                isSummarize && i === turns.length - 1 && m.role === "user" ? SUMMARIZE_PROMPT : m.content
+              )
+            ),
+          })),
+        ],
+      })) {
+        acc += delta;
+        // The phone shows the reply as it's written.
+        if (Date.now() - shown > STREAM_PROGRESS_MS) {
+          shown = Date.now();
+          void setJobProgress(acc);
+        }
+      }
+      throwIfAborted(signal);
+    } catch (e) {
+      // A failure partway keeps what was written, as the desktop does; a stop keeps nothing.
+      if (!signal.aborted && !isAbortError(e) && acc.trim()) {
+        const partial = await addMessage(chatId, p.notebook_id, "assistant", acc);
+        if (thought.trim()) await setMessageReasoning(partial.id, thought.trim());
+        announce(["chats", "messages"], p.notebook_id, chatId);
+      }
+      throw e;
+    }
+    answer = await storeGeneratedImages(acc.trim() || "(no response)", {
+      notebookId: p.notebook_id,
+      chatId,
+      prompt: p.content,
+      model: settings.model,
+    });
+    const reply = await addMessage(chatId, p.notebook_id, "assistant", answer);
+    // Reasoning stays beside the reply (never in it, so it isn't sent back to the model).
+    if (thought.trim()) await setMessageReasoning(reply.id, thought.trim());
+    if (usage) {
+      const u: StreamUsage = usage;
+      const cost = replyCostUsd(settings.provider, settings.model, u);
+      details = fmtUsageLine({ ...u, costUsd: cost?.usd, estimated: cost?.estimated });
+    }
+  }
   await touchChat(chatId);
   await touchNotebook(p.notebook_id);
 
@@ -266,9 +619,11 @@ async function runChatJob(p: {
   const d = await getDb();
   const cur = await d.select<{ title: string }[]>("SELECT title FROM chats WHERE id = $1", [chatId]);
   if (cur[0] && (cur[0].title === "Mobile chat" || cur[0].title === "New chat")) {
-    await renameChat(chatId, p.content.slice(0, 50) || "Mobile chat");
+    const first = SUMMARIZE_RE.test(text) ? "Notebook summary" : p.content.slice(0, 50);
+    await renameChat(chatId, first || "Mobile chat");
   }
-  return JSON.stringify({ chat_id: chatId, reply: answer });
+  announce(["chats", "messages", "notebooks"], p.notebook_id, chatId);
+  return JSON.stringify({ chat_id: chatId, reply: answer, details });
 }
 
 /* -------------------------------- generate -------------------------------- */
@@ -281,6 +636,8 @@ interface GenOpts {
   focus: string;
   format: AudioFormat;
   length: AudioLength;
+  /** "" (or absent, from an older phone page) = the desktop's Studio Defaults pick. */
+  mode?: AudioMode | "";
   report_type: string;
   custom_prompt: string;
   topic: string;
@@ -328,6 +685,7 @@ async function runGenerateJob(p: {
       meterTotal(meter)
     );
     await touchNotebook(p.notebook_id);
+    announce(["artifacts", "sources", "notebooks"], p.notebook_id);
     return `Saved research “${o.topic}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
   }
 
@@ -445,7 +803,7 @@ async function runGenerateJob(p: {
       const opts: AudioOptions = {
         format: o.format,
         length: o.length,
-        mode: "conversation",
+        mode: o.mode || settings.defAudioMode,
         sourceIds: [],
         description: o.focus,
         variety: varietyNote("audio", artifacts, { focused }),
@@ -474,12 +832,49 @@ async function runGenerateJob(p: {
       done = `Saved an audio overview to Studio — ${turns.length} turns${audio ? " · audio ready" : ""}${note ? ` · ${note}` : ""}.`;
       break;
     }
+    case "interactive": {
+      // As the Studio panel builds it: a storyboard grounded in the sources,
+      // then the page written from the storyboard alone.
+      const topic = (o.topic ?? "").trim();
+      // No topic: draw an angle and a format so blank runs don't all pick the same idea.
+      const lens = topic ? {} : { angle: pickAngle(), format: pickFormat() };
+      void setJobProgress("Planning the storyboard…");
+      const storyboard = (
+        await ask(buildStoryboardPrompt({ topic }, { ...lens, prior: interactivePrior(artifacts) }), {
+          exhaustive: true,
+          query: topic || buildStoryboardPrompt({ topic }, lens),
+        })
+      ).trim();
+      if (storyboard.length < 100) throw new Error("The storyboard came back empty — try again.");
+      void setJobProgress("Building the page…");
+      const html = await writePage({
+        provider: settings.provider,
+        apiKey: key,
+        model: settings.model,
+        thinking: settings.thinking,
+        maxOutput: settings.maxOutput,
+        temperature: settings.temperature ?? undefined,
+        signal,
+        onUsage: tally,
+        messages: [
+          { role: "system", content: PAGE_SYSTEM },
+          { role: "user", content: buildPagePrompt(storyboard) },
+        ],
+        onProgress: (chars) =>
+          void setJobProgress(`Building the page… ${Math.max(1, Math.round(chars / 1024))} KB written`),
+      });
+      title = "Interactive";
+      data = JSON.stringify({ html, storyboard });
+      done = "Saved an interactive page to Studio.";
+      break;
+    }
     default:
       throw new Error(`Unknown generation kind: ${p.kind}`);
   }
   throwIfAborted(signal);
   await addArtifact(p.notebook_id, p.kind as never, title, data, meterTotal(meter));
   await touchNotebook(p.notebook_id);
+  announce(["artifacts", "notebooks"], p.notebook_id);
   return done;
 }
 
@@ -495,7 +890,7 @@ async function setJobProgress(progress: string): Promise<void> {
   // Current running job = the one this runner is mid-flight on.
   const d = await getDb();
   await d.execute(
-    "UPDATE jobs SET progress = $1 WHERE status = 'running'",
+    `UPDATE jobs SET progress = $1 WHERE status = 'running' AND NOT (${QUICK})`,
     [progress]
   );
 }

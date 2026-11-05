@@ -39,6 +39,18 @@ use sqlx::{
 
 const MOBILE_HTML: &str = include_str!("../mobile.html");
 
+/// The desktop's chat renderer for the phone page, gzipped (build.rs embeds
+/// what scripts/build-phone-render.mjs wrote; empty when it wasn't built).
+const RENDER_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/render.js.gz"));
+const RENDER_CSS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/render.css.gz"));
+const MERMAID_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mermaid.js.gz"));
+
+/// The phone page with its asset URLs versioned, so phones cache them until they change.
+fn mobile_html() -> &'static str {
+    static PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PAGE.get_or_init(|| MOBILE_HTML.replace("__PHONE_ASSETS_V__", env!("PHONE_ASSETS_V")))
+}
+
 /* ------------------------------- rate limits ------------------------------- */
 
 const GEN_PER_MIN: u32 = 120; // any endpoint
@@ -272,6 +284,7 @@ fn extract_tunnel_url(line: &str) -> Option<String> {
 fn build_router(state: ServerState) -> Router {
     Router::new()
         // pairing gate
+        .route("/assets/{file}", get(asset_handler))
         .route("/p/{code}/", get(index_handler))
         .route("/p/{code}/api/pair", post(pair_handler))
         // device-scoped app
@@ -283,6 +296,11 @@ fn build_router(state: ServerState) -> Router {
         .route("/d/{key}/api/notebooks/{id}/delete", post(notebook_delete_handler))
         .route("/d/{key}/api/notebooks/{id}/chats", get(chats_handler))
         .route("/d/{key}/api/chats/{id}/messages", get(messages_handler))
+        .route("/d/{key}/api/chats/{id}/rename", post(chat_rename_handler))
+        .route("/d/{key}/api/chats/{id}/delete", post(chat_delete_handler))
+        .route("/d/{key}/api/sources/{id}/edit", post(source_edit_handler))
+        .route("/d/{key}/api/artifacts/{id}/edit", post(artifact_edit_handler))
+        .route("/d/{key}/api/messages/{id}/to-source", post(message_to_source_handler))
         .route("/d/{key}/api/sources/{id}", get(source_handler))
         .route("/d/{key}/api/notebooks/{id}/sources/text", post(source_text_handler))
         .route("/d/{key}/api/notebooks/{id}/sources/url", post(source_url_handler))
@@ -615,7 +633,30 @@ fn rate(st: &ServerState, dev_id: &str, llm: bool) -> Result<(), Response> {
 /* --------------------------------- handlers -------------------------------- */
 
 async fn index_handler() -> impl IntoResponse {
-    ([(header::CACHE_CONTROL, "no-store")], Html(MOBILE_HTML))
+    ([(header::CACHE_CONTROL, "no-store")], Html(mobile_html()))
+}
+
+/// The phone page's renderer files. Public: they're the open-source renderer
+/// and libraries, with nothing of the user's in them.
+async fn asset_handler(Path(file): Path<String>) -> Response {
+    let (body, ctype) = match file.as_str() {
+        "render.js" => (RENDER_JS, "text/javascript; charset=utf-8"),
+        "render.css" => (RENDER_CSS, "text/css; charset=utf-8"),
+        "mermaid.js" => (MERMAID_JS, "text/javascript; charset=utf-8"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if body.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, ctype),
+            (header::CONTENT_ENCODING, "gzip"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn no_store_json(v: serde_json::Value) -> impl IntoResponse {
@@ -864,7 +905,9 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
     };
 
     let sources = sqlx::query(
-        "SELECT id, type, title, created_at FROM sources WHERE notebook_id = ? ORDER BY created_at",
+        // As the desktop lists them: the constitution, then pinned, then oldest first.
+        "SELECT id, type, title, created_at, pinned, mime FROM sources WHERE notebook_id = ? \
+         ORDER BY type = 'context' DESC, pinned DESC, created_at",
     )
     .bind(&id)
     .fetch_all(&st.pool)
@@ -877,13 +920,16 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
             "type": r.get::<String, _>("type"),
             "title": r.get::<String, _>("title"),
             "created_at": r.get::<i64, _>("created_at"),
+            "pinned": r.get::<i64, _>("pinned") != 0,
+            // Links keep their address in `mime` (the phone marks /fetch cards already added).
+            "url": r.get::<Option<String>, _>("mime").filter(|m| m.starts_with("http")).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
 
     let artifacts = sqlx::query(
-        "SELECT id, kind, title, created_at FROM artifacts WHERE notebook_id = ? \
-         ORDER BY created_at DESC",
+        "SELECT id, kind, title, created_at, pinned FROM artifacts WHERE notebook_id = ? \
+         ORDER BY pinned DESC, created_at DESC",
     )
     .bind(&id)
     .fetch_all(&st.pool)
@@ -896,6 +942,7 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
             "kind": r.get::<String, _>("kind"),
             "title": r.get::<String, _>("title"),
             "created_at": r.get::<i64, _>("created_at"),
+            "pinned": r.get::<i64, _>("pinned") != 0,
         })
     })
     .collect::<Vec<_>>();
@@ -944,14 +991,27 @@ async fn messages_handler(State(st): State<ServerState>, Path((key, id)): Path<(
     if let Err(r) = auth_device(&st, &key, false).await {
         return r;
     }
-    let mut rows = sqlx::query(
-        "SELECT id, role, content, created_at FROM messages WHERE chat_id = ? \
-         ORDER BY created_at DESC LIMIT 100",
+    // With each reply's reasoning, when the model shared any (the desktop keeps it beside the message).
+    let with_reasoning = sqlx::query(
+        "SELECT m.id, m.role, m.content, m.created_at, COALESCE(r.text, '') AS reasoning FROM messages m \
+         LEFT JOIN message_reasoning r ON r.message_id = m.id WHERE m.chat_id = ? \
+         ORDER BY m.created_at DESC LIMIT 100",
     )
     .bind(&id)
     .fetch_all(&st.pool)
-    .await
-    .unwrap_or_default();
+    .await;
+    let mut rows = match with_reasoning {
+        Ok(rows) => rows,
+        // An older database without the reasoning table.
+        Err(_) => sqlx::query(
+            "SELECT id, role, content, created_at, '' AS reasoning FROM messages WHERE chat_id = ? \
+             ORDER BY created_at DESC LIMIT 100",
+        )
+        .bind(&id)
+        .fetch_all(&st.pool)
+        .await
+        .unwrap_or_default(),
+    };
     rows.reverse(); // back to chronological
     let list: Vec<_> = rows
         .iter()
@@ -961,34 +1021,296 @@ async fn messages_handler(State(st): State<ServerState>, Path((key, id)): Path<(
                 "role": r.get::<String, _>("role"),
                 "content": r.get::<String, _>("content"),
                 "created_at": r.get::<i64, _>("created_at"),
+                "reasoning": r.get::<String, _>("reasoning"),
             })
         })
         .collect();
     no_store_json(json!({ "messages": list })).into_response()
 }
 
+/// Rename a chat, as the desktop's chat list does (updated_at is left alone,
+/// so renaming doesn't reorder the list).
+async fn chat_rename_handler(
+    State(st): State<ServerState>,
+    Path((key, id)): Path<(String, String)>,
+    Json(body): Json<RenameBody>,
+) -> Response {
+    let dev = match auth_device(&st, &key, true).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let title = body.title.trim().chars().take(200).collect::<String>();
+    if title.is_empty() {
+        return err_json(StatusCode::BAD_REQUEST, "Title required.");
+    }
+    let res = sqlx::query(
+        "UPDATE chats SET title = ? WHERE id = ? \
+         AND notebook_id IN (SELECT id FROM notebooks WHERE trashed_at = 0)",
+    )
+    .bind(&title)
+    .bind(&id)
+    .execute(&st.pool)
+    .await;
+    match res {
+        Ok(r) if r.rows_affected() == 0 => (StatusCode::NOT_FOUND, "chat not found").into_response(),
+        Ok(_) => {
+            log_activity(&st.pool, &dev.id, "chat.rename", &title).await;
+            no_store_json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    }
+}
+
+/// Delete a chat for good, as the desktop's chat list does. The desktop runs
+/// it (src/lib/jobRunner.ts → deleteChat in src/lib/db.ts), so its messages,
+/// stored reasoning and the pictures only it used go exactly as they do there;
+/// this checks the chat, stops the phone's own unfinished replies in it, and
+/// queues a `chat.delete` job the phone polls. Phone replies still waiting for
+/// this chat are cancelled first so none lands in it after it's gone.
+async fn chat_delete_handler(
+    State(st): State<ServerState>,
+    Path((key, id)): Path<(String, String)>,
+) -> Response {
+    let dev = match auth_device(&st, &key, true).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if let Err(r) = rate(&st, &dev.id, false) {
+        return r;
+    }
+    let chat = sqlx::query(
+        "SELECT notebook_id, title FROM chats WHERE id = ? \
+         AND notebook_id IN (SELECT id FROM notebooks WHERE trashed_at = 0)",
+    )
+    .bind(&id)
+    .fetch_optional(&st.pool)
+    .await;
+    let Ok(Some(chat)) = chat else {
+        return (StatusCode::NOT_FOUND, "chat not found").into_response();
+    };
+    let notebook_id: String = chat.get("notebook_id");
+    let title: String = chat.get("title");
+    let now = now_ms();
+    let _ = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', progress = '', updated_at = ? \
+         WHERE kind = 'chat' AND status IN ('pending', 'running') AND json_extract(payload, '$.chat_id') = ?",
+    )
+    .bind(now)
+    .bind(&id)
+    .execute(&st.pool)
+    .await;
+    let job_id = random_id();
+    let payload = json!({ "notebook_id": notebook_id, "kind": "chat.delete", "chat_id": id });
+    let res = sqlx::query(
+        "INSERT INTO jobs (id, kind, notebook_id, status, payload, device_id, created_at, updated_at) \
+         VALUES (?, 'chat.delete', ?, 'pending', ?, ?, ?, ?)",
+    )
+    .bind(&job_id)
+    .bind(&notebook_id)
+    .bind(payload.to_string())
+    .bind(&dev.id)
+    .bind(now)
+    .bind(now)
+    .execute(&st.pool)
+    .await;
+    match res {
+        Ok(_) => {
+            log_activity(&st.pool, &dev.id, "chat.delete", &title).await;
+            no_store_json(json!({ "job_id": job_id })).into_response()
+        }
+        Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct EditBody {
+    op: String,
+    title: Option<String>,
+}
+
+/// Queue one item edit for the desktop to run with its own functions
+/// (src/lib/jobRunner.ts runEditJob), in the quick lane beside links.
+async fn queue_edit(
+    st: &ServerState,
+    dev_id: &str,
+    notebook_id: &str,
+    target: &str,
+    id: &str,
+    op: &str,
+    title: &str,
+) -> Response {
+    let job_id = random_id();
+    let now = now_ms();
+    let payload = json!({
+        "notebook_id": notebook_id,
+        "kind": "edit",
+        "target": target,
+        "id": id,
+        "op": op,
+        "title": title,
+    });
+    let res = sqlx::query(
+        "INSERT INTO jobs (id, kind, notebook_id, status, payload, device_id, created_at, updated_at) \
+         VALUES (?, 'edit', ?, 'pending', ?, ?, ?, ?)",
+    )
+    .bind(&job_id)
+    .bind(notebook_id)
+    .bind(payload.to_string())
+    .bind(dev_id)
+    .bind(now)
+    .bind(now)
+    .execute(&st.pool)
+    .await;
+    match res {
+        Ok(_) => {
+            log_activity(&st.pool, dev_id, &format!("{target}.{op}"), title).await;
+            no_store_json(json!({ "job_id": job_id })).into_response()
+        }
+        Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    }
+}
+
+/// An item's notebook and title, when the item exists in a notebook that isn't in the Trash.
+async fn live_item(pool: &SqlitePool, table: &str, id: &str) -> Option<(String, String)> {
+    // `table` is one of our own literals, never phone input.
+    let sql = format!(
+        "SELECT t.notebook_id, t.title FROM {table} t JOIN notebooks n ON n.id = t.notebook_id \
+         WHERE t.id = ? AND n.trashed_at = 0"
+    );
+    let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await.ok()??;
+    Some((row.get("notebook_id"), row.get("title")))
+}
+
+/// Rename / pin / unpin / delete one item, or (outputs) add it to Sources.
+async fn edit_item(st: ServerState, key: String, id: String, body: EditBody, target: &str) -> Response {
+    let dev = match auth_device(&st, &key, true).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if let Err(r) = rate(&st, &dev.id, false) {
+        return r;
+    }
+    let ops: &[&str] = if target == "artifact" {
+        &["rename", "pin", "unpin", "delete", "to-source"]
+    } else {
+        &["rename", "pin", "unpin", "delete"]
+    };
+    if !ops.contains(&body.op.as_str()) {
+        return err_json(StatusCode::BAD_REQUEST, "Unknown action.");
+    }
+    let table = if target == "artifact" { "artifacts" } else { "sources" };
+    let Some((notebook_id, current)) = live_item(&st.pool, table, &id).await else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let title = if body.op == "rename" {
+        let t = body.title.unwrap_or_default().trim().chars().take(200).collect::<String>();
+        if t.is_empty() {
+            return err_json(StatusCode::BAD_REQUEST, "Title required.");
+        }
+        t
+    } else {
+        current
+    };
+    queue_edit(&st, &dev.id, &notebook_id, target, &id, &body.op, &title).await
+}
+
+async fn source_edit_handler(
+    State(st): State<ServerState>,
+    Path((key, id)): Path<(String, String)>,
+    Json(body): Json<EditBody>,
+) -> Response {
+    edit_item(st, key, id, body, "source").await
+}
+
+async fn artifact_edit_handler(
+    State(st): State<ServerState>,
+    Path((key, id)): Path<(String, String)>,
+    Json(body): Json<EditBody>,
+) -> Response {
+    edit_item(st, key, id, body, "artifact").await
+}
+
+/// A reply's "Save to Sources": the desktop saves it as a note, titled as it titles them.
+async fn message_to_source_handler(
+    State(st): State<ServerState>,
+    Path((key, id)): Path<(String, String)>,
+) -> Response {
+    let dev = match auth_device(&st, &key, true).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if let Err(r) = rate(&st, &dev.id, false) {
+        return r;
+    }
+    let row = sqlx::query(
+        "SELECT m.notebook_id FROM messages m JOIN notebooks n ON n.id = m.notebook_id \
+         WHERE m.id = ? AND m.role = 'assistant' AND n.trashed_at = 0",
+    )
+    .bind(&id)
+    .fetch_optional(&st.pool)
+    .await;
+    let Ok(Some(row)) = row else {
+        return (StatusCode::NOT_FOUND, "reply not found").into_response();
+    };
+    let notebook_id: String = row.get("notebook_id");
+    queue_edit(&st, &dev.id, &notebook_id, "message", &id, "to-source", "").await
+}
+
+/// The most of a source's text the phone is sent at once (a long PDF can be
+/// megabytes); the rest stays on the computer.
+const SOURCE_VIEW_CHARS: usize = 200_000;
+
+/// One source as the phone's viewer shows it: what the AI reads (the same text
+/// as the desktop's "What the AI sees"), its link, and an image's own picture.
+/// Other media (audio, video, PDF files) never cross the tunnel — only their text.
 async fn source_handler(State(st): State<ServerState>, Path((key, id)): Path<(String, String)>) -> Response {
     if let Err(r) = auth_device(&st, &key, false).await {
         return r;
     }
     let row = sqlx::query(
-        "SELECT id, type, title, content, mime, created_at FROM sources WHERE id = ?",
+        "SELECT s.id, s.type, s.title, s.content, s.text, s.mime, s.created_at FROM sources s \
+         JOIN notebooks n ON n.id = s.notebook_id WHERE s.id = ? AND n.trashed_at = 0",
     )
     .bind(&id)
     .fetch_optional(&st.pool)
     .await;
-    match row {
-        Ok(Some(r)) => no_store_json(json!({
-            "id": r.get::<String, _>("id"),
-            "type": r.get::<String, _>("type"),
-            "title": r.get::<String, _>("title"),
-            "content": crate::blobs::to_data_url(&st.blob_dir, &r.get::<String, _>("content")),
-            "mime": r.get::<Option<String>, _>("mime"),
-            "created_at": r.get::<i64, _>("created_at"),
-        }))
-        .into_response(),
-        _ => (StatusCode::NOT_FOUND, "source not found").into_response(),
-    }
+    let Ok(Some(r)) = row else {
+        return (StatusCode::NOT_FOUND, "source not found").into_response();
+    };
+    let kind: String = r.get("type");
+    let content: String = r.get("content");
+    let mime: Option<String> = r.get("mime");
+    // Mirrors sourceText() in src/lib/db.ts.
+    let media = kind == "image"
+        || kind == "audio"
+        || content.starts_with("data:")
+        || content.starts_with(crate::blobs::REF_PREFIX);
+    let full: String = if media { r.get("text") } else { content.clone() };
+    let chars = full.chars().count();
+    let text: String = full.chars().take(SOURCE_VIEW_CHARS).collect();
+    let image = if kind == "image" {
+        crate::blobs::to_data_url(&st.blob_dir, &content)
+    } else {
+        String::new()
+    };
+    // Links keep their address in `mime`.
+    let url = mime
+        .as_deref()
+        .filter(|m| m.starts_with("http://") || m.starts_with("https://"))
+        .unwrap_or("")
+        .to_string();
+    no_store_json(json!({
+        "id": r.get::<String, _>("id"),
+        "type": kind,
+        "title": r.get::<String, _>("title"),
+        "created_at": r.get::<i64, _>("created_at"),
+        "text": text,
+        "chars": chars,
+        "truncated": chars > SOURCE_VIEW_CHARS,
+        "url": url,
+        "image": image,
+    }))
+    .into_response()
 }
 
 async fn notebook_owned(pool: &SqlitePool, id: &str) -> bool {
@@ -1117,116 +1439,16 @@ fn validate_public_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-/// Strip tags/scripts → readable text (crude mirror of the desktop's link ingest).
-fn html_to_text(html: &str, fallback_title: &str) -> (String, String) {
-    let mut s = html.to_string();
-    // drop non-content blocks (case-insensitive, non-greedy pairs)
-    for tag in ["script", "style", "noscript", "svg", "iframe", "nav", "footer", "header", "form", "aside"] {
-        loop {
-            let lower = s.to_lowercase();
-            let open = match lower.find(&format!("<{tag}")) {
-                Some(i) => i,
-                None => break,
-            };
-            let close = lower[open..]
-                .find(&format!("</{tag}>"))
-                .map(|i| open + i + tag.len() + 3);
-            match close {
-                Some(end) => s.replace_range(open..end, " "),
-                None => {
-                    // unclosed: drop to end of tag only
-                    if let Some(gt) = lower[open..].find('>') {
-                        s.replace_range(open..open + gt + 1, " ");
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    let title = {
-        let lower = s.to_lowercase();
-        match (lower.find("<title>"), lower.find("</title>")) {
-            (Some(a), Some(b)) if b > a + 7 => s[a + 7..b].trim().to_string(),
-            _ => fallback_title.to_string(),
-        }
-    };
-    // strip all remaining tags
-    let mut out = String::with_capacity(s.len());
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    let out = out
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ");
-    let mut collapsed = String::with_capacity(out.len());
-    let mut last_ws = false;
-    for c in out.chars() {
-        if c.is_whitespace() {
-            if !last_ws {
-                collapsed.push(' ');
-            }
-            last_ws = true;
-        } else {
-            collapsed.push(c);
-            last_ws = false;
-        }
-    }
-    (title.trim().to_string(), collapsed.trim().to_string())
-}
-
-const YOUTUBE_PENDING: &str =
-    "[YouTube video — transcript pending. BrewLM on the desktop fetches it before the next answer.]";
-
-const LINK_IS_FILE: &str =
-    "That link is a file, not a web page — add it from BrewLM on your computer so its text can be extracted.";
-
-/// Phone links store their body as text, so only text-like responses are
-/// accepted; files (PDF, Office, zip, media…) are left to the desktop app,
-/// which extracts them properly. An empty content type is judged by the body.
-fn check_link_content_type(ctype: &str) -> Result<(), &'static str> {
-    let c = ctype.to_ascii_lowercase();
-    // "/xml" or "+xml" — Office types ("…openxmlformats…presentationml…") contain "xml" too.
-    let xml = c.contains("/xml") || c.contains("+xml");
-    if c.is_empty() || c.starts_with("text/") || c.contains("html") || c.contains("json") || xml {
-        Ok(())
-    } else {
-        Err(LINK_IS_FILE)
-    }
-}
-
-/// Raw binary decoded as text: NUL characters, or mostly U+FFFD replacements.
-fn looks_binary(text: &str) -> bool {
-    let head: Vec<char> = text.chars().take(8192).collect();
-    let bad = head.iter().filter(|&&c| c == '\u{FFFD}').count();
-    head.contains(&'\0') || (head.len() >= 64 && bad * 10 > head.len())
-}
-
-fn is_youtube_host(host: &str) -> bool {
-    let h = host.to_ascii_lowercase();
-    let h = h
-        .strip_prefix("www.")
-        .or_else(|| h.strip_prefix("m."))
-        .or_else(|| h.strip_prefix("music."))
-        .unwrap_or(&h);
-    matches!(h, "youtube.com" | "youtu.be" | "youtube-nocookie.com")
-}
-
 #[derive(Deserialize)]
 struct SourceUrlBody {
     url: String,
 }
 
+/// A link added from the phone is read by the desktop app, with the same
+/// reader as Add link there (src/lib/source.ts: YouTube/Vimeo/caption-file
+/// transcripts, PDFs and Office files, compressed pages). This only checks
+/// the address is public and queues a `link` job; src/lib/jobRunner.ts runs
+/// it and saves the source, and the phone polls /jobs/{id} for the result.
 async fn source_url_handler(
     State(st): State<ServerState>,
     Path((key, id)): Path<(String, String)>,
@@ -1242,147 +1464,39 @@ async fn source_url_handler(
     if !notebook_owned(&st.pool, &id).await {
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     }
-    let raw = if body.url.starts_with("http") {
-        body.url.clone()
+    let trimmed = body.url.trim();
+    if trimmed.is_empty() || trimmed.len() > 4000 {
+        return err_json(StatusCode::BAD_REQUEST, "Paste a link first.");
+    }
+    let raw = if trimmed.starts_with("http") {
+        trimmed.to_string()
     } else {
-        format!("https://{}", body.url)
+        format!("https://{trimmed}")
     };
-    let mut url = match validate_public_url(&raw) {
+    let url = match validate_public_url(&raw) {
         Ok(u) => u,
         Err(m) => return err_json(StatusCode::BAD_REQUEST, &m),
     };
 
-    // A YouTube watch page is player boilerplate; queue the link instead and
-    // let the desktop webview (src/lib/youtube.ts) swap in the transcript
-    // before the next chat/generation. Must match YOUTUBE_PENDING there.
-    if is_youtube_host(url.host_str().unwrap_or("")) {
-        let sid = random_id();
-        let title = "YouTube video (transcript pending)";
-        let res = sqlx::query(
-            "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES (?, ?, 'link', ?, ?, ?, ?)",
-        )
-        .bind(&sid)
-        .bind(&id)
-        .bind(title)
-        .bind(YOUTUBE_PENDING)
-        .bind(url.as_str())
-        .bind(now_ms())
-        .execute(&st.pool)
-        .await;
-        return match res {
-            Ok(_) => {
-                let _ = sqlx::query("UPDATE notebooks SET updated_at = ? WHERE id = ?")
-                    .bind(now_ms())
-                    .bind(&id)
-                    .execute(&st.pool)
-                    .await;
-                log_activity(&st.pool, &dev.id, "source.url", title).await;
-                no_store_json(json!({ "id": sid, "title": title })).into_response()
-            }
-            Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
-        };
-    }
-
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none()) // re-validate every hop
-        .timeout(Duration::from_secs(20))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("http: {e}")),
-    };
-
-    let mut resp = None;
-    for _ in 0..=3 {
-        match client.get(url.clone()).send().await {
-            Ok(r) => {
-                if r.status().is_redirection() {
-                    let loc = r
-                        .headers()
-                        .get(header::LOCATION)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
-                    match loc {
-                        Some(l) => match url.join(&l) {
-                            Ok(next) => match validate_public_url(next.as_str()) {
-                                Ok(v) => url = v,
-                                Err(m) => return err_json(StatusCode::BAD_REQUEST, &m),
-                            },
-                            Err(_) => return err_json(StatusCode::BAD_REQUEST, "Bad redirect."),
-                        },
-                        None => return err_json(StatusCode::BAD_GATEWAY, "Redirect without location."),
-                    }
-                } else {
-                    resp = Some(r);
-                    break;
-                }
-            }
-            Err(e) => return err_json(StatusCode::BAD_GATEWAY, &format!("Couldn't fetch that page: {e}")),
-        }
-    }
-    let Some(resp) = resp else {
-        return err_json(StatusCode::BAD_GATEWAY, "Too many redirects.");
-    };
-    if !resp.status().is_success() {
-        return err_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("Couldn't fetch that page (HTTP {}).", resp.status()),
-        );
-    }
-    if let Some(len) = resp.content_length() {
-        if len > 8 * 1024 * 1024 {
-            return err_json(StatusCode::BAD_REQUEST, "That page is too large.");
-        }
-    }
-    let ctype = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if let Err(msg) = check_link_content_type(&ctype) {
-        return err_json(StatusCode::BAD_REQUEST, msg);
-    }
-    let raw = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => return err_json(StatusCode::BAD_GATEWAY, &format!("Read failed: {e}")),
-    };
-    if looks_binary(&raw) {
-        return err_json(StatusCode::BAD_REQUEST, LINK_IS_FILE);
-    }
-
-    let host = url.host_str().unwrap_or("link").to_string();
-    let (title, mut text) = if ctype.contains("html") {
-        html_to_text(&raw, &host)
-    } else {
-        (host.clone(), raw.chars().take(200_000).collect())
-    };
-    if text.is_empty() {
-        return err_json(StatusCode::BAD_GATEWAY, "The page loaded but no readable text was found.");
-    }
-    text = text.chars().take(200_000).collect();
-
-    let sid = random_id();
+    let job_id = random_id();
+    let now = now_ms();
+    let payload = json!({ "notebook_id": id, "kind": "link", "url": url.as_str() });
     let res = sqlx::query(
-        "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at) VALUES (?, ?, 'link', ?, ?, NULL, ?)",
+        "INSERT INTO jobs (id, kind, notebook_id, status, payload, device_id, created_at, updated_at) \
+         VALUES (?, 'link', ?, 'pending', ?, ?, ?, ?)",
     )
-    .bind(&sid)
+    .bind(&job_id)
     .bind(&id)
-    .bind(&title)
-    .bind(&text)
-    .bind(now_ms())
+    .bind(payload.to_string())
+    .bind(&dev.id)
+    .bind(now)
+    .bind(now)
     .execute(&st.pool)
     .await;
     match res {
         Ok(_) => {
-            let _ = sqlx::query("UPDATE notebooks SET updated_at = ? WHERE id = ?")
-                .bind(now_ms())
-                .bind(&id)
-                .execute(&st.pool)
-                .await;
-            log_activity(&st.pool, &dev.id, "source.url", &title).await;
-            no_store_json(json!({ "id": sid, "title": title })).into_response()
+            log_activity(&st.pool, &dev.id, "source.url", url.as_str()).await;
+            no_store_json(json!({ "job_id": job_id })).into_response()
         }
         Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     }
@@ -1396,6 +1510,10 @@ struct ChatBody {
     content: String,
     chat_id: Option<String>,
     new_chat: Option<bool>,
+    /// The phone's Thinking effort pick; anything else is dropped (desktop setting applies).
+    thinking: Option<String>,
+    /// The picture an image action (/edit, /remix, /more) works on; else the chat's latest.
+    image_id: Option<String>,
 }
 
 async fn chat_handler(
@@ -1424,6 +1542,14 @@ async fn chat_handler(
         "content": content,
         "chat_id": body.chat_id,
         "new_chat": body.new_chat.unwrap_or(false),
+        "thinking": body
+            .thinking
+            .as_deref()
+            .filter(|t| matches!(*t, "auto" | "low" | "medium" | "high")),
+        "image_id": body
+            .image_id
+            .as_deref()
+            .filter(|id| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')),
     });
     let res = sqlx::query(
         "INSERT INTO jobs (id, kind, notebook_id, status, payload, device_id, created_at, updated_at) \
@@ -1446,7 +1572,7 @@ async fn chat_handler(
     }
 }
 
-const GENERATE_KINDS: [&str; 6] = ["flashcards", "quiz", "mindmap", "report", "research", "audio"];
+const GENERATE_KINDS: [&str; 7] = ["flashcards", "quiz", "mindmap", "report", "research", "audio", "interactive"];
 
 #[derive(Deserialize)]
 struct GenerateBody {
@@ -1490,11 +1616,20 @@ async fn generate_handler(
         "format": match pick("format", 12).as_str() { "brief" | "debate" | "critique" => pick("format", 12), _ => "deep-dive".into() },
         "length": match pick("length", 10).as_str() { "short" | "long" => pick("length", 10), _ => "standard".into() },
         "report_type": match pick("report_type", 20).as_str() { "briefing-doc" | "analysis" | "custom" => pick("report_type", 20), _ => "study-guide".into() },
-        "custom_prompt": pick("custom_prompt", 1000),
-        "topic": pick("topic", 200),
+        // "" = the desktop's Studio Defaults pick.
+        "mode": match pick("mode", 14).as_str() { "conversation" | "solo" => pick("mode", 14), _ => String::new() },
+        "custom_prompt": pick("custom_prompt", 1000).trim().to_string(),
+        // Research titles itself with its topic; an interactive page's brief can run longer.
+        "topic": pick("topic", if body.kind == "interactive" { 1000 } else { 200 }).trim().to_string(),
     });
     if body.kind == "research" && options["topic"].as_str().unwrap_or("").is_empty() {
         return err_json(StatusCode::BAD_REQUEST, "Research needs a topic.");
+    }
+    if body.kind == "report"
+        && options["report_type"] == "custom"
+        && options["custom_prompt"].as_str().unwrap_or("").is_empty()
+    {
+        return err_json(StatusCode::BAD_REQUEST, "Say what the custom report should cover.");
     }
     let job_id = random_id();
     let now = now_ms();
@@ -1779,10 +1914,12 @@ mod tests {
              created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, \
              trashed_at INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE artifacts (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
-             kind TEXT NOT NULL, title TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL)",
+             kind TEXT NOT NULL, title TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL, \
+             pinned INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE sources (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
              type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', \
-             mime TEXT, created_at INTEGER NOT NULL)",
+             mime TEXT, created_at INTEGER NOT NULL, text TEXT NOT NULL DEFAULT '', \
+             pinned INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE chats (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
              title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
             "CREATE TABLE messages (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, \
@@ -1832,7 +1969,7 @@ mod tests {
         let audio_json = format!(
             r#"{{"audio": "data:audio/mpeg;base64,{b64}", "script": "Alex: hi", "note": null}}"#
         );
-        sqlx::query("INSERT INTO artifacts VALUES ('a1', 'nb1', 'audio', 'Pod', ?, 100)")
+        sqlx::query("INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ('a1', 'nb1', 'audio', 'Pod', ?, 100)")
             .bind(audio_json)
             .execute(&pool)
             .await
@@ -1842,6 +1979,32 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO chats VALUES ('c1', 'nb1', 'First chat', 1, 200)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO chats VALUES ('c2', 'nb2', 'In the trash', 1, 201)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sources (id, notebook_id, type, title, content, mime, created_at, text) VALUES \
+             ('s1', 'nb1', 'link', 'A page', 'Page body', 'https://example.com/a', 1, ''), \
+             ('s2', 'nb1', 'image', 'A photo', 'data:image/png;base64,iVBORw0K', 'image/png', 2, 'A cat on a mat'), \
+             ('s3', 'nb1', 'file', 'Talk.mp3', 'brewblob:abc.mp3', 'audio/mpeg', 3, 'The transcript'), \
+             ('s4', 'nb2', 'text', 'Trashed note', 'secret', NULL, 4, '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, notebook_id, role, content, created_at, chat_id) VALUES \
+             ('m1', 'nb1', 'user', 'Question?', 1, 'c1'), ('m2', 'nb1', 'assistant', '## Answer', 2, 'c1'), \
+             ('m3', 'nb2', 'assistant', 'In the trash', 3, 'c2')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO settings VALUES ('theme', 'ocean')")
             .execute(&pool)
             .await
@@ -1948,21 +2111,6 @@ mod tests {
         assert!(!list.contains("brewblob:"));
     }
 
-    #[test]
-    fn phone_links_reject_files() {
-        assert!(check_link_content_type("text/html; charset=utf-8").is_ok());
-        assert!(check_link_content_type("application/json").is_ok());
-        assert!(check_link_content_type("").is_ok());
-        assert!(check_link_content_type("application/rss+xml").is_ok());
-        for c in ["application/pdf", "application/zip", "image/png", "application/octet-stream",
-                  "application/vnd.openxmlformats-officedocument.presentationml.presentation"] {
-            assert!(check_link_content_type(c).is_err(), "{c}");
-        }
-        assert!(!looks_binary("Plain article text — with “quotes” and accents é."));
-        assert!(looks_binary("PK\u{3}\u{4}\u{14}\0\u{6}\0"));
-        assert!(looks_binary(&"\u{FFFD}x".repeat(100)));
-    }
-
     #[tokio::test]
     async fn wrong_token_is_404() {
         let (app, _dir) = fixture().await;
@@ -2008,13 +2156,19 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_device_blocked_from_all_writes() {
-        let writes: [(&str, &str); 6] = [
+        let writes: [(&str, &str); 12] = [
+            ("/api/sources/s1/edit", r#"{"op":"pin"}"#),
+            ("/api/artifacts/a1/edit", r#"{"op":"delete"}"#),
+            ("/api/messages/m2/to-source", "{}"),
             ("/api/chat", r#"{"notebook_id":"nb1","content":"hi"}"#),
+            ("/api/chats/c1/rename", r#"{"title":"x"}"#),
+            ("/api/chats/c1/delete", "{}"),
             ("/api/generate", r#"{"notebook_id":"nb1","kind":"flashcards","options":{}}"#),
             ("/api/notebooks", r#"{"title":"x"}"#),
             ("/api/notebooks/nb1/rename", r#"{"title":"x"}"#),
             ("/api/notebooks/nb1/delete", "{}"),
             ("/api/notebooks/nb1/sources/text", r#"{"title":"t","text":"c"}"#),
+            ("/api/notebooks/nb1/sources/url", r#"{"url":"https://1.1.1.1/"}"#),
         ];
         for (path, body) in writes {
             let (app, _dir) = fixture().await;
@@ -2107,7 +2261,9 @@ mod tests {
 
     #[tokio::test]
     async fn chat_and_generate_enqueue_jobs() {
-        let (app, _dir) = fixture().await;
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
         let resp = app
             .clone()
             .oneshot(post_json(
@@ -2127,6 +2283,26 @@ mod tests {
         let body = body_string(resp).await;
         assert!(body.contains("\"kind\":\"chat\""));
         assert!(body.contains("\"status\":\"pending\""));
+
+        // The phone's thinking level rides along; anything unknown is dropped.
+        for (sent, kept) in [("\"high\"", Some("high")), ("\"turbo\"", None)] {
+            let resp = app
+                .clone()
+                .oneshot(post_json(
+                    &format!("/d/{FULL_KEY}/api/chat"),
+                    &format!(r#"{{"notebook_id":"nb1","content":"hi","thinking":{sent}}}"#),
+                ))
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+            let payload: String = sqlx::query_scalar("SELECT payload FROM jobs WHERE id = ?")
+                .bind(body["job_id"].as_str().unwrap())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(payload["thinking"].as_str(), kept);
+        }
 
         let resp = app
             .oneshot(post_json(
@@ -2174,6 +2350,52 @@ mod tests {
         // Already ended: nothing changes.
         let resp = app.oneshot(post_json(&cancel, "{}")).await.unwrap();
         assert!(body_string(resp).await.contains(r#""cancelled":false"#));
+    }
+
+    #[tokio::test]
+    async fn phone_links_queue_a_job_for_the_desktop() {
+        let (app, _dir) = fixture().await;
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/d/{FULL_KEY}/api/notebooks/nb1/sources/url"),
+                r#"{"url":"https://1.1.1.1/some/page?x=1"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let job_id = body["job_id"].as_str().unwrap().to_string();
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/d/{FULL_KEY}/api/jobs/{job_id}")))
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(body.contains("\"kind\":\"link\""), "{body}");
+        assert!(body.contains("\"status\":\"pending\""), "{body}");
+
+        // Private and local addresses are still refused before anything is queued.
+        for url in ["http://127.0.0.1:1420/", "http://192.168.1.1/", "file:///etc/passwd", ""] {
+            let resp = app
+                .clone()
+                .oneshot(post_json(
+                    &format!("/d/{FULL_KEY}/api/notebooks/nb1/sources/url"),
+                    &json!({ "url": url }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{url}");
+        }
+        // Unknown notebook.
+        let resp = app
+            .oneshot(post_json(
+                &format!("/d/{FULL_KEY}/api/notebooks/nope/sources/url"),
+                r#"{"url":"https://1.1.1.1/"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2308,6 +2530,289 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_takes_interactive_solo_and_custom_reports() {
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        let send = |body: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(post_json(&format!("/d/{FULL_KEY}/api/generate"), body))
+                    .await
+                    .unwrap()
+            }
+        };
+        let payload = |resp: Response| {
+            let pool = pool.clone();
+            async move {
+                let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+                let raw: String = sqlx::query_scalar("SELECT payload FROM jobs WHERE id = ?")
+                    .bind(body["job_id"].as_str().unwrap())
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+            }
+        };
+
+        // Interactive needs no topic; a long brief survives past research's 200.
+        let resp = send(r#"{"notebook_id":"nb1","kind":"interactive","options":{}}"#).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let long = "x".repeat(600);
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/d/{FULL_KEY}/api/generate"),
+                &format!(r#"{{"notebook_id":"nb1","kind":"interactive","options":{{"topic":"{long}"}}}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(payload(resp).await["options"]["topic"].as_str().unwrap().len(), 600);
+
+        // Solo is kept; an unknown or missing mode defers to the desktop's default.
+        let p = payload(send(r#"{"notebook_id":"nb1","kind":"audio","options":{"mode":"solo"}}"#).await).await;
+        assert_eq!(p["options"]["mode"], "solo");
+        let p = payload(send(r#"{"notebook_id":"nb1","kind":"audio","options":{"mode":"choir"}}"#).await).await;
+        assert_eq!(p["options"]["mode"], "");
+
+        // A custom report must say what it's for.
+        let resp = send(r#"{"notebook_id":"nb1","kind":"report","options":{"report_type":"custom","custom_prompt":"  "}}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let p = payload(
+            send(r#"{"notebook_id":"nb1","kind":"report","options":{"report_type":"custom","custom_prompt":" A glossary "}}"#).await,
+        )
+        .await;
+        assert_eq!(p["options"]["report_type"], "custom");
+        assert_eq!(p["options"]["custom_prompt"], "A glossary");
+    }
+
+    #[tokio::test]
+    async fn phone_renames_chats() {
+        let (app, _dir) = fixture().await;
+        let rename = |id: &str, title: &str| {
+            post_json(
+                &format!("/d/{FULL_KEY}/api/chats/{id}/rename"),
+                &format!(r#"{{"title":"{title}"}}"#),
+            )
+        };
+        let resp = app.clone().oneshot(rename("c1", " Better name ")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/d/{FULL_KEY}/api/notebooks/nb1/chats")))
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(body.contains(r#""title":"Better name""#), "{body}");
+        // Renaming doesn't reorder the list.
+        assert!(body.contains(r#""updated_at":200"#), "{body}");
+
+        let resp = app.clone().oneshot(rename("c1", "   ")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = app.clone().oneshot(rename("nope", "x")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // A chat in a trashed notebook is off limits.
+        let resp = app.oneshot(rename("c2", "x")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn phone_deletes_chats_through_the_desktop() {
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        // A phone reply still waiting in this chat, and one in another chat.
+        for (job, chat) in [("waiting", "c1"), ("elsewhere", "c9")] {
+            sqlx::query(
+                "INSERT INTO jobs (id, kind, notebook_id, status, payload, device_id, created_at, updated_at) \
+                 VALUES (?, 'chat', 'nb1', 'pending', ?, 'd', 1, 1)",
+            )
+            .bind(job)
+            .bind(json!({ "notebook_id": "nb1", "content": "hi", "chat_id": chat }).to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(post_json(&format!("/d/{FULL_KEY}/api/chats/c1/delete"), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let (kind, payload): (String, String) = sqlx::query_as("SELECT kind, payload FROM jobs WHERE id = ?")
+            .bind(body["job_id"].as_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "chat.delete");
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["chat_id"], "c1");
+        assert_eq!(payload["notebook_id"], "nb1");
+
+        let status = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT status FROM jobs WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(status("waiting").await, "cancelled");
+        assert_eq!(status("elsewhere").await, "pending");
+
+        let resp = app
+            .clone()
+            .oneshot(post_json(&format!("/d/{FULL_KEY}/api/chats/nope/delete"), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // A chat in a trashed notebook is off limits.
+        let resp = app
+            .oneshot(post_json(&format!("/d/{FULL_KEY}/api/chats/c2/delete"), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn phone_item_edits_queue_desktop_jobs() {
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        let send = |path: String, body: &'static str| {
+            let app = app.clone();
+            async move { app.oneshot(post_json(&format!("/d/{FULL_KEY}/api{path}"), body)).await.unwrap() }
+        };
+        let payload = |resp: Response| {
+            let pool = pool.clone();
+            async move {
+                assert_eq!(resp.status(), StatusCode::OK);
+                let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+                let (kind, raw): (String, String) = sqlx::query_as("SELECT kind, payload FROM jobs WHERE id = ?")
+                    .bind(body["job_id"].as_str().unwrap())
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(kind, "edit");
+                serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+            }
+        };
+
+        let p = payload(send("/sources/s1/edit".into(), r#"{"op":"rename","title":"  New name "}"#).await).await;
+        assert_eq!(p, json!({ "notebook_id": "nb1", "kind": "edit", "target": "source", "id": "s1", "op": "rename", "title": "New name" }));
+        let p = payload(send("/artifacts/a1/edit".into(), r#"{"op":"to-source"}"#).await).await;
+        assert_eq!((p["target"].as_str(), p["op"].as_str(), p["title"].as_str()), (Some("artifact"), Some("to-source"), Some("Pod")));
+        let p = payload(send("/messages/m2/to-source".into(), "{}").await).await;
+        assert_eq!((p["target"].as_str(), p["id"].as_str()), (Some("message"), Some("m2")));
+
+        // Refused: unknown or source-less actions, empty names, questions, trashed notebooks.
+        for (path, body, code) in [
+            ("/sources/s1/edit", r#"{"op":"explode"}"#, StatusCode::BAD_REQUEST),
+            ("/sources/s1/edit", r#"{"op":"to-source"}"#, StatusCode::BAD_REQUEST),
+            ("/artifacts/a1/edit", r#"{"op":"rename","title":"  "}"#, StatusCode::BAD_REQUEST),
+            ("/sources/s4/edit", r#"{"op":"delete"}"#, StatusCode::NOT_FOUND),
+            ("/artifacts/nope/edit", r#"{"op":"pin"}"#, StatusCode::NOT_FOUND),
+            ("/messages/m1/to-source", "{}", StatusCode::NOT_FOUND),
+            ("/messages/m3/to-source", "{}", StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(send(path.into(), body).await.status(), code, "{path} {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn notebook_lists_pinned_items_first() {
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        for sql in [
+            "UPDATE sources SET pinned = 1 WHERE id = 's3'",
+            "INSERT INTO sources (id, notebook_id, type, title, created_at) VALUES ('s0', 'nb1', 'context', 'Constitution', 9)",
+            "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at, pinned) VALUES ('a0', 'nb1', 'report', 'Old pinned', '', 1, 1)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        let resp = app.oneshot(get(&format!("/d/{FULL_KEY}/api/notebooks/nb1"))).await.unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let ids = |k: &str| nb[k].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(ids("sources"), ["s0", "s3", "s1", "s2"]);
+        assert_eq!(ids("artifacts"), ["a0", "a1"]);
+        assert_eq!(nb["artifacts"][0]["pinned"], true);
+    }
+
+    #[tokio::test]
+    async fn source_viewer_sends_what_the_ai_reads() {
+        let (app, _dir) = fixture().await;
+        let view = |id: &str| {
+            let app = app.clone();
+            let uri = format!("/d/{READ_KEY}/api/sources/{id}");
+            async move { app.oneshot(get(&uri)).await.unwrap() }
+        };
+        let json = |resp: Response| async move {
+            serde_json::from_str::<serde_json::Value>(&body_string(resp).await).unwrap()
+        };
+
+        let link = json(view("s1").await).await;
+        assert_eq!(link["text"], "Page body");
+        assert_eq!(link["url"], "https://example.com/a");
+        assert_eq!(link["image"], "");
+
+        // An image: its description, plus the picture itself.
+        let img = json(view("s2").await).await;
+        assert_eq!(img["text"], "A cat on a mat");
+        assert_eq!(img["url"], "");
+        assert!(img["image"].as_str().unwrap().starts_with("data:image/png"));
+
+        // Stored media: only the transcript, never the file.
+        let audio = json(view("s3").await).await;
+        assert_eq!(audio["text"], "The transcript");
+        assert_eq!(audio["image"], "");
+        assert!(!audio.to_string().contains("brewblob:"));
+
+        assert_eq!(view("s4").await.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn serves_the_phone_renderer() {
+        let (app, _dir) = fixture().await;
+        let resp = app.clone().oneshot(get(&format!("/d/{FULL_KEY}/"))).await.unwrap();
+        let page = body_string(resp).await;
+        assert!(!page.contains("__PHONE_ASSETS_V__"));
+        assert!(page.contains(&format!("render.js?v={}", env!("PHONE_ASSETS_V"))));
+        let resp = app.clone().oneshot(get("/assets/nope.js")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        if !RENDER_JS.is_empty() {
+            let resp = app.oneshot(get("/assets/render.js")).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers()[header::CONTENT_ENCODING], "gzip");
+        }
+    }
+
+    #[tokio::test]
+    async fn messages_carry_reasoning_when_kept() {
+        let (app, dir) = fixture().await;
+        let opts = SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        // Before the desktop made the table: still lists messages.
+        let resp = app.clone().oneshot(get(&format!("/d/{FULL_KEY}/api/chats/c1/messages"))).await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        for sql in [
+            "CREATE TABLE message_reasoning (message_id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+            "INSERT INTO message_reasoning VALUES ('m2', 'Thought it through')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        let resp = app.oneshot(get(&format!("/d/{FULL_KEY}/api/chats/c1/messages"))).await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(body["messages"][0]["reasoning"], "");
+        assert_eq!(body["messages"][1]["reasoning"], "Thought it through");
+    }
+
+    #[tokio::test]
     async fn index_served_under_device_path() {
         let (app, _dir) = fixture().await;
         let resp = app
@@ -2338,15 +2843,5 @@ mod tests {
             Some("https://wine-fords-things.trycloudflare.com".to_string())
         );
         assert_eq!(extract_tunnel_url("nothing here"), None);
-    }
-
-    #[test]
-    fn html_to_text_strips() {
-        let html = "<html><head><title>My Page</title></head><body><nav>menu</nav><h1>Hi</h1><p>Some <b>bold</b> text &amp; more.</p><script>evil()</script></body></html>";
-        let (title, text) = html_to_text(html, "fallback");
-        assert_eq!(title, "My Page");
-        assert!(text.contains("Some bold text & more."));
-        assert!(!text.contains("evil"));
-        assert!(!text.contains("menu"));
     }
 }

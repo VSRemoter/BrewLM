@@ -827,6 +827,14 @@ export function onRemoteChanges(fn: (c: RemoteChanges) => void): () => void {
   };
 }
 
+/**
+ * Tell open screens that rows changed outside them, as a pull from another
+ * device does — Sync itself, and jobs the paired phone queued (jobRunner.ts).
+ */
+export function announceChanges(c: RemoteChanges): void {
+  if (c.tables.size > 0) for (const fn of changeListeners) fn(c);
+}
+
 export function getSyncStatus(): SyncStatus {
   return status;
 }
@@ -931,7 +939,7 @@ function loop(): void {
       if (account && /HTTP (402|413)/.test(msg)) accountCheckedAt = 0; // plan or storage changed: re-check
       if (account && msg.includes("HTTP 401")) await forgetAccount("signed-out");
     }
-    if (changed.tables.size > 0) for (const fn of changeListeners) fn(changed);
+    announceChanges(changed);
     setTimeout(cycle, delay);
   };
   void cycle();
