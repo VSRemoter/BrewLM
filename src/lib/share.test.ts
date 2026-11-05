@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../platform", () => ({ platform: {} }));
 vi.mock("./db", () => ({ getDb: async () => null, uid: () => "" }));
 
-import { remapSnapshot, snapshotBlobRefs, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, type NotebookSnapshot } from "./share";
+import { MEDIA_NOT_SHARED, omitMedia, remapSnapshot, snapshotBlobRefs, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, type NotebookSnapshot } from "./share";
 
 const AUDIO = `brewblob:${"a".repeat(64)}.m4a`;
 const COVER = `brewblob:${"c".repeat(64)}.jpg`;
@@ -85,5 +85,25 @@ describe("remapSnapshot", () => {
 describe("snapshotBlobRefs", () => {
   it("lists each media file once", () => {
     expect(snapshotBlobRefs(snap()).sort()).toEqual([AUDIO, COVER, PIC].sort());
+  });
+});
+
+describe("omitMedia", () => {
+  it("marks files the owner left out and keeps the ones that came", () => {
+    const s = snap();
+    s.artifacts.push({ id: "a2", notebook_id: "nb", kind: "audio", title: "Pod", data: JSON.stringify({ audio: AUDIO, script: [{ speaker: "Alex", text: "Hi" }] }), pinned: 0, created_at: 4 });
+    const out = omitMedia(s, new Set([COVER]));
+    expect(out.notebook.cover).toBe(COVER);
+    expect(out.sources[0].content).toBe("hello");
+    expect(out.sources[1].content).toBe(MEDIA_NOT_SHARED);
+    const pod = JSON.parse(out.artifacts[1].data);
+    expect(pod.audio).toBeNull();
+    expect(pod.script).toHaveLength(1);
+    expect(out.images).toHaveLength(0);
+
+    const all = omitMedia(s, new Set([AUDIO, COVER, PIC]));
+    expect(all.sources[1].content).toBe(AUDIO);
+    expect(all.images).toHaveLength(2);
+    expect(all.artifacts[1].data).toBe(s.artifacts[1].data);
   });
 });

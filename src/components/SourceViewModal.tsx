@@ -1,6 +1,7 @@
 import { Landmark, Link2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { isMediaValue, mediaSrc } from "../lib/blobs";
+import { MEDIA_NOT_SHARED } from "../lib/share";
 import { deleteSource, updateSource } from "../lib/db";
 import { fmtItemStorage, useItemStorage } from "../lib/storage";
 import type { Source } from "../lib/types";
@@ -105,6 +106,13 @@ export default function SourceViewModal({
           <audio controls src={mediaSrc(source.content)} className="w-full" />
         ) : null}
 
+        {source.content === MEDIA_NOT_SHARED && (
+          <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-3">
+            The owner shared this notebook without its media, so only the {source.type === "image" ? "image's description" : "transcript"} is
+            here.
+          </p>
+        )}
+
         {/* media: the description/transcript is all the model ever reads */}
         {isMedia && (
           <div className="flex flex-col gap-1.5">
@@ -115,7 +123,7 @@ export default function SourceViewModal({
               <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-2">
                 {source.text}
               </div>
-            ) : !isMediaValue(source.content) ? (
+            ) : source.content === MEDIA_NOT_SHARED ? null : !isMediaValue(source.content) ? (
               <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[12px] leading-relaxed text-ink-3">
                 Nothing — this file was too large to {source.type === "image" ? "analyze" : "transcribe"}. Split or
                 compress it and add it again.

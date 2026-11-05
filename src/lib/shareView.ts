@@ -10,7 +10,7 @@
  */
 import { BLOB_PREFIX, mediaExt, putBlob } from "./blobs";
 import { getDb } from "./db";
-import { writeSharedSnapshot } from "./share";
+import { omitMedia, writeSharedSnapshot } from "./share";
 import { fromBase64Url, gunzip, MANIFEST_ID, shareFileId, shareKeys, toBase64Url, type Progress, type ShareManifest } from "./shareLinks";
 import { syncServerUrl } from "./sync";
 import { decryptBlob } from "./vaultCrypto";
@@ -76,7 +76,7 @@ export async function openSharedLink(id: string, secret: Uint8Array, onProgress?
     onProgress?.({ done: ++done, total: missing.length + 1 });
   }
 
-  const notebookId = await writeSharedSnapshot(manifest.snapshot, {
+  const notebookId = await writeSharedSnapshot(omitMedia(manifest.snapshot, new Set(manifest.files)), {
     id,
     key: toBase64Url(secret),
     version,

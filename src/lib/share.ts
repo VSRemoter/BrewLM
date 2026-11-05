@@ -16,7 +16,7 @@
  * Media stay `brewblob:` references; the files themselves travel separately
  * (`snapshotBlobRefs` lists them).
  */
-import { blobRefsIn } from "./blobs";
+import { blobRefsIn, isBlobRef } from "./blobs";
 import { getDb, uid, type LibraryImage } from "./db";
 import type { Artifact, Chat, ChatMessage, Notebook, Source, SourceChunk } from "./types";
 
@@ -121,6 +121,39 @@ export function snapshotBlobRefs(snap: NotebookSnapshot): string[] {
     ...snap.images.map((i) => i.data),
   ];
   return [...new Set(texts.flatMap(blobRefsIn))];
+}
+
+/** A shared source whose file the owner left out of the link (its text still came). */
+export const MEDIA_NOT_SHARED = "[file not included in this shared notebook]";
+
+/**
+ * A link's snapshot as the viewer stores it: files the owner left out
+ * (`included` lists the ones that came) are marked instead of pointing at
+ * files this device will never have. Sources keep their text and say so;
+ * audio overviews keep their script (played with the device's voices);
+ * chat images that didn't come are dropped, leaving their caption.
+ */
+export function omitMedia(snap: NotebookSnapshot, included: Set<string>): NotebookSnapshot {
+  const gone = (v: string) => isBlobRef(v) && !included.has(v);
+  return {
+    ...snap,
+    notebook: {
+      ...snap.notebook,
+      cover: gone(snap.notebook.cover) ? "" : snap.notebook.cover,
+      chat_bg: gone(snap.notebook.chat_bg) ? "" : snap.notebook.chat_bg,
+    },
+    sources: snap.sources.map((s) => (gone(s.content) ? { ...s, content: MEDIA_NOT_SHARED } : s)),
+    artifacts: snap.artifacts.map((a) => {
+      if (a.kind !== "audio" || !blobRefsIn(a.data).some(gone)) return a;
+      try {
+        const d = JSON.parse(a.data) as { audio?: unknown };
+        return typeof d.audio === "string" && gone(d.audio) ? { ...a, data: JSON.stringify({ ...d, audio: null }) } : a;
+      } catch {
+        return a;
+      }
+    }),
+    images: snap.images.filter((i) => !gone(i.data)),
+  };
 }
 
 /**

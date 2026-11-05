@@ -173,7 +173,10 @@ export default function ShareDialog({
           <div className="flex items-center justify-between gap-4 py-2.5">
             <span>
               <span className="block text-[12.5px] font-medium text-ink">Media files</span>
-              <span className="block text-[11.5px] text-ink-3">Audio, video, PDFs and images. Off = text only.</span>
+              <span className="block text-[11.5px] text-ink-3">
+                Images, recordings and audio overviews. Off = their text only (descriptions, transcripts, scripts); PDFs and
+                documents are always shared as text.
+              </span>
             </span>
             <Toggle checked={includeMedia} onChange={setIncludeMedia} label="Include media files" />
           </div>
