@@ -2823,7 +2823,10 @@ export default function ChatPanel({
         maxOutput: settings.maxOutput,
         signal: ctrl.signal,
         cacheKey: notebookId,
-        cacheHistory: true,
+        // Per-message excerpts sit before the history and change every turn, so
+        // a history breakpoint would never be read back, only pay the write
+        // premium on the whole prompt (seen on an 80k-token notebook).
+        cacheHistory: !retrieved,
         onUsage: (u) => {
           usage = u;
           void recordUsage("chat", settings.provider, settings.model, u);
