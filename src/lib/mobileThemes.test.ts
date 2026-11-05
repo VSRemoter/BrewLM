@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import html from "../../src-tauri/mobile.html?raw";
+import html from "../../src-tauri/mobile.js?raw";
 import { customPalette, DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
 import { RETIRED_THEMES, THEMES } from "./themes";
 
 vi.mock("./db", () => ({ setSetting: vi.fn() }));
 
-/** The phone page's theme code (src-tauri/mobile.html), run on its own. */
+/** The phone page's theme code (src-tauri/mobile.js), run on its own. */
 type PhoneTheme = { name: string; scheme: string; v: Record<string, string> };
 const code = html.slice(html.indexOf("const M_THEMES = {"), html.indexOf("function applyMobileTheme("));
 const phone = new Function(`${code}; return { M_THEMES, RETIRED_THEMES, customTheme, addCustomTheme };`)() as {

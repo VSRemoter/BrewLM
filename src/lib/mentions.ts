@@ -16,6 +16,12 @@ export interface MentionItem {
   url?: string;
 }
 
+/** A download's file name: the output's title, safe on every system. */
+export function exportName(title: string, ext: string): string {
+  const base = title.replace(/[/\\?%*:|"<>]/g, "").trim().slice(0, 60);
+  return `${base || "brewlm-output"}.${ext}`;
+}
+
 /** Flatten a saved artifact into plain text the model can read. */
 export function artifactText(a: Artifact): string | null {
   try {

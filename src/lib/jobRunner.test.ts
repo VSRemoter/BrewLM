@@ -21,6 +21,10 @@ const announceChanges = vi.fn();
 /** Chats that exist, as `id@notebook`. */
 let chats = new Set<string>();
 const QUICK_KINDS = ["link", "chat.delete", "edit"];
+/** Whether the test notebook is in the Trash. */
+let notebookTrashed = 0;
+/** The sharing server's activity log. */
+let activity: { action: string; created_at: number }[] = [];
 /** The desktop functions an edit may call, by name → args. */
 const edits: [string, unknown[]][] = [];
 const record = (name: string) => async (...a: unknown[]) => {
@@ -48,7 +52,12 @@ const fakeDb = {
     if (sql.startsWith("SELECT content FROM messages")) {
       return bind[0] === "m2" ? [{ content: "## The answer\nDetails" }] : [];
     }
+    if (sql.includes("FROM activity")) return activity.filter((a) => a.created_at > Number(bind[0]));
     if (sql.startsWith("SELECT title FROM chats WHERE id")) return [{ title: "Physics chat" }];
+    if (sql.startsWith("SELECT title, trashed_at FROM notebooks")) {
+      return bind[0] === "nb" ? [{ title: "Physics", trashed_at: notebookTrashed }] : [];
+    }
+    if (sql.startsWith("SELECT title, folder_id, starred FROM notebooks")) return [{ title: "Physics", folder_id: "", starred: 0 }];
     if (sql.startsWith("SELECT id FROM chats WHERE id")) {
       return chats.has(`${bind[0]}@${bind[1]}`) ? [{ id: bind[0] }] : [];
     }
@@ -91,6 +100,8 @@ vi.mock("./mentions", () => ({
 vi.mock("./chatTurns", () => ({
   isImageTurn: async (t: string) => t.startsWith("/image"),
   groundReply: (on: boolean) => `grounding ${on ? "on" : "off"}`,
+  moveTurn: async () => null,
+  starReply: (t: string, was: boolean) => `${was ? "unstarred" : "starred"} ${t}`,
   SUMMARIZE_RE: /^\/summarize(\s|$)/i,
 }));
 vi.mock("./db", () => ({
@@ -113,6 +124,8 @@ vi.mock("./db", () => ({
   getNotebookConstitutionOn: async () => 1,
   setNotebookGrounded: record("setNotebookGrounded"),
   touchChat: async () => {},
+  deleteNotebook: record("deleteNotebook"),
+  setNotebookStarred: record("setNotebookStarred"),
   renameChat: async () => {},
   getDb: async () => fakeDb,
   listArtifacts: async () => [],
@@ -159,6 +172,22 @@ vi.mock("./studio", () => ({ buildQuizPrompt: () => "make a quiz", REPORT_TYPE_L
 vi.mock("./audioScript", () => ({}));
 vi.mock("./tts", () => ({}));
 vi.mock("./sync", () => ({ announceChanges: (...a: unknown[]) => announceChanges(...(a as [])) }));
+vi.mock("./blobs", () => ({ mediaBlob: async () => new Blob(["%PDF"], { type: "application/pdf" }) }));
+vi.mock("./ingest", () => ({
+  ingestFiles: async (nb: string, files: File[]) => {
+    edits.push(["ingestFiles", [nb, files.map((f) => `${f.name} ${f.type}`)]]);
+    return { added: files.map((f) => ({ title: f.name })), errors: [] };
+  },
+}));
+vi.mock("./share", () => ({
+  cloneNotebook: async (...a: unknown[]) => {
+    edits.push(["cloneNotebook", a]);
+    return { id: "copy1", title: a[1] };
+  },
+}));
+vi.mock("./shareLinks", () => ({ cleanUpShares: async () => {} }));
+vi.mock("./revise", () => ({}));
+vi.mock("./studioCommands", () => ({}));
 vi.mock("./usage", () => ({
   meterTotal: () => null,
   meterUsage: () => {},
@@ -167,7 +196,7 @@ vi.mock("./usage", () => ({
 }));
 
 vi.stubGlobal("window", globalThis);
-const { startJobRunner, stopJobRunner } = await import("./jobRunner");
+const { startJobRunner, stopJobRunner, tablesForAction } = await import("./jobRunner");
 
 const quizJob = (): Job => ({
   id: "j1",
@@ -343,7 +372,7 @@ describe("phone chat commands", () => {
   afterEach(() => stopJobRunner());
 
   it("answers commands as the desktop chat does, without the chat model", async () => {
-    jobs = [chat("g", "/ground"), chat("n", "/note  Ohm's law: V = IR "), chat("m", "/model gpt-5")];
+    jobs = [chat("g", "/ground"), chat("n", "/note  Ohm's law: V = IR "), chat("m", "/model gpt-5"), chat("s", "/star")];
     startJobRunner();
     await until(() => jobs.every((j) => j.status === "done"), 12000);
     expect(calls).toHaveLength(0); // no model call
@@ -353,7 +382,87 @@ describe("phone chat commands", () => {
       "grounding off",
       "Saved “Ohm's law: V = IR” as a source — it's in Sources, and the AI can now ground answers in it.",
       "`/model` changes BrewLM on your computer — use it in the chat there. Type `/help` here to see what works from your phone.",
+      "starred Physics",
     ]);
+    expect(edits).toContainEqual(["setNotebookStarred", ["nb", true]]);
     expect(JSON.parse(jobs[0].result)).toMatchObject({ chat_id: "c1", reply: "grounding off", details: "" });
   }, 15000);
+});
+
+describe("desktop refresh after direct phone edits", () => {
+  beforeEach(() => {
+    jobs = [];
+    activity = [];
+    announceChanges.mockClear();
+  });
+  afterEach(() => stopJobRunner());
+
+  it("maps logged actions to the tables open screens reload", () => {
+    expect(tablesForAction("notebook.rename")).toEqual(["notebooks"]);
+    expect(tablesForAction("folder.delete")).toEqual(["folders", "notebooks"]);
+    expect(tablesForAction("source.text")).toEqual(["sources", "notebooks"]);
+    expect(tablesForAction("chat.rename")).toEqual(["chats"]);
+    // Jobs announce their own changes.
+    expect(tablesForAction("source.url")).toEqual([]);
+  });
+
+  it("announces edits logged after it started, once", async () => {
+    activity = [{ action: "notebook.rename", created_at: Date.now() - 60_000 }];
+    startJobRunner();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(announceChanges).not.toHaveBeenCalled(); // older than the runner
+    activity.push({ action: "chat.rename", created_at: Date.now() + 1 }, { action: "source.text", created_at: Date.now() + 2 });
+    await until(() => announceChanges.mock.calls.length > 0, 5000);
+    expect(announceChanges).toHaveBeenCalledWith({
+      tables: new Set(["chats", "sources", "notebooks"]),
+      notebookIds: new Set(),
+      chatIds: new Set(),
+    });
+    await new Promise((r) => setTimeout(r, 3200));
+    expect(announceChanges).toHaveBeenCalledTimes(1);
+  }, 10000);
+});
+
+describe("phone notebook actions", () => {
+  const op = (id: string, payload: Record<string, unknown>): Job => ({
+    id,
+    kind: "edit",
+    notebook_id: "nb",
+    status: "pending",
+    payload: JSON.stringify({ notebook_id: "nb", kind: "edit", target: "notebook", id: "nb", title: "", ...payload }),
+    result: "",
+  });
+  beforeEach(() => {
+    jobs = [];
+    edits.length = 0;
+    notebookTrashed = 0;
+  });
+  afterEach(() => stopJobRunner());
+
+  it("copies, imports and refuses as the desktop does", async () => {
+    jobs = [
+      op("t", { op: "template" }),
+      op("c", { op: "clone", title: "Physics 2" }),
+      op("f", { op: "ingest", ref: "brewblob:abc.pdf", name: "Notes.pdf", mime: "application/pdf" }),
+      op("x", { op: "delete-forever" }),
+    ];
+    startJobRunner();
+    await until(() => jobs.every((j) => j.status !== "pending" && j.status !== "running"), 8000);
+    expect(edits).toEqual([
+      ["cloneNotebook", ["nb", "Physics (copy)", { includeChats: false, includeArtifacts: false }]],
+      ["cloneNotebook", ["nb", "Physics 2", { includeChats: true }]],
+      ["ingestFiles", ["nb", ["Notes.pdf application/pdf"]]],
+    ]);
+    expect(JSON.parse(jobs[0].result)).toEqual({ id: "copy1", title: "Physics (copy)" });
+    // Delete forever only empties the Trash.
+    expect(jobs[3]).toMatchObject({ status: "error", result: "Only notebooks in the Trash can be deleted forever." });
+  });
+
+  it("deletes a trashed notebook for good", async () => {
+    notebookTrashed = 1;
+    jobs = [op("x", { op: "delete-forever" })];
+    startJobRunner();
+    await until(() => jobs[0].status === "done");
+    expect(edits).toEqual([["deleteNotebook", ["nb"]]]);
+  });
 });

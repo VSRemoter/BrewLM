@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import html from "../../src-tauri/mobile.html?raw";
+import html from "../../src-tauri/mobile.js?raw";
 import { parseMindmap, type MindNode } from "./mindmap";
 import { sandboxDoc } from "./interactive";
 
 vi.mock("./llm", () => ({ streamChat: vi.fn() }));
 
-/** A slice of the phone page's script (src-tauri/mobile.html), run on its own. */
+/** A slice of the phone page's script (src-tauri/mobile.js), run on its own. */
 function phoneCode<T>(from: string, to: string, names: string[]): T {
   const code = html.slice(html.indexOf(from), html.indexOf(to));
   const esc = (s: unknown) => String(s ?? "");

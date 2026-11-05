@@ -2,10 +2,10 @@
  * Chat commands shared by the desktop chat (ChatPanel) and chats from a paired
  * phone (jobRunner): pictures (/image /edit /remix /more), one-shot web
  * answers (/search), source finding (/fetch), the notebook toggles (/ground,
- * /constitution) and /summarize. Each turn returns the reply to save; real
+ * /constitution, /star), /move, /clone and /summarize. Each turn returns the reply to save; real
  * failures throw (an AbortError when cancelled).
  */
-import { getImage } from "./db";
+import { findFolderByName, getImage, listFolders, moveNotebookToFolder } from "./db";
 import { fetchSources, webAnswer } from "./research";
 import { encodeFetchMessage } from "./fetchList";
 import { imageRef, imageIdsIn, libraryImageAsReference, saveImageToLibrary } from "./genImage";
@@ -294,3 +294,69 @@ export const SUMMARIZE_RE = /^\/summarize(\s|$)/i;
 /** What the model gets in place of "/summarize" (the bubble keeps the command). */
 export const SUMMARIZE_PROMPT =
   "Write a clear, well-structured summary of this whole notebook: the core ideas, why they matter, and the key details worth remembering. Cover every source.";
+
+/* ------------------------- /move, /clone, /star ------------------------- */
+
+/**
+ * /move <folder> — file the notebook in a folder; "/move" alone (or "out")
+ * takes it out of its folder. Returns the reply; moved = something changed.
+ */
+export async function moveTurn(
+  text: string,
+  nb: { id: string; title: string; folderId: string }
+): Promise<{ reply: string; moved: boolean } | null> {
+  const m = /^\/move(?:\s+(["“]?)([^\n"“”]+)["”]?)?$/i.exec(text.trim());
+  if (!m) return null;
+  const raw = (m[2] ?? "").trim();
+  if (!raw || /^(out|root|home|notebooks)$/i.test(raw)) {
+    if (!nb.folderId) return { reply: `“${nb.title}” isn't in any folder — nothing to move.`, moved: false };
+    await moveNotebookToFolder(nb.id, "");
+    return { reply: `📁 Moved “${nb.title}” out of its folder to Notebooks.`, moved: true };
+  }
+  const hit = await findFolderByName(raw);
+  if (hit.status === "found") {
+    if (hit.folder.id === nb.folderId) return { reply: `“${nb.title}” is already in “${hit.folder.name}”.`, moved: false };
+    await moveNotebookToFolder(nb.id, hit.folder.id);
+    return { reply: `📁 Moved “${nb.title}” to folder “${hit.folder.name}”.`, moved: true };
+  }
+  if (hit.status === "ambiguous")
+    return {
+      reply: `“${raw}” matches several folders: ${hit.matches.map((f) => f.name).join(", ")}. Be a little more specific.`,
+      moved: false,
+    };
+  const all = await listFolders();
+  return {
+    reply: all.length
+      ? `No folder named “${raw}”. Your folders: ${all.map((f) => f.name).join(", ")}.`
+      : `No folder named “${raw}” — there are no folders yet. Create one from the homepage with “New folder”.`,
+    moved: false,
+  };
+}
+
+/**
+ * /clone "<title>" [yes|no]: the copy's title and whether to open it, or the
+ * reply explaining the format. The title MUST be in quotes, so a yes/no inside
+ * the title can't masquerade as the flag (/clone "Project yes" no).
+ */
+export function parseClone(text: string): { title: string; jump: boolean } | string {
+  const rest = text.replace(/^\/clone\s*/i, "").trim();
+  const m = /^["“]([^"“”]+)["”](?:\s+(yes|no))?$/i.exec(rest);
+  if (!m)
+    return (
+      `Wrap the copy's title in quotes, like \`/clone "My copy"\` — add \`yes\` after the quotes if you want me to take you to it. ` +
+      `Quoting matters: in \`/clone "Project yes" no\`, "yes" belongs to the title and "no" is the flag.`
+    );
+  return { title: m[1].slice(0, 80), jump: (m[2] ?? "").toLowerCase() === "yes" };
+}
+
+/** The reply once /clone made the copy. */
+export function cloneReply(from: string, name: string, jump: boolean): string {
+  return jump
+    ? `Cloned "${from}" as "${name}" — everything came along: sources, chats, and studio work. Taking you there.`
+    : `Cloned "${from}" as "${name}" — sources, chats, and studio work all included. You'll find it on the homepage.`;
+}
+
+/** The reply after /star flips the notebook's star (`wasStarred` = before). */
+export function starReply(title: string, wasStarred: boolean): string {
+  return wasStarred ? `Un-starred “${title}”.` : `Starred “${title}” — it's pinned near the top of the homepage.`;
+}

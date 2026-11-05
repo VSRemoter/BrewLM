@@ -31,28 +31,43 @@ import {
   setArtifactPinned,
   setMessageReasoning,
   setNotebookConstitutionOn,
+  setNotebookCover,
   setNotebookGrounded,
+  setNotebookStarred,
   setSourcePinned,
   sourceText,
   touchChat,
+  deleteNotebook,
   touchNotebook,
+  updateArtifact,
   updateSource,
 } from "./db";
-import { artifactText, buildMentionCatalog, resolveMentions, type MentionItem } from "./mentions";
+import { mediaBlob } from "./blobs";
+import { ingestFiles } from "./ingest";
+import { cloneNotebook } from "./share";
+import { cleanUpShares } from "./shareLinks";
+import { CONSTITUTION_TEMPLATES, CONSTITUTION_TITLE } from "./constitution";
+import { reviseOutput } from "./revise";
+import { parseStudioCommand } from "./studioCommands";
+import { artifactText, buildMentionCatalog, exportName, resolveMentions, type MentionItem } from "./mentions";
 import { complete, extractJson, isAbortError, streamChat, type StreamUsage } from "./llm";
 import {
+  cloneReply,
   constitutionTurn,
   fetchTurn,
   groundReply,
   imageTurn,
   isImageTurn,
+  moveTurn,
+  parseClone,
   searchTurn,
+  starReply,
   SUMMARIZE_PROMPT,
   SUMMARIZE_RE,
 } from "./chatTurns";
 import { stripFetchMarker } from "./fetchList";
 import { interactivePrior, pickAngle, pickFormat, shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
-import { buildPagePrompt, buildStoryboardPrompt, PAGE_SYSTEM, writePage } from "./interactive";
+import { buildPagePrompt, buildStoryboardPrompt, PAGE_SYSTEM, parseInteractive, writePage } from "./interactive";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -65,7 +80,7 @@ import {
   wholeNotebookFits,
 } from "./rag";
 import { ensureMediaText } from "./media";
-import { fetchLinkContent } from "./source";
+import { fetchLinkContent, fileToCoverDataUrl } from "./source";
 import { deepResearch } from "./research";
 import { contextBudget } from "./local";
 import { activeKey, loadSettings } from "./settings";
@@ -74,6 +89,7 @@ import {
   buildMindmapPrompt,
   buildQuizPrompt,
   buildReportPrompt,
+  REPORT_FORMATS,
   REPORT_TYPE_LABELS,
   type Amount,
   type AudioFormat,
@@ -84,7 +100,16 @@ import {
 } from "./studio";
 import { writeAudioScript } from "./audioScript";
 import { synthesizeScript } from "./tts";
-import { fmtUsageLine, meterTotal, meterUsage, newUsageMeter, recordUsage, replyCostUsd } from "./usage";
+import {
+  addOutputUsage,
+  fmtUsageLine,
+  meterTotal,
+  meterUsage,
+  newUsageMeter,
+  parseOutputUsage,
+  recordUsage,
+  replyCostUsd,
+} from "./usage";
 import { announceChanges } from "./sync";
 import type { ChatMessage, Source, Thinking } from "./types";
 
@@ -115,12 +140,47 @@ function announce(tables: string[], notebookId: string, chatId?: string | null):
 }
 
 /** Call once on app boot; safe to call again (idempotent). */
+/**
+ * What a phone edit the sharing server writes straight into the database
+ * (not through a job, so nothing here ran it) touches, by its activity-log
+ * action. Jobs announce their own changes.
+ */
+export function tablesForAction(action: string): string[] {
+  if (action.startsWith("notebook.")) return ["notebooks"];
+  if (action.startsWith("folder.")) return ["folders", "notebooks"];
+  if (action === "source.text") return ["sources", "notebooks"];
+  if (action === "chat.rename") return ["chats"];
+  return [];
+}
+
+/** Activity rows already looked at, by time. */
+let activitySeen = Date.now();
+
+/** Refresh the desktop's open screens after phone edits made straight in the database. */
+async function announcePhoneEdits(): Promise<void> {
+  const d = await getDb();
+  let rows: { action: string; created_at: number }[];
+  try {
+    rows = await d.select("SELECT action, created_at FROM activity WHERE created_at > $1 ORDER BY created_at", [
+      activitySeen,
+    ]);
+  } catch {
+    return; // no activity table: sharing has never run on this computer
+  }
+  if (rows.length === 0) return;
+  activitySeen = rows[rows.length - 1].created_at;
+  const tables = new Set(rows.flatMap((r) => tablesForAction(r.action)));
+  if (tables.size > 0) announceChanges({ tables, notebookIds: new Set(), chatIds: new Set() });
+}
+
 export function startJobRunner(): void {
   if (timer !== null) return;
   console.info("MOBILE_JOB_RUNNER_STARTED");
+  activitySeen = Date.now();
   const tick = () => {
     void drainOnce().catch((e) => console.warn("job runner:", e));
     void drainLinksOnce().catch((e) => console.warn("job runner (links):", e));
+    void announcePhoneEdits().catch(() => {});
   };
   timer = window.setInterval(tick, POLL_MS);
   // Fail anything the last run left mid-flight before draining, so the
@@ -251,6 +311,7 @@ async function runJob(
   signal: AbortSignal
 ): Promise<string> {
   if (payload.kind === undefined && typeof payload.content === "string") return runChatJob(payload as never, signal);
+  if (payload.kind === "revise") return runReviseJob(payload as never, signal);
   return runGenerateJob(payload as never, signal);
 }
 
@@ -291,10 +352,86 @@ async function runChatDeleteJob(p: { notebook_id: string; chat_id: string }): Pr
 
 interface EditJob {
   notebook_id: string;
-  target: "source" | "artifact" | "message";
+  target: "source" | "artifact" | "message" | "notebook";
   id: string;
-  op: "rename" | "pin" | "unpin" | "delete" | "to-source";
+  op: string;
   title: string;
+  /** A file the phone sent (cover, upload): its stored reference, name and type. */
+  ref?: string;
+  name?: string;
+  mime?: string;
+  /** A constitution template's id. */
+  template?: string;
+  /** A mind map's edited outline. */
+  data?: string;
+}
+
+/** A file the phone sent, from the media store, as the desktop's own pickers hand files over. */
+async function sentFile(p: EditJob): Promise<File> {
+  if (!p.ref) throw new Error("The file didn't arrive — try again.");
+  const blob = await mediaBlob(p.ref);
+  return new File([blob], p.name || "upload", { type: p.mime || blob.type });
+}
+
+/**
+ * Notebook-wide actions from the phone, with the desktop's own functions:
+ * the homepage's Delete forever, Use as template, cover picker and the
+ * clone, the Sources panel's file picker and Add constitution.
+ */
+async function runNotebookEdit(p: EditJob): Promise<string> {
+  const d = await getDb();
+  const [nb] = await d.select<{ title: string; trashed_at: number }[]>(
+    "SELECT title, trashed_at FROM notebooks WHERE id = $1",
+    [p.notebook_id]
+  );
+  if (!nb) throw new Error("That notebook is gone.");
+  switch (p.op) {
+    case "delete-forever": {
+      if (!nb.trashed_at) throw new Error("Only notebooks in the Trash can be deleted forever.");
+      await deleteNotebook(p.notebook_id);
+      void cleanUpShares();
+      announce(["notebooks"], p.notebook_id);
+      return JSON.stringify({ ok: true });
+    }
+    case "template":
+    case "clone": {
+      if (nb.trashed_at) throw new Error("Restore it from the Trash first.");
+      const copy = await cloneNotebook(
+        p.notebook_id,
+        p.title.trim() || `${nb.title} (copy)`,
+        // Use as template: sources only. Clone: everything, as /clone.
+        p.op === "template" ? { includeChats: false, includeArtifacts: false } : { includeChats: true }
+      );
+      announce(["notebooks"], copy.id);
+      return JSON.stringify({ id: copy.id, title: copy.title });
+    }
+    case "cover": {
+      await setNotebookCover(p.notebook_id, await fileToCoverDataUrl(await sentFile(p)));
+      announce(["notebooks"], p.notebook_id);
+      return JSON.stringify({ ok: true });
+    }
+    case "cover-clear": {
+      await setNotebookCover(p.notebook_id, "");
+      announce(["notebooks"], p.notebook_id);
+      return JSON.stringify({ ok: true });
+    }
+    case "constitution": {
+      const t = CONSTITUTION_TEMPLATES.find((x) => x.id === p.template) ?? CONSTITUTION_TEMPLATES[0];
+      const sources = await listSources(p.notebook_id);
+      if (sources.some((s) => s.type === "context")) throw new Error("This notebook already has a constitution.");
+      await addSource(p.notebook_id, "context", CONSTITUTION_TITLE, t.body);
+      announce(["sources"], p.notebook_id);
+      return JSON.stringify({ ok: true, title: CONSTITUTION_TITLE });
+    }
+    case "ingest": {
+      const { added, errors } = await ingestFiles(p.notebook_id, [await sentFile(p)]);
+      await touchNotebook(p.notebook_id);
+      announce(["sources", "notebooks"], p.notebook_id);
+      if (added.length === 0) throw new Error(errors[0] || "Couldn't read that file.");
+      return JSON.stringify({ added: added.map((s) => s.title), errors });
+    }
+  }
+  throw new Error(`Unknown action: notebook ${p.op}`);
 }
 
 /**
@@ -303,6 +440,7 @@ interface EditJob {
  * pin, delete), an output's "Add to sources" and a reply's "Save to Sources".
  */
 async function runEditJob(p: EditJob): Promise<string> {
+  if (p.target === "notebook") return runNotebookEdit(p);
   const d = await getDb();
   if (p.target === "source") {
     const rows = await d.select<Source[]>("SELECT * FROM sources WHERE id = $1 AND notebook_id = $2", [
@@ -322,6 +460,21 @@ async function runEditJob(p: EditJob): Promise<string> {
   if (p.target === "artifact") {
     const a = await getArtifact(p.id);
     if (!a || a.notebook_id !== p.notebook_id) throw new Error("That output is gone.");
+    if (p.op === "export") {
+      // Download, as the desktop's: a page as HTML, anything else as markdown (audio streams separately).
+      const page = a.kind === "interactive" ? parseInteractive(a.data) : null;
+      if (page) return JSON.stringify({ name: exportName(a.title, "html"), type: "text/html", text: page.html });
+      const text = artifactText(a);
+      if (!text) throw new Error("Nothing to download — this output has no readable content.");
+      return JSON.stringify({ name: exportName(a.title, "md"), type: "text/markdown", text });
+    }
+    if (p.op === "set-data") {
+      // A mind map edited on the phone: the outline, as the desktop's editor saves it.
+      if (a.kind !== "mindmap" || !p.data?.trim()) throw new Error("Only mind maps can be edited this way.");
+      await updateArtifact(a.id, p.data);
+      announce(["artifacts"], p.notebook_id);
+      return JSON.stringify({ ok: true });
+    }
     if (p.op === "to-source") {
       const text = artifactText(a);
       if (!text) throw new Error("This output has no readable text to add as a source.");
@@ -354,7 +507,20 @@ async function runEditJob(p: EditJob): Promise<string> {
 /* ---------------------------------- chat ---------------------------------- */
 
 /** Desktop chat commands that only make sense on the computer (settings, windows). */
-const DESKTOP_ONLY_COMMANDS = /^\/(model|imagemodel|researchmodel|voice|voicehost|voicecohost|provider|thinking|font|fonts|move|clone|remove|queue|return|star)(?=\s|$)/i;
+const DESKTOP_ONLY_COMMANDS = /^\/(model|imagemodel|researchmodel|voice|voicehost|voicecohost|provider|thinking|font|fonts|remove|return)(?=\s|$)/i;
+
+/** A Studio run with no options of its own (a chat command fills in what it names). */
+const BASE_GEN: GenOpts = {
+  amount: "default",
+  difficulty: "medium",
+  focus: "",
+  format: "deep-dive",
+  length: "standard",
+  mode: "",
+  report_type: "",
+  custom_prompt: "",
+  topic: "",
+};
 
 /**
  * A chat command from the phone, answered as the desktop chat answers it (the
@@ -373,9 +539,69 @@ async function runChatCommand(
     constitutionOn: boolean;
     imageId?: string | null;
     signal: AbortSignal;
+    /** Set when the reply should take the phone to another notebook (/clone … yes). */
+    open?: string;
   }
 ): Promise<string | null> {
   const settings = await loadSettings();
+  const d = await getDb();
+  const [nb] = await d.select<{ title: string; folder_id: string; starred: number }[]>(
+    "SELECT title, folder_id, starred FROM notebooks WHERE id = $1",
+    [c.notebookId]
+  );
+  // Studio commands (/quiz hard 10 …): parsed as the desktop parses them, with
+  // its Studio Defaults; a notice first, then the result, as its chat shows them.
+  if (/^\/(flashcards|quiz|mindmap|audio|report|research)(\s|$)/i.test(text)) {
+    const parsed = parseStudioCommand(text, settings);
+    if (typeof parsed === "string") return parsed;
+    await addMessage(c.chatId, c.notebookId, "assistant", parsed.notice);
+    announce(["messages"], c.notebookId, c.chatId);
+    const cmd = parsed.cmd;
+    const job =
+      cmd.tool === "audio"
+        ? {
+            kind: "audio",
+            options: cmd.opts
+              ? { ...BASE_GEN, format: cmd.opts.format, length: cmd.opts.length, mode: cmd.opts.mode, focus: cmd.opts.description }
+              : { ...BASE_GEN, format: settings.defAudioFormat, length: settings.defAudioLength, mode: settings.defAudioMode },
+          }
+        : cmd.tool === "research"
+          ? { kind: "research", options: { ...BASE_GEN, topic: cmd.title } }
+          : cmd.tool === "report"
+            ? { kind: "report", options: { ...BASE_GEN, prompt: cmd.prompt, label: cmd.label } }
+            : { kind: cmd.tool, options: { ...BASE_GEN, prompt: cmd.prompt } };
+    try {
+      return await runGenerateJob({ notebook_id: c.notebookId, ...job }, c.signal);
+    } catch (e) {
+      if (isAbortError(e) || c.signal.aborted) throw e;
+      return `${parsed.title} failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  if (nb && /^\/star(\s|$)/i.test(text)) {
+    await setNotebookStarred(c.notebookId, !nb.starred);
+    announce(["notebooks"], c.notebookId);
+    return starReply(nb.title, !!nb.starred);
+  }
+  if (nb) {
+    const moved = await moveTurn(text, { id: c.notebookId, title: nb.title, folderId: nb.folder_id });
+    if (moved) {
+      if (moved.moved) announce(["notebooks"], c.notebookId);
+      return moved.reply;
+    }
+  }
+  if (nb && /^\/clone(\s|$)/i.test(text)) {
+    const parsed = parseClone(text);
+    if (typeof parsed === "string") return parsed;
+    try {
+      // An exact copy, as the desktop's /clone makes it.
+      const clone = await cloneNotebook(c.notebookId, parsed.title, { includeChats: true });
+      announce(["notebooks"], clone.id);
+      if (parsed.jump) c.open = clone.id;
+      return cloneReply(nb.title, clone.title, parsed.jump);
+    } catch {
+      return "Couldn't clone this notebook — please try again.";
+    }
+  }
   if (await isImageTurn(text, settings)) {
     return imageTurn({
       text,
@@ -488,7 +714,7 @@ async function runChatJob(p: {
   let answer: string;
   /** The usage line under the reply ("9.8k in · 637 out · $0.0042"), as /details shows it. */
   let details = "";
-  const command = await runChatCommand(text, {
+  const ctx = {
     notebookId: p.notebook_id,
     chatId,
     history,
@@ -498,7 +724,9 @@ async function runChatJob(p: {
     constitutionOn,
     imageId: p.image_id,
     signal,
-  });
+    open: undefined as string | undefined,
+  };
+  const command = await runChatCommand(text, ctx);
   if (command !== null) {
     throwIfAborted(signal);
     answer = command;
@@ -623,7 +851,60 @@ async function runChatJob(p: {
     await renameChat(chatId, first || "Mobile chat");
   }
   announce(["chats", "messages", "notebooks"], p.notebook_id, chatId);
-  return JSON.stringify({ chat_id: chatId, reply: answer, details });
+  return JSON.stringify({ chat_id: chatId, reply: answer, details, open: ctx.open ?? null });
+}
+
+/* --------------------------------- revise --------------------------------- */
+
+/**
+ * Revise from the phone: the desktop's Revise (src/lib/revise.ts), grounded
+ * in the notebook's sources as its Studio panel grounds it. Replace updates
+ * the output in place; a copy is saved as "<title> (revised)".
+ */
+async function runReviseJob(
+  p: { notebook_id: string; artifact_id: string; note: string; replace: boolean; re_audio: boolean },
+  signal: AbortSignal
+): Promise<string> {
+  const settings = await loadSettings();
+  const key = activeKey(settings);
+  if (!key) throw new Error("Add an API key in Settings on the desktop first.");
+  const a = await getArtifact(p.artifact_id);
+  if (!a || a.notebook_id !== p.notebook_id) throw new Error("That output is gone.");
+  if (a.kind === "drawing") throw new Error("Drawings aren't revised by the AI.");
+  void setJobProgress("Revising…");
+  const sources = await listSources(p.notebook_id);
+  await ensureIndexed(sources, settings);
+  const budget = contextBudget(settings);
+  const retrieved = await rankChunks(sources, p.note, settings, budget.sources);
+  const meter = newUsageMeter();
+  const data = await reviseOutput({
+    a,
+    note: p.note,
+    reAudio: p.re_audio,
+    settings,
+    system: buildSystemPrompt(sources, [], retrieved.length ? retrieved : undefined, { budget }),
+    request: {
+      provider: settings.provider,
+      apiKey: key,
+      model: settings.model,
+      thinking: settings.thinking,
+      maxOutput: settings.maxOutput,
+      temperature: settings.temperature ?? undefined,
+      signal,
+      onUsage: (u) => {
+        void recordUsage("studio", settings.provider, settings.model, u);
+        meterUsage(meter, settings.provider, settings.model, u);
+      },
+    },
+  });
+  throwIfAborted(signal);
+  if (p.replace) {
+    await updateArtifact(a.id, data, addOutputUsage(parseOutputUsage(a.usage), meterTotal(meter)));
+  } else {
+    await addArtifact(p.notebook_id, a.kind, `${a.title} (revised)`, data, meterTotal(meter));
+  }
+  announce(["artifacts"], p.notebook_id);
+  return p.replace ? `Revised “${a.title}”.` : `Saved “${a.title} (revised)” to Studio.`;
 }
 
 /* -------------------------------- generate -------------------------------- */
@@ -641,6 +922,13 @@ interface GenOpts {
   report_type: string;
   custom_prompt: string;
   topic: string;
+  /** Ground on just these sources (as the desktop's customize dialogs); none = all. */
+  source_ids?: string[];
+  /** The output's name; empty = the tool's own. */
+  title?: string;
+  /** A Studio command from chat: its prompt, built by parseStudioCommand (and a report's name). */
+  prompt?: string;
+  label?: string;
 }
 
 async function runGenerateJob(p: {
@@ -652,9 +940,14 @@ async function runGenerateJob(p: {
   const key = activeKey(settings);
   if (!key) throw new Error("Add an API key in Settings on the desktop first.");
 
-  // Studio ignores the constitution — its tools carry their own settings.
-  const grounding = (await listSources(p.notebook_id)).filter(isTextSource);
   const o = p.options;
+  // Studio ignores the constitution — its tools carry their own settings.
+  // A pick of sources scopes it, as the desktop's customize dialogs do.
+  const textSources = (await listSources(p.notebook_id)).filter(isTextSource);
+  const picked = o.source_ids?.length ? textSources.filter((s) => o.source_ids!.includes(s.id)) : [];
+  if (o.source_ids?.length && picked.length === 0) throw new Error("Those sources are gone — pick again.");
+  const grounding = picked.length ? picked : textSources;
+  const named = (o.title ?? "").trim();
   /** What this output cost to make, saved with it. */
   const meter = newUsageMeter();
 
@@ -675,7 +968,7 @@ async function runGenerateJob(p: {
     await addArtifact(
       p.notebook_id,
       "research",
-      o.topic,
+      named || o.topic,
       JSON.stringify({
         md: outcome.markdown,
         sources: (outcome.pages.length > 0 ? outcome.pages : outcome.hits.slice(0, 12)).map(
@@ -686,7 +979,7 @@ async function runGenerateJob(p: {
     );
     await touchNotebook(p.notebook_id);
     announce(["artifacts", "sources", "notebooks"], p.notebook_id);
-    return `Saved research “${o.topic}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
+    return `Saved research “${named || o.topic}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
   }
 
   if (grounding.length === 0 || !grounding.some(isTextSource)) {
@@ -760,7 +1053,7 @@ async function runGenerateJob(p: {
   let done: string;
   switch (p.kind) {
     case "flashcards": {
-      const base = buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
+      const base = o.prompt || buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
       const raw = await ask(vary("flashcards", base), { exhaustive: true, query: base });
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
@@ -770,7 +1063,7 @@ async function runGenerateJob(p: {
       break;
     }
     case "quiz": {
-      const base = buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
+      const base = o.prompt || buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
       const raw = await ask(vary("quiz", base), { exhaustive: true, query: base });
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
@@ -780,7 +1073,7 @@ async function runGenerateJob(p: {
       break;
     }
     case "mindmap": {
-      const base = buildMindmapPrompt(o.focus);
+      const base = o.prompt || buildMindmapPrompt(o.focus);
       const raw = await ask(vary("mindmap", base), { exhaustive: true, query: base });
       data = raw
         .replace(/```(?:markdown|md)?\s*\n?/g, "")
@@ -791,9 +1084,23 @@ async function runGenerateJob(p: {
       break;
     }
     case "report": {
-      const type = o.report_type as "study-guide" | "briefing-doc" | "analysis" | "custom";
-      title = type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[type];
-      const doc = (await ask(buildReportPrompt(type, o.custom_prompt), { exhaustive: true })).trim();
+      // The desktop's two report menus: the customize dialog's types
+      // (REPORT_TYPE_LABELS, custom included) and the quick formats
+      // (REPORT_FORMATS: summary, FAQ, timeline…). A chat command brings its own.
+      let prompt: string;
+      if (o.prompt) {
+        prompt = o.prompt;
+        title = o.label || "Report";
+      } else if (o.report_type === "custom" || o.report_type in REPORT_TYPE_LABELS) {
+        const type = o.report_type as "study-guide" | "briefing-doc" | "analysis" | "custom";
+        title = type === "custom" ? "Custom report" : REPORT_TYPE_LABELS[type];
+        prompt = buildReportPrompt(type, o.custom_prompt);
+      } else {
+        const f = REPORT_FORMATS.find((x) => x.id === o.report_type) ?? REPORT_FORMATS[0];
+        title = f.label;
+        prompt = f.prompt;
+      }
+      const doc = (await ask(prompt, { exhaustive: true })).trim();
       if (doc.length < 30) throw new Error("The report came back empty — try again.");
       data = doc;
       done = `Saved report “${title}” to Studio.`;
@@ -872,6 +1179,10 @@ async function runGenerateJob(p: {
       throw new Error(`Unknown generation kind: ${p.kind}`);
   }
   throwIfAborted(signal);
+  if (named) {
+    done = done.replace(`“${title}”`, `“${named}”`);
+    title = named;
+  }
   await addArtifact(p.notebook_id, p.kind as never, title, data, meterTotal(meter));
   await touchNotebook(p.notebook_id);
   announce(["artifacts", "notebooks"], p.notebook_id);

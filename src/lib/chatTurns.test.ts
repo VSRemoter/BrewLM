@@ -9,7 +9,9 @@ vi.mock("./rag", () => ({}));
 vi.mock("./local", () => ({}));
 vi.mock("./usage", () => ({}));
 
-const { constitutionTurn, groundReply, isImageTurn, stripOuterQuotes } = await import("./chatTurns");
+const { cloneReply, constitutionTurn, groundReply, isImageTurn, parseClone, starReply, stripOuterQuotes } = await import(
+  "./chatTurns"
+);
 
 describe("shared chat commands", () => {
   it("/constitution flips, sets or explains", () => {
@@ -41,5 +43,18 @@ describe("shared chat commands", () => {
     // On an image model, plain messages draw; commands still don't.
     expect(await isImageTurn("a fox", s("openrouter", "img/flux"))).toBe(true);
     expect(await isImageTurn("/search foxes", s("openrouter", "img/flux"))).toBe(false);
+  });
+
+  it("/clone needs a quoted title; yes opens the copy", () => {
+    expect(parseClone('/clone "Physics yes" no')).toEqual({ title: "Physics yes", jump: false });
+    // Phones type curly quotes.
+    expect(parseClone("/clone “Exam prep” yes")).toEqual({ title: "Exam prep", jump: true });
+    expect(parseClone("/clone Exam prep")).toContain("Wrap the copy's title in quotes");
+    expect(cloneReply("A", "B", true)).toContain("Taking you there");
+  });
+
+  it("/star says which way it went", () => {
+    expect(starReply("Physics", false)).toContain("Starred “Physics”");
+    expect(starReply("Physics", true)).toBe("Un-starred “Physics”.");
   });
 });

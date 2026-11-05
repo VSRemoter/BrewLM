@@ -46,10 +46,8 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addMessage,
-  findFolderByName,
   listFolders,
   listReasoning,
-  moveNotebookToFolder,
   renameChat,
   setNotebookConstitutionOn,
   setNotebookGrounded,
@@ -84,12 +82,16 @@ import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
 import { ensureMediaText } from "../lib/media";
 import {
+  cloneReply,
   constitutionTurn,
   fetchTurn,
   groundReply,
   imageTurn,
   isImageTurn,
+  moveTurn,
+  parseClone,
   searchTurn,
+  starReply,
   stripOuterQuotes,
   SUMMARIZE_PROMPT,
   SUMMARIZE_RE,
@@ -1833,38 +1835,10 @@ export default function ChatPanel({
    * outcome as an assistant message. Returns true when `text` was a command.
    */
   const runMoveCommand = async (text: string): Promise<boolean> => {
-    const m = /^\/move(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
-    if (!m) return false;
-    const raw = (m[2] ?? "").trim();
-    let reply: string;
-    if (!raw || /^(out|root|home|notebooks)$/i.test(raw)) {
-      if (!notebookFolderId) {
-        reply = `“${notebookTitle}” isn't in any folder — nothing to move.`;
-      } else {
-        await moveNotebookToFolder(notebookId, "");
-        onNotebookMoved();
-        reply = `📁 Moved “${notebookTitle}” out of its folder to Notebooks.`;
-      }
-    } else {
-      const hit = await findFolderByName(raw);
-      if (hit.status === "found") {
-        if (hit.folder.id === notebookFolderId) {
-          reply = `“${notebookTitle}” is already in “${hit.folder.name}”.`;
-        } else {
-          await moveNotebookToFolder(notebookId, hit.folder.id);
-          onNotebookMoved();
-          reply = `📁 Moved “${notebookTitle}” to folder “${hit.folder.name}”.`;
-        }
-      } else if (hit.status === "ambiguous") {
-        reply = `“${raw}” matches several folders: ${hit.matches.map((f) => f.name).join(", ")}. Be a little more specific.`;
-      } else {
-        const all = await listFolders();
-        reply = all.length
-          ? `No folder named “${raw}”. Your folders: ${all.map((f) => f.name).join(", ")}.`
-          : `No folder named “${raw}” — there are no folders yet. Create one from the homepage with “New folder”.`;
-      }
-    }
-    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", reply);
+    const r = await moveTurn(text, { id: notebookId, title: notebookTitle, folderId: notebookFolderId });
+    if (!r) return false;
+    if (r.moved) onNotebookMoved();
+    const replyMsg = await addMessage(chatId as string, notebookId, "assistant", r.reply);
     setMsgs((prev) => [...prev, replyMsg]);
     return true;
   };
@@ -2161,21 +2135,14 @@ export default function ChatPanel({
     // The title MUST be in quotes, so a yes/no inside the title can't masquerade
     // as the jump flag (e.g. /clone "Project yes" no → title "Project yes", stays).
     if (/^\/clone(\s|$)/i.test(text)) {
-      const rest = text.replace(/^\/clone\s*/i, "").trim();
-      const m = /^"([^"]+)"(?:\s+(yes|no))?$/i.exec(rest);
+      const parsed = parseClone(text);
       let reply: string;
-      if (!m) {
-        reply =
-          `Wrap the copy's title in quotes, like \`/clone "My copy"\` — add \`yes\` after the quotes if you want me to take you to it. ` +
-          `Quoting matters: in \`/clone "Project yes" no\`, "yes" belongs to the title and "no" is the flag.`;
+      if (typeof parsed === "string") {
+        reply = parsed;
       } else {
-        const title = m[1].slice(0, 80);
-        const jump = (m[2] ?? "").toLowerCase() === "yes";
         try {
-          const name = await onCloneNotebook(title, jump);
-          reply = jump
-            ? `Cloned "${notebookTitle}" as "${name}" — everything came along: sources, chats, and studio work. Taking you there.`
-            : `Cloned "${notebookTitle}" as "${name}" — sources, chats, and studio work all included. You'll find it on the homepage.`;
+          const name = await onCloneNotebook(parsed.title, parsed.jump);
+          reply = cloneReply(notebookTitle, name, parsed.jump);
         } catch {
           reply = "Couldn't clone this notebook — please try again.";
         }
@@ -2283,9 +2250,7 @@ export default function ChatPanel({
         chatId,
         notebookId,
         "assistant",
-        notebookStarred
-          ? `Un-starred “${notebookTitle}”.`
-          : `Starred “${notebookTitle}” — it's pinned near the top of the homepage.`
+        starReply(notebookTitle, !!notebookStarred)
       );
       setMsgs((prev) => [...prev, replyMsg]);
       onChatActivity?.(chatId, isFirst ? text : undefined);

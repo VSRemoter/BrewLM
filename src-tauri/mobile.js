@@ -1,0 +1,2015 @@
+/* The paired phone page's code (mobile.html), served at /assets/phone.js so
+   the page can run under a strict Content-Security-Policy (server.rs). */
+"use strict";
+const $app = document.getElementById('app');
+const SEG = location.pathname.split('/').filter(Boolean);
+const MODE = SEG[0];                 // 'p' (pairing) | 'd' (device)
+const CRED = SEG[1] || '';
+const BASE = `/${MODE}/${CRED}`;
+const KEY_STORE = 'brewlm-device-key';
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function apiRaw(path, opts) {
+  const r = await fetch(`${BASE}/api${path}`, opts);
+  return r;
+}
+async function api(path, opts) {
+  const r = await apiRaw(path, opts);
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).error || msg; } catch {}
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
+  return r.json();
+}
+let SCOPE = 'full'; // device's access level, from /preferences ('read' hides all write UI)
+function applyScopeClass() { document.body.classList.toggle('readonly', SCOPE !== 'full'); }
+
+/* A request that changes nothing (a download), allowed on read-only devices too. */
+const postRead = (path, body) => api(path, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
+});
+
+const post = (path, body) => {
+  if (SCOPE !== 'full') return Promise.reject(new Error('This device is read-only.'));
+  return api(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {})
+  });
+};
+
+/* ------------------------------- theming -------------------------------- */
+// Same themes, names and order as the desktop's picker (src/lib/themes.ts).
+const M_THEMES = {
+  brew:     { name:'Brew',           scheme:'light', v:{ bg:'#fff8f3', panel:'#ffffff', panel2:'#f9ece2', edge:'#f3e1d4', ink:'#2b1709', ink2:'#76503e', ink3:'#8d6e5a', accent:'#f2541b' } },
+  original: { name:'Cream',          scheme:'light', v:{ bg:'#fafafa', panel:'#ffffff', panel2:'#eeeeee', edge:'#e5e5e5', ink:'#171717', ink2:'#525252', ink3:'#747474', accent:'#171717' } },
+  rose:     { name:'Rose Latte',     scheme:'light', v:{ bg:'#fdf1f6', panel:'#ffffff', panel2:'#f8e2ec', edge:'#f2d3e1', ink:'#3f1a2d', ink2:'#814660', ink3:'#97677f', accent:'#ec4899' } },
+  lilac:    { name:'Lavender Latte', scheme:'light', v:{ bg:'#f5f3fc', panel:'#ffffff', panel2:'#ece7fa', edge:'#e4ddf6', ink:'#2d2342', ink2:'#5e5184', ink3:'#796e98', accent:'#7c5cff' } },
+  copper:   { name:'Espresso',       scheme:'dark',  v:{ bg:'#14100d', panel:'#1c1713', panel2:'#28211b', edge:'#382e26', ink:'#f5eee6', ink2:'#bcae9f', ink3:'#918372', accent:'#e8873f' } },
+  midnight: { name:'Dark Roast',     scheme:'dark',  v:{ bg:'#0e0e11', panel:'#17171b', panel2:'#202025', edge:'#2b2b31', ink:'#f4f4f5', ink2:'#a2a2ab', ink3:'#81818a', accent:'#f4f4f5' } },
+  wine:     { name:'Coffee Cherry',  scheme:'dark',  v:{ bg:'#140f13', panel:'#1c161b', panel2:'#2a1f27', edge:'#3a2c35', ink:'#f6eff3', ink2:'#bcabb5', ink3:'#93808b', accent:'#e0607e' } },
+  forest:   { name:'Matcha',         scheme:'dark',  v:{ bg:'#0f1412', panel:'#161d1a', panel2:'#1f2824', edge:'#2b3631', ink:'#eef2ec', ink2:'#aab5ad', ink3:'#7b8880', accent:'#4cc38a' } },
+  ocean:    { name:'Cold Brew',      scheme:'dark',  v:{ bg:'#0b111c', panel:'#121a28', panel2:'#1b2434', edge:'#273347', ink:'#edf2f9', ink2:'#a9b4c5', ink3:'#77849b', accent:'#4ea6ff' } },
+  // Custom Blend joins once the desktop sends its colors (customTheme()).
+};
+// Themes the desktop retired, and where their fans went.
+const RETIRED_THEMES = { velvet:'custom', sunset:'wine', candy:'lilac' };
+const THEME_KEY = 'brewlm-mobile-theme';
+/* Thinking effort for this phone's chats (sent with each message; the desktop
+   uses it for that reply). Kept on the phone, like the theme. */
+const THINK_KEY = 'brewlm-mobile-thinking';
+const THINK_LEVELS = [
+  ['auto', 'Auto', "Each model's own default"],
+  ['low', 'Low', 'Brief — faster and cheaper'],
+  ['medium', 'Medium', 'Balanced'],
+  ['high', 'High', 'Longest — best for hard questions'],
+];
+function getThinking() {
+  let v = null;
+  try { v = localStorage.getItem(THINK_KEY); } catch {}
+  return THINK_LEVELS.some(l => l[0] === v) ? v : 'auto';
+}
+const BRAIN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg>';
+/* Wire the brain button inside `wrap`: toggles the menu, saves the pick. */
+function mountThinking(wrap) {
+  const btn = wrap.querySelector('.think');
+  const paint = () => {
+    const cur = getThinking();
+    const label = THINK_LEVELS.find(l => l[0] === cur)[1];
+    btn.innerHTML = BRAIN_SVG + (cur === 'auto' ? '' : `<span>${label}</span>`);
+    btn.classList.toggle('set', cur !== 'auto');
+    btn.setAttribute('aria-label', `Thinking effort: ${label}`);
+  };
+  const close = () => {
+    wrap.querySelector('.think-menu')?.remove();
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+  };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  btn.onclick = () => {
+    if (wrap.querySelector('.think-menu')) return close();
+    const cur = getThinking();
+    const menu = document.createElement('div');
+    menu.className = 'think-menu'; menu.setAttribute('role', 'menu');
+    menu.innerHTML = '<p class="hd">Thinking effort</p>' + THINK_LEVELS.map(([id, name, desc]) =>
+      `<button role="menuitemradio" aria-checked="${id === cur}" data-level="${id}">
+        <span class="ck">${id === cur ? '✓' : ''}</span>
+        <span><span class="nm">${name}</span><span class="ds">${desc}</span></span></button>`).join('');
+    menu.onclick = (e) => {
+      const b = e.target.closest('[data-level]');
+      if (!b) return;
+      try { localStorage.setItem(THINK_KEY, b.dataset.level); } catch {}
+      paint(); close();
+    };
+    wrap.appendChild(menu);
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+  };
+  paint();
+}
+let currentTheme = 'brew';
+
+/* Custom Blend, derived from the desktop's picks the same way it does
+   (src/lib/customTheme.ts): surfaces blend background and text, and any
+   text or accent too faint to read is nudged until it passes. */
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const rgbHex = c => '#' + c.map(v => Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, '0')).join('');
+const mixHex = (a, b, t) => { const [x, y] = [hexRgb(a), hexRgb(b)]; return rgbHex(x.map((v, i) => v + (y[i] - v) * t)); };
+const lum = h => {
+  const [r, g, b] = hexRgb(h).map(v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrastOf = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+const darkHex = h => lum(h) < 0.18;
+function readableOn(color, bg, ratio) {
+  if (contrastOf(color, bg) >= ratio) return color;
+  const target = darkHex(bg) ? '#ffffff' : '#000000';
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (contrastOf(mixHex(color, target, mid), bg) >= ratio) hi = mid; else lo = mid;
+  }
+  return mixHex(color, target, hi);
+}
+function customTheme({ bg, text, accent }) {
+  const dark = darkHex(bg);
+  const panel = dark ? mixHex(bg, text, 0.04) : mixHex(bg, '#ffffff', 0.7);
+  const tone = t => mixHex(panel, text, t);
+  const hover = tone(dark ? 0.1 : 0.07);
+  const ink = readableOn(text, hover, 4.5);
+  const pop = readableOn(accent || text, panel, 3);
+  const onAccent = contrastOf(bg, pop) >= 4.5 ? bg
+    : contrastOf('#000000', pop) >= contrastOf('#ffffff', pop) ? '#000000' : '#ffffff';
+  return { name:'Custom Blend', scheme: dark ? 'dark' : 'light', v:{
+    bg, panel, panel2: hover, edge: tone(dark ? 0.22 : 0.16), ink,
+    ink2: readableOn(mixHex(ink, panel, 0.25), hover, 4.5),
+    ink3: readableOn(mixHex(ink, panel, 0.4), hover, 4.5),
+    accent: pop, onAccent,
+  } };
+}
+const HEX = /^#[0-9a-f]{6}$/i;
+function addCustomTheme(c) {
+  if (c && HEX.test(c.bg) && HEX.test(c.text))
+    M_THEMES.custom = customTheme({ bg: c.bg, text: c.text, accent: HEX.test(c.accent) ? c.accent : '' });
+}
+
+function applyMobileTheme(id, persist) {
+  id = RETIRED_THEMES[id] ?? id;
+  const t = M_THEMES[id] || M_THEMES.brew;
+  currentTheme = M_THEMES[id] ? id : 'brew';
+  const root = document.documentElement;
+  for (const [k, val] of Object.entries({ onAccent: t.v.bg, ...t.v }))
+    root.style.setProperty(k === 'onAccent' ? '--on-accent' : `--${k}`, val);
+  root.style.colorScheme = t.scheme;
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', t.v.bg);
+  if (persist) try { localStorage.setItem(THEME_KEY, currentTheme); } catch {}
+  document.querySelectorAll('.tdot').forEach(d =>
+    d.classList.toggle('active', d.dataset.theme === currentTheme));
+}
+function buildThemeDock() {
+  const dock = document.createElement('div');
+  dock.className = 'themes';
+  dock.id = 'themedock';
+  for (const [id, t] of Object.entries(M_THEMES)) {
+    const dot = document.createElement('button');
+    dot.className = 'tdot';
+    dot.dataset.theme = id;
+    dot.title = t.name;
+    dot.setAttribute('aria-label', t.name);
+    dot.style.backgroundColor = t.v.accent;
+    dot.onclick = () => applyMobileTheme(id, true);
+    dock.appendChild(dot);
+  }
+  document.body.appendChild(dock);
+}
+/* The desktop's preferences the phone follows (theme, Studio Defaults). */
+let PREFS = {};
+
+async function initTheme() {
+  // The desktop's theme, plus Custom Blend's colors so that theme can be offered here too.
+  let desktop = null;
+  if (MODE === 'd') {
+    try {
+      PREFS = await api('/preferences');
+      const { theme, scope, custom } = PREFS;
+      if (scope) { SCOPE = scope; applyScopeClass(); }
+      addCustomTheme(custom);
+      desktop = theme;
+    } catch {}
+  }
+  buildThemeDock();
+  const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
+  const pick = [saved, desktop].map(id => RETIRED_THEMES[id] ?? id).find(id => id && M_THEMES[id]);
+  applyMobileTheme(pick || 'brew', false);
+}
+
+/* -------------------------------- markdown ------------------------------ */
+function md(src) {
+  if (!src) return '';
+  let html = esc(src);
+  html = html.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n+/, '')}</code></pre>`);
+  const lines = html.split('\n');
+  let out = '', list = null;
+  const closeList = () => { if (list) { out += `</${list}>`; list = null; } };
+  for (let line of lines) {
+    if (line.startsWith('<pre>')) { closeList(); out += line + '\n'; continue; }
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)/))) { closeList(); out += `<h${m[1].length}>${m[2]}</h${m[1].length}>\n`; continue; }
+    if ((m = line.match(/^\s*-\s+(.*)/))) { if (list !== 'ul') { closeList(); out += '<ul>'; list = 'ul'; } out += `<li>${m[1]}</li>`; continue; }
+    if ((m = line.match(/^\s*\d+\.\s+(.*)/))) { if (list !== 'ol') { closeList(); out += '<ol>'; list = 'ol'; } out += `<li>${m[1]}</li>`; continue; }
+    closeList();
+    if (line.trim() === '') continue;
+    if (line.startsWith('&gt;')) { out += `<blockquote>${line.slice(4).trim()}</blockquote>\n`; continue; }
+    if (/^-{3,}$/.test(line.trim())) { out += '<hr>'; continue; }
+    out += `<p>${line}</p>\n`;
+  }
+  closeList();
+  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  // images before links (![alt](url) contains [alt](url)); brewimg: = desktop image library
+  out = out.replace(/!\[([^\]]*)\]\(brewimg:([a-zA-Z0-9-]+)\)/g,
+    (_, alt, id) => `<img class="gen-img" alt="${alt}" loading="lazy" src="${BASE}/api/images/${id}">`);
+  out = out.replace(/!\[([^\]]*)\]\((data:image\/[a-zA-Z0-9.+-]+;base64,[^)\s]+)\)/g,
+    '<img class="gen-img" alt="$1" src="$2">');
+  out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return out;
+}
+
+const fmtDate = (ms) => new Date(Number(ms)).toLocaleDateString(undefined,
+  { month: 'short', day: 'numeric' });
+
+/* -------------------------------- pairing ------------------------------- */
+function renderPairing(error = '') {
+  document.getElementById('themedock')?.classList.add('hidden');
+  $app.innerHTML = `
+    <div class="pair-wrap">
+      <div class="brand" style="justify-content:center"><div class="dot"></div><h1>BrewLM</h1></div>
+      <p style="color:var(--ink2);font-size:14.5px">Enter the 6-digit PIN shown next to the QR code<br>in BrewLM → Settings on your Mac.</p>
+      <form id="pinform">
+        <input class="field pin" id="pin" inputmode="numeric" autocomplete="one-time-code"
+               maxlength="6" pattern="[0-9]{6}" placeholder="••••••" required>
+        ${error ? `<p style="color:var(--bad);font-size:13px">${esc(error)}</p>` : ''}
+        <button class="btn btn-primary" style="width:100%" type="submit">Pair this device</button>
+      </form>
+      <p style="color:var(--ink3);font-size:12px;margin-top:18px">This link works once per QR session.<br>Your phone will only ever talk to your Mac.</p>
+    </div>`;
+  document.getElementById('pinform').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pin = document.getElementById('pin').value.trim();
+    try {
+      const r = await post('/pair', { pin });
+      localStorage.setItem(KEY_STORE, r.device_key);
+      location.replace(`/d/${r.device_key}/`);
+    } catch (err) {
+      renderPairing(err.message === 'Wrong PIN.' ? 'Wrong PIN — check the desktop and try again.'
+        : err.message);
+    }
+  });
+}
+
+/* ------------------------------ app shell ------------------------------- */
+function shell(inner, title, opts = {}) {
+  $app.className = opts.chat ? 'in-chat' : '';
+  document.getElementById('themedock')?.classList.toggle('hidden', !!opts.chat);
+  $app.innerHTML = `
+    <div class="brand"><div class="dot"></div><h1>${esc(title || 'BrewLM')}</h1>${MODE === 'd' && SCOPE !== 'full' ? '<span class="ro-pill">Read-only</span>' : ''}</div>
+    ${inner}`;
+}
+
+async function guardDevice() {
+  try {
+    const p = await api('/preferences');
+    if (p.scope) { SCOPE = p.scope; applyScopeClass(); }
+    return true;
+  } catch (e) {
+    if (e.status === 401 || e.status === 403 || e.status === 404) {
+      localStorage.removeItem(KEY_STORE);
+      shell(`<p class="err">This device is no longer paired.<br>Please pair again from BrewLM → Settings → Pair your phone.</p>`);
+      return false;
+    }
+    return true; // transient server hiccup: keep going
+  }
+}
+
+/* ------------------------------ shared sheets ----------------------------- */
+/* A form in a sheet: fields [{ key, label, value, area? }]; save(values) does
+   the work (throw to keep the sheet open with the message). */
+function formSheet(root, title, fields, save, saveLabel = 'Save') {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>${esc(title)}</h3>
+    ${fields.map(f => `<label class="flabel">${esc(f.label)}</label>${f.area
+      ? `<textarea class="field" data-f="${f.key}" rows="3" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
+      : `<input class="field" data-f="${f.key}" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}">`}`).join('')}
+    <button class="btn btn-primary" id="f-save">${esc(saveLabel)}</button>
+    <button class="btn" id="f-cancel">Cancel</button>
+  </div></div>`;
+  root.querySelector('#f-cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelector('[data-f]')?.focus();
+  const go = root.querySelector('#f-save');
+  go.onclick = async () => {
+    const values = {};
+    root.querySelectorAll('[data-f]').forEach(el => values[el.dataset.f] = el.value.trim());
+    go.disabled = true; go.textContent = 'Working…';
+    try { await save(values); close(); }
+    catch (e) { alert(e.message); go.disabled = false; go.textContent = saveLabel; }
+  };
+}
+
+/* A file from the phone to the computer (body = the file), then the job the
+   desktop runs on it; resolves with the job's result. */
+async function sendFile(path, file, maxSeconds = 300) {
+  if (SCOPE !== 'full') throw new Error('This device is read-only.');
+  if (file.size > 60 * 1024 * 1024) throw new Error(`${file.name} is over 60 MB — add it from BrewLM on your computer.`);
+  const r = await apiRaw(path, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) },
+    body: file,
+  });
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).error || msg; } catch {}
+    throw new Error(msg);
+  }
+  const { job_id } = await r.json();
+  const job = await pollJob(job_id, maxSeconds);
+  if (job.status !== 'done') throw new Error(job.result || `Couldn't use ${file.name}.`);
+  return JSON.parse(job.result || '{}');
+}
+
+/* Ask for one file (or several), then hand them over. */
+function pickFiles(accept, multiple) {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = accept; input.multiple = !!multiple;
+    input.onchange = () => resolve([...(input.files || [])]);
+    input.click();
+  });
+}
+
+/* Save a file to the phone (Files / Downloads). */
+function saveFile(name, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+
+/* --------------------------------- home --------------------------------- */
+let homeNotebooks = null;
+let homeFolders = [];
+let homeTrash = 0;
+/* What Home shows: 'all', a folder id, or 'trash'. Kept for the session. */
+let homeView = 'all';
+/* Sort, as the desktop's homepage offers it (starred notebooks always first). Kept on the phone. */
+const SORT_KEY = 'brewlm-mobile-sort';
+const SORTS = {
+  'date-desc': ['Most recent', (a, b) => b.updated_at - a.updated_at],
+  'date-asc': ['Least recent', (a, b) => a.updated_at - b.updated_at],
+  'name-asc': ['Name A–Z', (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true })],
+  'name-desc': ['Name Z–A', (a, b) => b.title.localeCompare(a.title, undefined, { sensitivity: 'base', numeric: true })],
+};
+const getSort = () => { try { const v = localStorage.getItem(SORT_KEY); return SORTS[v] ? v : 'date-desc'; } catch { return 'date-desc'; } };
+
+async function loadHome() {
+  const r = await api('/notebooks');
+  homeNotebooks = r.notebooks; homeFolders = r.folders || []; homeTrash = r.trash || 0;
+  if (homeView !== 'all' && homeView !== 'trash' && !homeFolders.some(f => f.id === homeView)) homeView = 'all';
+  if (homeView === 'trash' && !homeTrash) homeView = 'all'; // emptied: back to everything
+}
+
+async function renderHome() {
+  shell(`
+    <div class="toolbar">
+      <input class="search" id="q" type="search" placeholder="Search notebooks…" autocomplete="off">
+      <button class="btn" id="sortbtn" title="Sort" aria-label="Sort notebooks">⇅</button>
+      <button class="btn write-only" id="newnb" title="New notebook" aria-label="New notebook">＋</button>
+    </div>
+    <div class="chips" id="folders"></div>
+    <div id="list"><p class="empty">Loading notebooks…</p></div>
+    <div id="sheetroot"></div>`);
+  const $list = document.getElementById('list');
+  const $q = document.getElementById('q');
+  const root = document.getElementById('sheetroot');
+  document.getElementById('newnb').onclick = () => formSheet(root, 'New notebook', [
+    { key: 'title', label: 'Title' }, { key: 'description', label: 'Description (optional)', area: true },
+  ], async (v) => {
+    if (!v.title) throw new Error('Give it a title.');
+    const nb = await post('/notebooks', { title: v.title, description: v.description });
+    // Made inside a folder: it lives there.
+    if (homeView !== 'all' && homeView !== 'trash') await post(`/notebooks/${encodeURIComponent(nb.id)}/move`, { folder_id: homeView });
+    await refresh();
+  }, 'Create');
+  document.getElementById('sortbtn').onclick = () => {
+    const cur = getSort();
+    actionSheetLocal(root, 'Sort notebooks', Object.entries(SORTS).map(([k, [label]]) => ({
+      label: (k === cur ? '✓ ' : '') + label,
+      run: () => { try { localStorage.setItem(SORT_KEY, k); } catch {} paint(); },
+    })));
+  };
+
+  const refresh = async () => { await loadHome(); paint(); };
+
+  const paintFolders = () => {
+    const el = document.getElementById('folders');
+    const folder = homeFolders.find(f => f.id === homeView);
+    el.innerHTML = `
+      <span class="chip ${homeView === 'all' ? 'active' : ''}" data-view="all">All</span>
+      ${homeFolders.map(f => `<span class="chip ${homeView === f.id ? 'active' : ''}" data-view="${esc(f.id)}">📁 ${esc(f.name)}</span>`).join('')}
+      <span class="chip write-only" data-newfolder>＋ Folder</span>
+      ${homeTrash ? `<span class="chip ${homeView === 'trash' ? 'active' : ''}" data-view="trash">🗑 Trash · ${homeTrash}</span>` : ''}
+      ${folder ? `<span class="chip write-only" data-foldermenu>${esc(folder.name)} ⋯</span>` : ''}`;
+    el.querySelectorAll('[data-view]').forEach(c => c.onclick = () => { homeView = c.dataset.view; paint(); });
+    el.querySelector('[data-newfolder]').onclick = () => formSheet(root, 'New folder', [{ key: 'name', label: 'Name' }], async (v) => {
+      if (!v.name) throw new Error('Give it a name.');
+      const f = await post('/folders', { name: v.name });
+      homeView = f.id;
+      await refresh();
+    }, 'Create');
+    const fm = el.querySelector('[data-foldermenu]');
+    if (fm) fm.onclick = () => actionSheetLocal(root, folder.name, [
+      { label: 'Rename folder', run: () => formSheet(root, 'Rename folder', [{ key: 'name', label: 'Name', value: folder.name }], async (v) => {
+        if (!v.name) throw new Error('Give it a name.');
+        await post(`/folders/${encodeURIComponent(folder.id)}/rename`, { name: v.name });
+        await refresh();
+      }) },
+      { label: 'Delete folder', danger: true,
+        confirm: `“${folder.name}” will be deleted. The notebooks inside it aren't — they move back to the homepage.`,
+        run: async () => { await post(`/folders/${encodeURIComponent(folder.id)}/delete`); homeView = 'all'; await refresh(); } },
+    ]);
+  };
+
+  const paint = async () => {
+    if (!homeNotebooks) return;
+    paintFolders();
+    $q.parentElement.hidden = homeView === 'trash';
+    if (homeView === 'trash') return paintTrash();
+    const q = ($q.value || '').trim().toLowerCase();
+    let rows = homeView === 'all' ? homeNotebooks : homeNotebooks.filter(nb => nb.folder_id === homeView);
+    if (q) rows = rows.filter(nb => nb.title.toLowerCase().includes(q) || (nb.description || '').toLowerCase().includes(q));
+    const cmp = SORTS[getSort()][1];
+    rows = [...rows].sort((a, b) => (b.starred - a.starred) || cmp(a, b));
+    if (!rows.length) {
+      $list.innerHTML = `<p class="empty">${q ? `No notebooks match “${esc($q.value.trim())}”.` : homeView === 'all' ? 'No notebooks yet.' : 'No notebooks in this folder yet.'}</p>`;
+      return;
+    }
+    const folderName = id => homeFolders.find(f => f.id === id)?.name;
+    $list.innerHTML = rows.map(nb => `
+      <button class="card nb-card has-menu" data-id="${esc(nb.id)}">
+        ${nb.cover_v ? `<img class="cover" alt="" loading="lazy" src="${BASE}/api/notebooks/${encodeURIComponent(nb.id)}/cover?v=${esc(nb.cover_v)}">` : ''}
+        <span class="nb-text">
+          <h3>${nb.starred ? '<span class="star" aria-label="Starred">★</span> ' : ''}${esc(nb.title)}</h3>
+          ${nb.description ? `<p>${esc(nb.description)}</p>` : ''}
+          <span class="date">Updated ${fmtDate(nb.updated_at)}${homeView === 'all' && folderName(nb.folder_id) ? ` · 📁 ${esc(folderName(nb.folder_id))}` : ''}</span>
+        </span>
+        <span class="menu write-only" data-menu="${esc(nb.id)}">⋯</span>
+      </button>`).join('');
+    $list.querySelectorAll('.card').forEach(c =>
+      c.addEventListener('click', (e) => {
+        if (e.target.closest('[data-menu]')) return notebookActions(c.dataset.id, root, refresh);
+        location.hash = '#nb/' + encodeURIComponent(c.dataset.id);
+      }));
+  };
+
+  const paintTrash = async () => {
+    $list.innerHTML = '<p class="empty">Loading the Trash…</p>';
+    let rows = [];
+    try { rows = (await api('/trash')).notebooks; } catch (e) { $list.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+    if (!rows.length) { $list.innerHTML = '<p class="empty">The Trash is empty.</p>'; return; }
+    $list.innerHTML = `<p class="empty">Notebooks here can be restored, or deleted for good.</p>` + rows.map(nb => `
+      <div class="card trash-card">
+        <h3>${esc(nb.title)}</h3>
+        <span class="date">Trashed ${fmtDate(nb.trashed_at)}</span>
+        <div class="write-only" style="margin-top:8px">
+          <button class="btn" data-restore="${esc(nb.id)}">Restore</button>
+          <button class="btn btn-danger" data-forever="${esc(nb.id)}">Delete forever</button>
+        </div>
+      </div>`).join('');
+    $list.querySelectorAll('[data-restore]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { await post(`/notebooks/${encodeURIComponent(b.dataset.restore)}/restore`); await refresh(); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    });
+    $list.querySelectorAll('[data-forever]').forEach(b => b.onclick = async () => {
+      const nb = rows.find(x => x.id === b.dataset.forever);
+      if (!confirm(`“${nb.title}” will be deleted for good, with its sources, chats and Studio outputs. This can't be undone.`)) return;
+      b.disabled = true; b.textContent = 'Deleting…';
+      try { await runEdit(`/notebooks/${encodeURIComponent(nb.id)}/op`, { op: 'delete-forever' }); await refresh(); }
+      catch (e) { alert(e.message); b.disabled = false; b.textContent = 'Delete forever'; }
+    });
+  };
+
+  $q.addEventListener('input', paint);
+  try { await loadHome(); paint(); }
+  catch (e) { $list.innerHTML = `<p class="err">${esc(e.message)}<br>Is BrewLM still running on your computer?</p>`; }
+}
+
+/* A sheet of actions that run here ({ label, danger?, confirm?, run }). */
+function actionSheetLocal(root, title, actions) {
+  actionSheet(root, title, actions, () => {});
+}
+
+/* The ⋯ menu on a notebook: as the desktop's homepage offers. */
+function notebookActions(id, root, refresh) {
+  const nb = (homeNotebooks || []).find(n => n.id === id);
+  if (!nb) return;
+  const path = `/notebooks/${encodeURIComponent(id)}`;
+  actionSheet(root, nb.title, [
+    { label: nb.starred ? 'Unstar' : 'Star (pins to the top)', run: () => post(`${path}/star`, { starred: !nb.starred }) },
+    { label: 'Edit details', run: () => { formSheet(root, 'Edit notebook', [
+      { key: 'title', label: 'Title', value: nb.title },
+      { key: 'description', label: 'Description', value: nb.description, area: true },
+    ], async (v) => {
+      if (!v.title) throw new Error('Give it a title.');
+      await post(`${path}/details`, { title: v.title, description: v.description });
+      await refresh();
+    }); return false; } },
+    { label: 'Move to folder…', run: () => {
+      actionSheetLocal(root, `Move “${nb.title}”`, [
+        ...(nb.folder_id ? [{ label: 'Out of its folder', run: async () => { await post(`${path}/move`, { folder_id: '' }); await refresh(); } }] : []),
+        ...homeFolders.filter(f => f.id !== nb.folder_id).map(f => ({
+          label: `📁 ${f.name}`, run: async () => { await post(`${path}/move`, { folder_id: f.id }); await refresh(); },
+        })),
+        { label: '＋ New folder…', run: () => { formSheet(root, 'New folder', [{ key: 'name', label: 'Name' }], async (v) => {
+          if (!v.name) throw new Error('Give it a name.');
+          const f = await post('/folders', { name: v.name });
+          await post(`${path}/move`, { folder_id: f.id });
+          await refresh();
+        }, 'Create and move'); return false; } },
+      ]);
+      return false;
+    } },
+    { label: nb.cover_v ? 'Change cover…' : 'Add a cover…', run: async () => {
+      const [file] = await pickFiles('image/*', false);
+      if (!file) return false;
+      await sendFile(`${path}/cover`, file, 120);
+    } },
+    ...(nb.cover_v ? [{ label: 'Remove cover', run: () => runEdit(`${path}/op`, { op: 'cover-clear' }) }] : []),
+    { label: 'Use as template', run: async () => {
+      const r = JSON.parse(await runEdit(`${path}/op`, { op: 'template' }));
+      alert(`Made “${r.title}” with the same sources (no chats or Studio outputs).`);
+    } },
+    { label: 'Clone…', run: () => { formSheet(root, 'Clone notebook', [
+      { key: 'title', label: "The copy's title", value: `${nb.title} (copy)` },
+    ], async (v) => {
+      await runEdit(`${path}/op`, { op: 'clone', title: v.title || `${nb.title} (copy)` });
+      await refresh();
+    }, 'Clone'); return false; } },
+    { label: 'Move to Trash', danger: true, confirm: `Move “${nb.title}” to the Trash? You can restore it from there.`,
+      run: () => post(`${path}/delete`, {}) },
+  ], refresh);
+}
+
+/* ------------------------------ notebook view ---------------------------- */
+const nbState = {}; // id -> {tab, chatId}
+
+async function renderNotebook(id) {
+  const st = nbState[id] || (nbState[id] = { tab: 'chat', chatId: null });
+  shell('<p class="empty">Loading…</p>');
+  let nb;
+  try { nb = await api(`/notebooks/${encodeURIComponent(id)}`); }
+  catch (e) { return shell(`<p class="err">${esc(e.message)}</p>`); }
+
+  const tabs = `<div class="tabs">
+    ${['chat', 'studio', 'sources'].map(t =>
+      `<div class="tab ${st.tab === t ? 'active' : ''}" data-tab="${t}">${t === 'chat' ? 'Chat' : t === 'studio' ? 'Studio' : 'Sources'}</div>`).join('')}
+  </div>`;
+  const header = `<button class="back" data-home>‹ All notebooks</button>
+    <h2 style="margin:0 0 2px;font-size:19px">${esc(nb.title)}</h2>`;
+
+  shell(`${header}${tabs}<div id="pane"></div>`, nb.title, { chat: st.tab === 'chat' });
+  if (st.tab !== 'chat') document.getElementById('composer')?.remove();
+  $app.querySelectorAll('.tab').forEach(t => t.onclick = () => { st.tab = t.dataset.tab; renderNotebook(id); });
+  $app.querySelector('[data-home]').onclick = () => { location.hash = ''; };
+
+  const pane = document.getElementById('pane');
+  if (st.tab === 'chat') renderChatTab(pane, nb, st);
+  else if (st.tab === 'studio') renderStudioTab(pane, nb, st);
+  else renderSourcesTab(pane, nb, st);
+}
+
+/* ------------------------------ rich replies ------------------------------ */
+/* Replies and documents are drawn by the desktop's own renderer
+   (/assets/render.js: markdown, tables, LaTeX math, SVG drawings, /fetch
+   cards), so they look as they do on the computer. md() above stands in if
+   it didn't load. */
+const ASSETS_V = '__PHONE_ASSETS_V__';
+const renderer = () => window.BrewRender || null;
+function rich(src) {
+  const r = renderer();
+  if (!r) return md(src);
+  try { return r.renderMarkdown(src || ''); } catch { return md(src); }
+}
+let mermaidLoad = null;
+function loadMermaid() {
+  mermaidLoad ??= new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = `/assets/mermaid.js?v=${ASSETS_V}`;
+    s.onload = () => {
+      // As the desktop sets it up (src/lib/mermaid.ts).
+      window.mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'strict', fontFamily: 'inherit' });
+      ok(window.mermaid);
+    };
+    s.onerror = () => { mermaidLoad = null; fail(new Error('Diagrams are unavailable.')); };
+    document.head.appendChild(s);
+  });
+  return mermaidLoad;
+}
+let mmdSeq = 0;
+/* After rich(): library pictures get their address, diagrams get drawn. */
+async function hydrate(root) {
+  root.querySelectorAll('img[data-brewimg]').forEach(img => {
+    if (!img.getAttribute('src')) img.src = `${BASE}/api/images/${encodeURIComponent(img.dataset.brewimg)}`;
+    img.loading = 'lazy';
+  });
+  const blocks = [...root.querySelectorAll('.mermaid-block:not([data-hydrated])')];
+  if (!blocks.length) return;
+  blocks.forEach(b => b.dataset.hydrated = '1');
+  let mermaid;
+  try { mermaid = await loadMermaid(); }
+  catch { blocks.forEach(b => b.classList.add('mermaid-error')); return; }
+  for (const el of blocks) {
+    try {
+      const { svg } = await mermaid.render(`pm-mmd-${mmdSeq++}`, (el.textContent || '').trim());
+      el.innerHTML = svg;
+      el.classList.add('mermaid-done');
+    } catch { el.classList.add('mermaid-error'); }
+  }
+}
+
+/* ------------------------- commands and @mentions ------------------------- */
+/* What the "/" picker offers on the phone. The first group runs on the
+   computer exactly as in its chat; the rest are handled here. */
+const PHONE_COMMANDS = [
+  ['/search', '<question>', 'Answer from the web, with links'],
+  ['/fetch', '<what to learn>', 'Find web sources to add'],
+  ['/image', '[16:9] <prompt>', 'Make a picture'],
+  ['/edit', '<change>', 'Change the latest picture'],
+  ['/remix', '<idea>', 'A new picture in its style'],
+  ['/more', '', 'More like the latest picture'],
+  ['/summarize', '', 'Summarize the whole notebook'],
+  ['/note', '<text>', 'Save text as a source'],
+  ['/url', '<link>', 'Add a web page as a source'],
+  ['/ground', '', 'Turn source grounding on or off'],
+  ['/constitution', '[on|off]', "Use or ignore the notebook's constitution"],
+  ['/flashcards', '[compact|more] [easy|hard] [focus]', 'Make flashcards'],
+  ['/quiz', '[compact|more] [easy|hard] [focus]', 'Make a quiz'],
+  ['/mindmap', '[focus]', 'Make a mind map'],
+  ['/audio', '[brief|debate|critique] [short|long] [solo] [focus]', 'Make an audio overview'],
+  ['/report', '[summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]', 'Write a report'],
+  ['/research', '<topic>', 'Run deep research'],
+  ['/queue', '<prompt or command>', 'Run it when the current reply finishes'],
+  ['/star', '', 'Star or unstar this notebook'],
+  ['/move', '<folder>', 'File this notebook in a folder'],
+  ['/clone', '"<title>" [yes]', 'Copy this notebook (yes: open the copy)'],
+  ['/new', '', 'Start a new chat'],
+  ['/rename', '<title>', 'Rename this chat'],
+  ['/clear', '', 'Delete this chat'],
+  ['/details', '[on|off]', 'Show tokens and cost under replies'],
+  ['/theme', '[name]', "Change this phone's colors"],
+  ['/help', '', 'What works from your phone'],
+];
+const HELP_MD = `**Chat commands on your phone**
+
+${PHONE_COMMANDS.map(([c, a, d]) => `- \`${c}${a ? ' ' + a : ''}\` — ${d}`).join('\n')}
+
+Type **@** to point a question at a source or Studio output. Model, voice and other settings are changed in BrewLM on your computer.`;
+
+/* Shows tokens and cost under replies made on this phone (/details). Kept on the phone. */
+const DETAILS_KEY = 'brewlm-mobile-details';
+const detailsOn = () => { try { return localStorage.getItem(DETAILS_KEY) === 'on'; } catch { return false; } };
+/* The usage line of the latest reply, until another chat is opened (the desktop keeps them in memory too). */
+let lastDetails = null;
+
+/* Wire the "/" and "@" pickers to a composer textarea. */
+function mountPicker(ta, row, nb) {
+  const pick = document.createElement('div');
+  pick.className = 'pick'; pick.hidden = true;
+  row.appendChild(pick);
+  const mentionables = () => [
+    ...nb.sources.map(s => ({ title: s.title, kind: s.type === 'context' ? 'constitution' : s.type })),
+    ...nb.artifacts.filter(a => a.kind !== 'drawing').map(a => ({ title: a.title, kind: a.kind })),
+  ];
+  const update = () => {
+    const caret = ta.selectionStart ?? ta.value.length;
+    const before = ta.value.slice(0, caret);
+    let items = [];
+    const slash = /^\/(\w*)$/.exec(before);
+    const at = /(^|\s)@([^@\n]*)$/.exec(before);
+    if (slash) {
+      items = PHONE_COMMANDS.filter(c => c[0].slice(1).startsWith(slash[1].toLowerCase()))
+        .map(([c, a, d]) => ({ label: c + (a ? ' ' + a : ''), desc: d, insert: c + ' ', from: 0 }));
+    } else if (at) {
+      const q = at[2].toLowerCase();
+      items = mentionables().filter(m => m.title.toLowerCase().includes(q)).slice(0, 8)
+        .map(m => ({ label: '@' + m.title, desc: m.kind, insert: '@' + m.title + ' ', from: caret - at[2].length - 1 }));
+    }
+    pick.hidden = !items.length;
+    pick.innerHTML = items.map((it, i) =>
+      `<button type="button" data-pick="${i}"><span class="pl">${esc(it.label)}</span><span class="pd">${esc(it.desc)}</span></button>`).join('');
+    pick.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+      const it = items[Number(b.dataset.pick)];
+      const end = ta.selectionStart ?? ta.value.length;
+      ta.value = ta.value.slice(0, it.from) + it.insert + ta.value.slice(end);
+      const pos = it.from + it.insert.length;
+      ta.focus(); ta.setSelectionRange(pos, pos);
+      ta.dispatchEvent(new Event('input'));
+    });
+  };
+  ta.addEventListener('input', update);
+  ta.addEventListener('click', update);
+  ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ta) pick.hidden = true; }, 150));
+  return { hide: () => { pick.hidden = true; } };
+}
+
+/* -------------------------------- chat tab ------------------------------ */
+async function renderChatTab(pane, nb, st) {
+  pane.innerHTML = '<p class="empty">Loading chat…</p>';
+  let chats = [];
+  try { chats = (await api(`/notebooks/${encodeURIComponent(nb.id)}/chats`)).chats; }
+  catch (e) { pane.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  if (!chats.find(c => c.id === st.chatId)) st.chatId = chats[0]?.id ?? null;
+
+  // The five most recent, plus the open one if it's older; the rest live in "All chats".
+  const shown = chats.slice(0, 5);
+  const open = chats.find(c => c.id === st.chatId);
+  if (open && !shown.includes(open)) shown.push(open);
+  const chatBar = `<div class="chips">
+    ${shown.map(c => `<span class="chip ${c.id === st.chatId ? 'active' : ''}" data-chat="${esc(c.id)}">${esc(c.title)}</span>`).join('')}
+    <span class="chip write-only" data-newchat>＋ New chat</span>
+    ${chats.length ? `<span class="chip" data-allchats>All chats · ${chats.length}</span>` : ''}
+  </div>`;
+  pane.innerHTML = `${chatBar}<div id="msgs"></div><div id="sheetroot"></div>`;
+  pane.querySelectorAll('[data-chat]').forEach(el => el.onclick = () => { st.chatId = el.dataset.chat; renderNotebook(nb.id); });
+  pane.querySelector('[data-newchat]').onclick = () => { st.chatId = null; renderMsgs(); };
+  const all = pane.querySelector('[data-allchats]');
+  if (all) all.onclick = () => chatsSheet(pane.querySelector('#sheetroot'), nb, st, chats);
+
+  const $msgs = pane.querySelector('#msgs');
+  let sending = false;
+  /* The picture an image action picked, for the /edit or /remix being typed. */
+  let pendingImage = null;
+
+  /* A /fetch reply: cards to open or add, as on the desktop. */
+  function fetchCards(list) {
+    const r = renderer();
+    const have = new Set(nb.sources.filter(s => s.url).map(s => r.urlKey(s.url)));
+    return `<div class="fetch"><p class="fq">Sources found for “${esc(list.query)}”</p>
+      ${list.items.map((it, i) => {
+        const added = have.has(r.urlKey(it.url));
+        return `<div class="fcard">
+          <a class="ft" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer">${esc(it.title)}</a>
+          <span class="fm">${esc(r.siteOf(it.url))} · ${esc(it.kind)}</span>
+          ${it.why ? `<span class="fw">${esc(it.why)}</span>` : ''}
+          <button class="btn write-only" data-fadd="${i}" ${added ? 'disabled' : ''}>${added ? 'Added' : 'Add to sources'}</button>
+        </div>`;
+      }).join('')}
+      <button class="btn write-only" data-faddall>Add all</button></div>`;
+  }
+  function wireFetch(el, list) {
+    const add = async (b) => {
+      const it = list.items[Number(b.dataset.fadd)];
+      if (b.disabled) return;
+      b.disabled = true; b.textContent = 'Adding…';
+      try {
+        const { job_id } = await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url: it.url });
+        const job = await pollJob(job_id, 120);
+        if (job.status !== 'done') throw new Error(job.result || "Couldn't read that link.");
+        nb.sources.push({ ...JSON.parse(job.result || '{}'), url: it.url, type: 'link' });
+        b.textContent = 'Added';
+      } catch (e) { b.disabled = false; b.textContent = 'Add to sources'; alert(e.message); }
+    };
+    el.querySelectorAll('[data-fadd]').forEach(b => b.onclick = () => add(b));
+    const allBtn = el.querySelector('[data-faddall]');
+    if (allBtn) allBtn.onclick = async () => {
+      allBtn.disabled = true;
+      for (const b of el.querySelectorAll('[data-fadd]:not(:disabled)')) await add(b);
+      allBtn.disabled = false;
+    };
+  }
+
+  function botHtml(m) {
+    const list = renderer()?.parseFetchMessage(m.content);
+    const think = m.reasoning
+      ? `<details class="reasoning"><summary>Reasoning</summary><div class="body-md">${rich(m.reasoning)}</div></details>` : '';
+    return `<div class="msg bot" data-mid="${esc(m.id)}">${think}<div class="body-md">${list ? fetchCards(list) : rich(m.content)}</div>${
+      m.content.trim()
+        ? `<button class="save-src write-only" data-save="${esc(m.id)}" ${savedReplies.has(m.id) ? 'disabled' : ''}>${
+            savedReplies.has(m.id) ? 'Saved to Sources' : 'Save to Sources'}</button>` : ''}</div>`;
+  }
+
+  async function renderMsgs() {
+    if (!st.chatId) { $msgs.innerHTML = `<p class="empty">${SCOPE !== 'full' ? 'Chats appear here — pick an existing one above.' : 'Say something to start a new chat — answers cite your sources. Type / for commands, @ to point at a source.'}</p>`; return; }
+    let msgs = [];
+    try { msgs = (await api(`/chats/${encodeURIComponent(st.chatId)}/messages`)).messages; }
+    catch (e) { $msgs.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+    $msgs.innerHTML = msgs.length ? msgs.map(m => m.role === 'user'
+      ? `<div class="msg user"><div class="body-md">${esc(m.content)}</div></div>`
+      : botHtml(m)).join('') : '<p class="empty">No messages yet.</p>';
+    // /details: the latest reply's tokens and cost.
+    const bots = $msgs.querySelectorAll('.msg.bot');
+    if (detailsOn() && lastDetails?.chatId === st.chatId && lastDetails.text && bots.length)
+      bots[bots.length - 1].insertAdjacentHTML('beforeend', `<p class="details">${esc(lastDetails.text)}</p>`);
+    msgs.forEach(m => {
+      const list = m.role === 'assistant' && renderer()?.parseFetchMessage(m.content);
+      if (list) wireFetch($msgs.querySelector(`[data-mid="${CSS.escape(m.id)}"]`), list);
+    });
+    await hydrate($msgs);
+    // Picture actions, as the desktop shows on hover.
+    $msgs.querySelectorAll('.msg.bot img[data-brewimg]').forEach(img => {
+      const id = img.dataset.brewimg;
+      img.insertAdjacentHTML('afterend', `<div class="img-acts write-only">
+        <button data-iact="edit" data-img="${esc(id)}">Edit</button>
+        <button data-iact="remix" data-img="${esc(id)}">Remix</button>
+        <button data-iact="more" data-img="${esc(id)}">More like this</button></div>`);
+    });
+    $msgs.querySelectorAll('[data-iact]').forEach(b => b.onclick = () => {
+      if (b.dataset.iact === 'more') return send('/more', b.dataset.img);
+      pendingImage = b.dataset.img;
+      ta.value = `/${b.dataset.iact} `;
+      ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+    $msgs.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Saving…';
+      try {
+        await runEdit(`/messages/${encodeURIComponent(b.dataset.save)}/to-source`);
+        savedReplies.add(b.dataset.save);
+        b.textContent = 'Saved to Sources';
+      } catch (e) { b.disabled = false; b.textContent = "Couldn't save — try again"; }
+    });
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  await renderMsgs();
+
+  let composer = document.getElementById('composer');
+  if (composer) composer.remove();
+  composer = document.createElement('div');
+  composer.className = 'composer write-only'; composer.id = 'composer';
+  composer.innerHTML = `<div class="row">
+    <textarea rows="1" placeholder="Ask, or type / for commands" id="cta"></textarea>
+    <div class="think-wrap"><button class="think" type="button" aria-haspopup="menu" aria-expanded="false"
+      title="Thinking effort"></button></div>
+    <button id="csend">Send</button></div>`;
+  document.body.appendChild(composer);
+  mountThinking(composer.querySelector('.think-wrap'));
+  const ta = composer.querySelector('#cta');
+  const btn = composer.querySelector('#csend');
+  const picker = mountPicker(ta, composer.querySelector('.row'), nb);
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(110, ta.scrollHeight) + 'px'; });
+
+  /* A note from this phone, not saved in the chat. */
+  const note = (markdown) => {
+    $msgs.querySelector('p.empty')?.remove();
+    $msgs.insertAdjacentHTML('beforeend', `<div class="msg bot note"><div class="body-md">${rich(markdown)}</div></div>`);
+    window.scrollTo(0, document.body.scrollHeight);
+  };
+
+  /* Commands this page handles itself. True when handled. */
+  async function localCommand(text) {
+    const m = /^\/(\w+)(?:\s+([\s\S]*))?$/.exec(text);
+    if (!m) return false;
+    const cmd = m[1].toLowerCase();
+    const arg = (m[2] || '').trim();
+    if (cmd === 'help') { note(HELP_MD); return true; }
+    if (cmd === 'new') { st.chatId = null; await renderNotebook(nb.id); return true; }
+    if (cmd === 'details') {
+      const on = arg === 'on' ? true : arg === 'off' ? false : !detailsOn();
+      try { localStorage.setItem(DETAILS_KEY, on ? 'on' : 'off'); } catch {}
+      note(on ? 'Details **on** — tokens and cost show under replies made on this phone. (`/details` toggles this.)'
+        : 'Details **off**. (`/details` toggles this.)');
+      return true;
+    }
+    if (cmd === 'theme') {
+      const want = arg.toLowerCase();
+      const id = Object.keys(M_THEMES).find(k => k === want || M_THEMES[k].name.toLowerCase() === want);
+      if (!id) {
+        note(`${arg ? `There's no “${esc(arg)}” theme. ` : ''}Themes: ${Object.values(M_THEMES).map(t => `**${t.name}**`).join(', ')} — e.g. \`/theme Cold Brew\`.`);
+      } else { applyMobileTheme(id, true); note(`Theme: **${M_THEMES[id].name}** (on this phone).`); }
+      return true;
+    }
+    if (cmd === 'rename') {
+      const t = arg.replace(/^["“](.*)["”]$/, '$1').trim();
+      if (!st.chatId) { note('Start the chat first, then rename it.'); return true; }
+      if (!t) { note('Give me the new title, e.g. `/rename Exam prep`.'); return true; }
+      await post(`/chats/${encodeURIComponent(st.chatId)}/rename`, { title: t });
+      await renderNotebook(nb.id);
+      return true;
+    }
+    if (cmd === 'clear') {
+      const c = chats.find(x => x.id === st.chatId);
+      if (!c) { note("There's no chat to delete yet."); return true; }
+      if (!confirm(`Delete “${c.title}”? Its messages are deleted for good — this can't be undone.`)) return true;
+      const { job_id } = await post(`/chats/${encodeURIComponent(c.id)}/delete`);
+      const job = await pollJob(job_id, 60);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't delete that chat.");
+      st.chatId = null;
+      await renderNotebook(nb.id);
+      return true;
+    }
+    return false;
+  }
+
+  let jobId = null;
+  async function send(text, imageId) {
+    picker.hide();
+    sending = true;
+    btn.textContent = 'Stop'; btn.classList.add('stop');
+    $msgs.querySelector('p.empty')?.remove();
+    $msgs.insertAdjacentHTML('beforeend',
+      `<div class="msg user"><div class="body-md">${esc(text)}</div></div>
+       <div class="msg bot thinking" id="thinking">BrewLM is thinking…</div>`);
+    window.scrollTo(0, document.body.scrollHeight);
+    try {
+      // No chat picked ("＋ New chat", or none yet) starts a new one rather than
+      // continuing the most recent.
+      const { job_id } = await post('/chat', { notebook_id: nb.id, content: text, chat_id: st.chatId,
+        new_chat: !st.chatId, thinking: getThinking(), image_id: imageId || null });
+      jobId = job_id;
+      // Chats share the computer's queue with Studio jobs, so a reply can wait
+      // behind a podcast; say so instead of looking stuck. A reply being
+      // written shows as it grows.
+      const asked = Date.now();
+      let streamed = '';
+      const job = await pollJob(job_id, CHAT_WAIT_S, (j) => {
+        const el = document.getElementById('thinking');
+        if (!el) return;
+        if (j.status === 'running' && j.progress && j.progress !== streamed) {
+          streamed = j.progress;
+          el.classList.remove('thinking');
+          el.innerHTML = `<div class="body-md">${rich(streamed)}</div>`;
+          window.scrollTo(0, document.body.scrollHeight);
+        } else if (!streamed) {
+          el.textContent = j.status === 'pending' && Date.now() - asked > 8000
+            ? 'Waiting for BrewLM on your computer to finish other work…'
+            : 'BrewLM is thinking…';
+        }
+      }, 1000);
+      if (job.status === 'cancelled') {
+        // A new chat may already hold the question: show whichever chat it went to.
+        if (!st.chatId) return renderNotebook(nb.id);
+        await renderMsgs();
+        $msgs.insertAdjacentHTML('beforeend', '<div class="msg bot thinking">Stopped — no answer was saved.</div>');
+        window.scrollTo(0, document.body.scrollHeight);
+        return;
+      }
+      if (job.status !== 'done') throw new Error(job.result || 'Chat failed.');
+      const result = JSON.parse(job.result || '{}');
+      if (result.chat_id) st.chatId = result.chat_id;
+      lastDetails = { chatId: st.chatId, text: result.details || '' };
+      await renderMsgs();
+      // /clone "…" yes: off to the copy.
+      if (result.open) location.hash = '#nb/' + encodeURIComponent(result.open);
+    } catch (e) {
+      document.getElementById('thinking')?.remove();
+      $msgs.insertAdjacentHTML('beforeend', e.timedOut
+        ? `<div class="msg bot thinking">Still working on your computer — the answer will be in this chat when it's done. Open the chat again in a bit.</div>`
+        : `<div class="msg bot thinking" style="color:var(--bad)">${esc(e.message)}</div>`);
+    } finally {
+      sending = false; jobId = null;
+      btn.disabled = false; btn.textContent = 'Send'; btn.classList.remove('stop');
+    }
+  }
+
+  /* /queue: lined up here and sent one at a time after the current reply,
+     as the desktop's queue runs them. */
+  const queue = [];
+  const queueBar = document.createElement('div');
+  queueBar.className = 'queue'; queueBar.hidden = true;
+  composer.insertBefore(queueBar, composer.firstChild);
+  const paintQueue = () => {
+    queueBar.hidden = !queue.length;
+    queueBar.innerHTML = queue.map((q, i) =>
+      `<span class="chip">${i + 1}. ${esc(q.length > 40 ? q.slice(0, 40) + '…' : q)} <button data-unq="${i}" aria-label="Remove from queue">×</button></span>`).join('');
+    queueBar.querySelectorAll('[data-unq]').forEach(b => b.onclick = () => { queue.splice(Number(b.dataset.unq), 1); paintQueue(); });
+  };
+  const drain = async () => {
+    while (!sending && queue.length) {
+      const next = queue.shift();
+      paintQueue();
+      try { if (await localCommand(next)) continue; } catch (e) { note(esc(e.message)); continue; }
+      await send(next, null);
+    }
+  };
+  const isQueue = (t) => /^\/queue(\s|$)/i.test(t.trim());
+  // While a reply runs, the button stops it — or queues what's typed after /queue.
+  ta.addEventListener('input', () => { if (sending && !btn.disabled) btn.textContent = isQueue(ta.value) ? 'Queue' : 'Stop'; });
+
+  btn.onclick = async () => {
+    const typed = ta.value.trim();
+    if (isQueue(typed)) {
+      const payload = typed.replace(/^\/queue\s*/i, '').trim().replace(/^["“](.*)["”]$/, '$1').trim();
+      ta.value = ''; ta.style.height = 'auto'; picker.hide();
+      if (!payload) { note('Queue what? e.g. `/queue /summarize`, `/queue /url <link>`, or `/queue "Explain Bayes\' theorem"`.'); return; }
+      queue.push(payload);
+      paintQueue();
+      note(`Queued **${esc(payload.length > 60 ? payload.slice(0, 60).trimEnd() + '…' : payload)}** (position ${queue.length}).${sending ? " I'll run it when the current reply finishes." : ''}`);
+      if (sending) btn.textContent = 'Stop';
+      else drain();
+      return;
+    }
+    if (sending) {
+      // Stop: cancels the reply on the computer too.
+      if (!jobId) return;
+      btn.disabled = true; btn.textContent = 'Stopping…';
+      try { await post(`/jobs/${encodeURIComponent(jobId)}/cancel`); }
+      catch (e) { alert(e.message); btn.disabled = false; btn.textContent = 'Stop'; }
+      return;
+    }
+    const text = ta.value.trim();
+    if (!text) return;
+    ta.value = ''; ta.style.height = 'auto'; picker.hide();
+    try { if (await localCommand(text)) return; }
+    catch (e) { note(esc(e.message)); return; }
+    // An Edit/Remix tap picked the picture; it applies to that command only.
+    const imageId = /^\/(edit|remix|more)(\s|$)/i.test(text) ? pendingImage : null;
+    pendingImage = null;
+    await send(text, imageId);
+    ta.focus();
+    drain();
+  };
+}
+
+/* An item edit (rename, pin, delete, add to sources): BrewLM on the computer
+   runs it with its own functions; this waits for it. */
+async function runEdit(path, body, maxSeconds = 60) {
+  const { job_id } = await (body?.op === 'export' ? postRead(path, body) : post(path, body));
+  const job = await pollJob(job_id, maxSeconds);
+  if (job.status !== 'done') throw new Error(job.result || "Couldn't do that.");
+  return job.result || '{}';
+}
+
+/* A sheet of actions for one item. Each action: { label, danger?, confirm?, run } —
+   run() does the work; the sheet stays up showing "Working…" until it's done. */
+function actionSheet(root, title, actions, after) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>${esc(title)}</h3>
+    <div class="actions">${actions.map((a, i) =>
+      `<button class="btn ${a.danger ? 'btn-danger' : ''}" data-act="${i}">${esc(a.label)}</button>`).join('')}</div>
+    <button class="btn" id="a-cancel">Cancel</button>
+  </div></div>`;
+  root.querySelector('#a-cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
+    const a = actions[Number(b.dataset.act)];
+    if (a.confirm && !confirm(a.confirm)) return;
+    const mine = root.querySelector('#sheet');
+    root.querySelectorAll('.sheet button').forEach(x => x.disabled = true);
+    b.textContent = 'Working…';
+    try {
+      const done = await a.run();
+      // An action that opened a sheet of its own (a form, a list) leaves it up.
+      if (root.querySelector('#sheet') !== mine) return;
+      close();
+      if (done !== false) after();
+    }
+    catch (e) {
+      alert(e.message);
+      root.querySelectorAll('.sheet button').forEach(x => x.disabled = false);
+      b.textContent = a.label;
+    }
+  });
+}
+
+/* The ⋯ menu on a source: as the desktop's Sources list offers. */
+function sourceActions(root, nb, s) {
+  const path = `/sources/${encodeURIComponent(s.id)}/edit`;
+  actionSheet(root, s.title, [
+    { label: 'Rename', run: async () => {
+      const t = (prompt('Rename source', s.title) || '').trim();
+      if (!t || t === s.title) return false;
+      await runEdit(path, { op: 'rename', title: t });
+    } },
+    { label: s.pinned ? 'Unpin' : 'Pin to top', run: () => runEdit(path, { op: s.pinned ? 'unpin' : 'pin' }) },
+    { label: 'Remove source', danger: true,
+      confirm: `“${s.title}” will be removed from this notebook. This can't be undone.`,
+      run: () => runEdit(path, { op: 'delete' }) },
+  ], () => renderNotebook(nb.id));
+}
+
+/* The ⋯ menu on a Studio output: as the desktop's Studio list and viewer offer.
+   Read-only devices get Download only. */
+function artifactActions(root, nb, a) {
+  const path = `/artifacts/${encodeURIComponent(a.id)}/edit`;
+  const download = { label: 'Download', run: async () => { await downloadArtifact(a); return false; } };
+  if (SCOPE !== 'full') return actionSheet(root, a.title, [download], () => {});
+  actionSheet(root, a.title, [
+    { label: 'Revise…', run: () => { reviseSheet(root, nb, a); return false; } },
+    download,
+    { label: 'Rename', run: async () => {
+      const t = (prompt('Rename output', a.title) || '').trim();
+      if (!t || t === a.title) return false;
+      await runEdit(path, { op: 'rename', title: t });
+    } },
+    { label: a.pinned ? 'Unpin' : 'Pin to top', run: () => runEdit(path, { op: a.pinned ? 'unpin' : 'pin' }) },
+    { label: 'Add to sources', run: async () => {
+      await runEdit(path, { op: 'to-source' });
+      alert(`Added “${a.title}” to Sources.`);
+    } },
+    { label: 'Delete', danger: true, confirm: `“${a.title}” will be deleted. This can't be undone.`,
+      run: () => runEdit(path, { op: 'delete' }) },
+  ], () => renderNotebook(nb.id));
+}
+
+/* A download's file name, as the desktop names them (exportName in src/lib/mentions.ts). */
+const exportName = (title, ext) => `${title.replace(/[/\\?%*:|"<>]/g, '').trim().slice(0, 60) || 'brewlm-output'}.${ext}`;
+const AUDIO_EXT = { 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/webm': 'webm' };
+
+/* Download, as the desktop's: audio in its own format, a page as HTML,
+   anything else as markdown (the computer flattens it, as it does there). */
+async function downloadArtifact(a) {
+  if (a.kind === 'audio') {
+    const r = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio`);
+    if (r.ok) {
+      const blob = await r.blob();
+      return saveFile(exportName(a.title, AUDIO_EXT[blob.type.split(';')[0]] || 'm4a'), blob);
+    }
+    // No voiced file (System voices): the script, as markdown.
+  }
+  const r = JSON.parse(await runEdit(`/artifacts/${encodeURIComponent(a.id)}/edit`, { op: 'export' }));
+  saveFile(r.name, new Blob([r.text], { type: `${r.type};charset=utf-8` }));
+}
+
+/* Revise with an instruction, as the desktop's Revise: replace it, or keep it and save a copy. */
+function reviseSheet(root, nb, a) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>Revise “${esc(a.title)}”</h3>
+    <textarea class="field" id="rv-note" rows="4" placeholder="How should it change? e.g. “Make the questions harder”"></textarea>
+    ${a.kind === 'audio' ? '<label class="check"><input type="checkbox" id="rv-audio"> Voice the new script too</label>' : ''}
+    <button class="btn btn-primary" id="rv-replace">Replace</button>
+    <button class="btn" id="rv-copy">Save as a copy</button>
+    <button class="btn" id="rv-cancel">Cancel</button>
+  </div></div>`;
+  root.querySelector('#rv-cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelector('#rv-note').focus();
+  const run = async (replace) => {
+    const note = root.querySelector('#rv-note').value.trim();
+    if (!note) { alert('Say how it should change.'); return; }
+    const reAudio = !!root.querySelector('#rv-audio')?.checked;
+    close();
+    try {
+      const { job_id } = await post(`/artifacts/${encodeURIComponent(a.id)}/revise`, { note, replace, re_audio: reAudio });
+      await trackJob(root.closest('#pane') || root.parentElement, nb, job_id, `Revising ${a.title}`, 900);
+    } catch (e) { alert(e.message); }
+  };
+  root.querySelector('#rv-replace').onclick = () => run(true);
+  root.querySelector('#rv-copy').onclick = () => run(false);
+}
+
+/* Replies saved to Sources from this page (the desktop marks them the same way). */
+const savedReplies = new Set();
+
+/* How long the phone waits for a chat reply (high thinking can take minutes). */
+const CHAT_WAIT_S = 600;
+
+/* Every chat in this notebook (the server sends the 50 most recent), to open,
+   rename or delete. */
+function chatsSheet(root, nb, st, chats) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>Chats</h3>
+    ${chats.map(c => `<div class="chat-row ${c.id === st.chatId ? 'active' : ''}">
+      <button class="open" data-open="${esc(c.id)}">${esc(c.title)}</button>
+      <button class="btn write-only" data-rename="${esc(c.id)}">Rename</button>
+      <button class="btn btn-danger write-only" data-delete="${esc(c.id)}">Delete</button></div>`).join('')}
+    <div style="margin-top:14px"><button class="btn" id="c-close">Close</button></div>
+  </div></div>`;
+  root.querySelector('#c-close').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  root.querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
+    st.chatId = b.dataset.open; close(); renderNotebook(nb.id);
+  });
+  root.querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
+    const c = chats.find(x => x.id === b.dataset.rename);
+    const t = (prompt('Rename chat', c.title) || '').trim();
+    if (!t || t === c.title) return;
+    post(`/chats/${encodeURIComponent(c.id)}/rename`, { title: t })
+      .then(() => { close(); renderNotebook(nb.id); })
+      .catch(e => alert(e.message));
+  });
+  // Gone for good, as on the desktop: BrewLM there deletes it the same way.
+  root.querySelectorAll('[data-delete]').forEach(b => b.onclick = async () => {
+    const c = chats.find(x => x.id === b.dataset.delete);
+    if (!confirm(`Delete “${c.title}”? Its messages are deleted for good — this can't be undone.`)) return;
+    b.disabled = true; b.textContent = 'Deleting…';
+    try {
+      const { job_id } = await post(`/chats/${encodeURIComponent(c.id)}/delete`);
+      const job = await pollJob(job_id, 60);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't delete that chat.");
+      // Like the desktop: deleting the open chat moves to the most recent one left.
+      if (st.chatId === c.id) st.chatId = null;
+      close(); renderNotebook(nb.id);
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = 'Delete'; }
+  });
+}
+
+/* -------------------- device-voice read aloud (TTS) --------------------- */
+/* Overviews made with the "System voices" provider carry no audio file —
+   only a script, so there's nothing to stream. Read the script aloud with
+   the phone's own speech synthesis: no keys, no network, no server round-trip. */
+const TTS_OK = typeof window !== 'undefined' && 'speechSynthesis' in window;
+const tts = { run: 0, playing: null };
+
+function pickDeviceVoices() {
+  return new Promise(resolve => {
+    const pick = () => {
+      const all = window.speechSynthesis.getVoices();
+      if (!all.length) return false;
+      const en = all.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+      const pool = en.length >= 2 ? en : all;
+      resolve([pool[0] || null, pool[1] || pool[0] || null]);
+      return true;
+    };
+    if (pick()) return;
+    window.speechSynthesis.onvoiceschanged = () => pick();
+    setTimeout(() => pick(), 1500);
+  });
+}
+
+/* Chrome/Android network voices truncate long utterances — split each turn
+   into sentence-sized chunks. */
+function chunkTurn(text) {
+  const parts = [];
+  const segs = text.match(/[^.!?…;:]+[.!?…;:]?\s*/g) || [text];
+  for (let seg of segs) {
+    seg = seg.trim();
+    while (seg.length > 190) { parts.push(seg.slice(0, 190)); seg = seg.slice(190); }
+    if (seg) parts.push(seg);
+  }
+  return parts;
+}
+
+function stopSpeaking() {
+  tts.run++;
+  tts.playing = null;
+  if (TTS_OK) window.speechSynthesis.cancel();
+  document.querySelectorAll('.tts-btn').forEach(b => { b.textContent = '▶ Read aloud'; b.disabled = false; });
+  document.querySelectorAll('.tts-status').forEach(s => { s.textContent = ''; });
+}
+
+async function readAloud(id, btn, statusEl) {
+  if (!TTS_OK) return;
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+  if (tts.playing === id) { stopSpeaking(); return; }   // tap again to stop
+  stopSpeaking();                                       // stop whatever else was playing
+  btn.disabled = true;
+  say('Loading script…');
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(id)}`);
+    const raw = a.data && Array.isArray(a.data.script) ? a.data.script : [];
+    const turns = raw
+      .filter(t => t && typeof t.text === 'string' && t.text.trim())
+      .map(t => ({ sam: String(t.speaker).toLowerCase() === 'sam', text: t.text.trim() }));
+    if (!turns.length) throw new Error('No script saved for this overview.');
+    const [va, vb] = await pickDeviceVoices().catch(() => [null, null]);
+    const run = ++tts.run;
+    tts.playing = id;
+    btn.disabled = false;
+    btn.textContent = '⏹ Stop';
+    // Flatten into chunks, remembering which script turn each chunk belongs to.
+    const queue = [];
+    turns.forEach((t, ti) => chunkTurn(t.text).forEach(text => queue.push({ sam: t.sam, text, turn: ti })));
+    let i = 0;
+    const step = () => {
+      if (tts.run !== run) return;
+      if (i >= queue.length) { stopSpeaking(); return; }
+      say(`Speaking — part ${queue[i].turn + 1} of ${turns.length}`);
+      const u = new SpeechSynthesisUtterance(queue[i].text);
+      const v = queue[i].sam ? vb : va;
+      if (v) u.voice = v;
+      u.rate = 1;
+      u.onend = () => { if (tts.run === run) { i++; step(); } };
+      u.onerror = u.onend;
+      window.speechSynthesis.speak(u);
+    };
+    step();
+  } catch (e) {
+    if (tts.playing === id) tts.playing = null;
+    say(e.message);
+    btn.disabled = false;
+    btn.textContent = '▶ Read aloud';
+  }
+}
+window.addEventListener('pagehide', stopSpeaking);
+
+/* ------------------------------- studio tab ----------------------------- */
+/* Each tool's option rows: [key, values] picks one value; [key, 'text' | 'area',
+   placeholder] is free text; a fourth item { when: [key, value] } shows the row
+   only while that other option has that value. */
+const FOCUS = 'Focus (optional)…';
+const GEN_TOOLS = [
+  { kind: 'flashcards', label: 'Flashcards', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text', FOCUS]] },
+  { kind: 'quiz', label: 'Quiz', opts: [['amount', ['compact', 'default', 'more']], ['difficulty', ['easy', 'medium', 'hard']], ['focus', 'text', FOCUS]] },
+  { kind: 'mindmap', label: 'Mind map', opts: [['focus', 'text', FOCUS]] },
+  // The desktop's two report menus in one: its quick formats and its customize types.
+  { kind: 'report', label: 'Report', opts: [['report_type', ['summary', 'study-guide', 'faq', 'timeline', 'briefing-doc', 'analysis', 'custom']],
+    ['custom_prompt', 'area', 'What should the report cover? e.g. “A glossary of every key term”', { when: ['report_type', 'custom'] }]] },
+  { kind: 'research', label: 'Deep research', opts: [['topic', 'text', 'Topic to research…']] },
+  { kind: 'audio', label: 'Audio overview', opts: [['mode', ['conversation', 'solo']], ['format', ['deep-dive', 'brief', 'debate', 'critique']], ['length', ['short', 'standard', 'long']], ['focus', 'text', FOCUS]] },
+  { kind: 'interactive', label: 'Interactive', opts: [['topic', 'area', 'What to build (optional) — a game, simulation, explorer… Leave it empty and BrewLM picks an idea from your sources.']] },
+];
+const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0, mode: 0 };
+/* Where a choice starts: the desktop's Studio Defaults (from /preferences), else the usual one. */
+function genDefault(kind, key, vals) {
+  const d = PREFS.defaults || {};
+  const want = {
+    flashcards: { amount: d.flashcards_amount, difficulty: d.flashcards_difficulty },
+    quiz: { amount: d.quiz_amount, difficulty: d.quiz_difficulty },
+    audio: { mode: d.audio_mode, format: d.audio_format, length: d.audio_length },
+    report: { report_type: d.report_type },
+  }[kind]?.[key];
+  return vals.includes(want) ? want : vals[GEN_OPT_DEFAULT[key] ?? 0];
+}
+// The desktop's names for each choice (src/lib/studio.ts).
+const OPT_LABELS = {
+  compact: 'Compact', default: 'Default', more: 'More', easy: 'Easy', medium: 'Medium', hard: 'Hard',
+  summary: 'Summary', faq: 'FAQ', timeline: 'Timeline',
+  'study-guide': 'Study Guide', 'briefing-doc': 'Briefing Doc', analysis: 'Thorough Analysis', custom: 'Custom',
+  conversation: 'Conversation', solo: 'Solo', 'deep-dive': 'Deep Dive', brief: 'Brief', debate: 'Debate',
+  critique: 'Critique', short: 'Short', standard: 'Standard', long: 'Long',
+};
+// Long-running tools get longer before the phone stops waiting (the job keeps going).
+const GEN_WAIT_S = { audio: 900, research: 900, interactive: 900 };
+const activeJobs = {}; // jobId -> {label}
+
+async function pollJob(id, maxSeconds, onTick, everyMs = 2000) {
+  const deadline = Date.now() + maxSeconds * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, everyMs));
+    const job = await api(`/jobs/${encodeURIComponent(id)}`);
+    if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') return job;
+    const a = activeJobs[id];
+    if (a && a.el && !a.cancelling) a.el.querySelector('.p').textContent = job.progress || 'Working…';
+    onTick?.(job);
+  }
+  const err = new Error('Timed out waiting for the desktop — is BrewLM open there?');
+  err.timedOut = true;
+  throw err;
+}
+
+function renderStudioTab(pane, nb, st) {
+  const groups = { audio: [], interactive: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
+  for (const a of nb.artifacts) {
+    if (a.kind === 'drawing') continue; // desktop-only sketchpad
+    if (a.kind === 'audio') groups.audio.push(a);
+    else if (a.kind === 'interactive') groups.interactive.push(a);
+    else if (a.kind === 'flashcards') groups.flashcards.push(a);
+    else if (a.kind === 'quiz') groups.quiz.push(a);
+    else if (a.kind === 'mindmap') groups.mindmap.push(a);
+    else groups.docs.push(a);
+  }
+  const artCard = (a, body) => `<div class="card has-menu"><h3>${esc(a.title)}<span class="pill">${a.kind}</span>${
+      a.pinned ? '<span class="pill pin-pill">Pinned</span>' : ''}</h3>
+    <span class="menu" data-amenu="${esc(a.id)}" aria-label="More for ${esc(a.title)}">⋯</span>${body}</div>`;
+  let h = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+      <button class="btn btn-primary write-only" id="gen-open">＋ Generate</button></div>
+    <div id="jobs"></div>`;
+  if (groups.audio.length) {
+    h += `<div class="sec">Audio overviews</div>`;
+    for (const a of groups.audio) h += artCard(a, `
+      <audio controls preload="none" data-title="${esc(a.title)}" data-art="${esc(a.id)}"
+        src="${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio"></audio>
+      <div class="tts-row" data-tts-for="${esc(a.id)}" hidden>
+        <button class="btn tts-btn" data-tts="${esc(a.id)}">▶ Read aloud</button>
+        <span class="tts-status"></span>
+      </div>
+      <details><summary>Read the script</summary><div class="body-md" data-script="${esc(a.id)}"></div></details>`);
+  }
+  if (groups.interactive.length) {
+    h += `<div class="sec">Interactive pages</div>`;
+    for (const a of groups.interactive) h += artCard(a, `
+      <div class="tts-row"><button class="btn btn-primary" data-page="${esc(a.id)}">▶ Open page</button></div>
+      <details><summary>Read the plan</summary><div class="body-md" data-plan="${esc(a.id)}"></div></details>`);
+  }
+  if (groups.docs.length) {
+    h += `<div class="sec">Documents</div>`;
+    for (const a of groups.docs) h += artCard(a, `<div class="body-md" data-doc="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+  }
+  if (groups.flashcards.length) {
+    h += `<div class="sec">Flashcards</div>`;
+    for (const a of groups.flashcards) h += artCard(a, `<div data-fc="${esc(a.id)}"><p class="empty">Tap to load deck…</p></div>`);
+  }
+  if (groups.quiz.length) {
+    h += `<div class="sec">Quizzes</div>`;
+    for (const a of groups.quiz) h += artCard(a, `<div data-quiz="${esc(a.id)}"><p class="empty">Tap to load quiz…</p></div>`);
+  }
+  if (groups.mindmap.length) {
+    h += `<div class="sec">Mind maps</div>`;
+    for (const a of groups.mindmap) h += artCard(a, `<div data-mind="${esc(a.id)}"><p class="empty">Tap to load…</p></div>`);
+  }
+  if (!nb.artifacts.length) h += `<p class="empty">${SCOPE !== 'full' ? 'Nothing here yet.' : 'Nothing here yet — tap ＋ Generate to create something from your sources.'}</p>`;
+  h += '<div id="sheetroot"></div>';
+  pane.innerHTML = h;
+
+  pane.querySelectorAll('[data-doc]').forEach(el => el.parentElement.addEventListener('click', () => loadDoc(el), { once: true }));
+  pane.querySelectorAll('[data-fc]').forEach(el => el.parentElement.addEventListener('click', () => loadCards(el), { once: true }));
+  pane.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
+  pane.querySelectorAll('[data-mind]').forEach(el => el.parentElement.addEventListener('click', () => loadMind(el), { once: true }));
+  pane.querySelectorAll('[data-page]').forEach(b => b.onclick = () => openPage(b));
+  pane.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
+    if (!d.open) return;
+    const el = d.querySelector('[data-script]');
+    if (el && !el.dataset.done) loadScript(el);
+    const plan = d.querySelector('[data-plan]');
+    if (plan && !plan.dataset.done) loadPlan(plan);
+  }));
+  pane.querySelectorAll('audio').forEach(a => {
+    a.addEventListener('play', () => {
+      if ('mediaSession' in navigator)
+        navigator.mediaSession.metadata = new MediaMetadata({ title: a.dataset.title || 'Audio overview', artist: nb.title, album: 'BrewLM' });
+    });
+    if (TTS_OK) {
+      // No synthesized audio stored (System voices) → offer device-voice playback.
+      const showTts = () => {
+        const row = pane.querySelector(`[data-tts-for="${CSS.escape(a.dataset.art)}"]`);
+        if (row) row.hidden = false;
+        a.style.display = 'none';
+      };
+      a.addEventListener('error', showTts);
+      // Probe up front so the dead player never shows for script-only artifacts.
+      fetch(`${BASE}/api/artifacts/${encodeURIComponent(a.dataset.art)}/audio`, { method: 'HEAD' })
+        .then(r => { if (r.status === 404) showTts(); })
+        .catch(() => {});   // network hiccup — leave the normal player in place
+    }
+  });
+  pane.querySelectorAll('.tts-btn').forEach(b => b.addEventListener('click', () => {
+    const row = b.closest('.tts-row');
+    readAloud(b.dataset.tts, b, row && row.querySelector('.tts-status'));
+  }));
+
+  pane.querySelector('#gen-open').onclick = () => generateSheet(pane, nb);
+  pane.querySelectorAll('[data-amenu]').forEach(m => m.addEventListener('click', (e) => {
+    e.stopPropagation(); // not a tap on the card (which loads it)
+    artifactActions(pane.querySelector('#sheetroot'), nb, nb.artifacts.find(a => a.id === m.dataset.amenu));
+  }));
+}
+
+function generateSheet(pane, nb, preKind) {
+  const root = pane.querySelector('#sheetroot');
+  let picked = null;
+  root.innerHTML = `<div class="sheet" id="sheet"><div>
+    <h3>Generate</h3>
+    <div class="chips" id="tools">
+      ${GEN_TOOLS.map(t => `<span class="chip" data-kind="${t.kind}">${t.label}</span>`).join('')}
+    </div>
+    <div id="optrows"></div>
+    <div id="genmore" hidden>
+      <div class="chips" id="scope">
+        <span class="chip active" data-scope="all">All sources</span>
+        <span class="chip" data-scope="pick">Choose sources…</span>
+      </div>
+      <div class="src-pick" id="srcpick" hidden>${nb.sources.filter(x => x.type !== 'context').map(x =>
+        `<label><input type="checkbox" value="${esc(x.id)}"> ${esc(x.title)}</label>`).join('') || '<p class="empty">No sources yet.</p>'}</div>
+      <input class="field" id="genname" placeholder="Name (optional)">
+    </div>
+    <div style="margin-top:6px">
+      <button class="btn btn-primary" id="go" disabled>Generate</button>
+      <button class="btn" id="cancel">Cancel</button>
+    </div></div></div>`;
+  const close = () => root.innerHTML = '';
+  root.querySelector('#cancel').onclick = close;
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  const go = root.querySelector('#go');
+  const valueOf = (key) => {
+    const opt = picked.opts.find(o => o[0] === key);
+    if (!opt) return '';
+    return Array.isArray(opt[1])
+      ? root.querySelector(`[data-opt-group="${key}"] .chip.active`)?.dataset.val || ''
+      : root.querySelector(`[data-opt="${key}"]`)?.value.trim() || '';
+  };
+  const shows = ([, , , cond]) => !cond || valueOf(cond.when[0]) === cond.when[1];
+  const syncWhen = () => picked.opts.forEach(o => {
+    const row = root.querySelector(`[data-row="${o[0]}"]`);
+    if (row) row.hidden = !shows(o);
+  });
+  root.querySelectorAll('[data-kind]').forEach(chip => chip.onclick = () => {
+    root.querySelectorAll('[data-kind]').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    picked = GEN_TOOLS.find(t => t.kind === chip.dataset.kind);
+    root.querySelector('#optrows').innerHTML = picked.opts.map(([key, vals, ph]) => {
+      let row;
+      if (vals === 'text') row = `<input class="field" data-opt="${key}" placeholder="${esc(ph)}">`;
+      else if (vals === 'area') row = `<textarea class="field" data-opt="${key}" rows="3" style="min-height:84px" placeholder="${esc(ph)}"></textarea>`;
+      else {
+        const def = genDefault(picked.kind, key, vals);
+        row = `<div class="chips" data-opt-group="${key}">${vals.map(v =>
+          `<span class="chip ${v === def ? 'active' : ''}" data-val="${v}">${esc(OPT_LABELS[v] || v)}</span>`).join('')}</div>`;
+      }
+      return `<div data-row="${key}">${row}</div>`;
+    }).join('');
+    root.querySelectorAll('[data-opt-group] .chip').forEach(c => c.onclick = () => {
+      c.parentElement.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+      syncWhen();
+    });
+    syncWhen();
+    // Which sources and what name, as the desktop's customize dialogs ask (research reads the web instead).
+    root.querySelector('#genmore').hidden = false;
+    root.querySelector('#scope').hidden = picked.kind === 'research';
+    if (picked.kind === 'research') root.querySelector('#srcpick').hidden = true;
+    root.querySelector('#genname').placeholder = `Name (optional) — ${picked.label}`;
+    go.disabled = false;
+  });
+  root.querySelectorAll('[data-scope]').forEach(c => c.onclick = () => {
+    root.querySelectorAll('[data-scope]').forEach(x => x.classList.toggle('active', x === c));
+    root.querySelector('#srcpick').hidden = c.dataset.scope !== 'pick';
+  });
+  if (preKind) root.querySelector(`[data-kind="${preKind}"]`)?.click();
+  go.onclick = async () => {
+    if (!picked) return;
+    const options = {};
+    for (const o of picked.opts) options[o[0]] = shows(o) ? valueOf(o[0]) : '';
+    if (picked.kind === 'research' && !options.topic) { alert('Research needs a topic.'); return; }
+    if (picked.kind === 'report' && options.report_type === 'custom' && !options.custom_prompt) {
+      alert('Say what the custom report should cover.'); return;
+    }
+    if (picked.kind !== 'research' && root.querySelector('[data-scope="pick"]').classList.contains('active')) {
+      options.source_ids = [...root.querySelectorAll('#srcpick input:checked')].map(x => x.value);
+      if (!options.source_ids.length) { alert('Pick at least one source, or use All sources.'); return; }
+    }
+    options.title = root.querySelector('#genname').value.trim();
+    close();
+    const label = picked.label;
+    try {
+      const { job_id } = await post('/generate', { notebook_id: nb.id, kind: picked.kind, options });
+      await trackJob(pane, nb, job_id, label, GEN_WAIT_S[picked.kind] || 180);
+    } catch (e) { alert(e.message); renderNotebook(nb.id); }
+  };
+}
+
+/* A Studio job on the computer, shown at the top of Studio with its progress
+   and a cancel button (which stops it there too; nothing is saved). */
+async function trackJob(pane, nb, job_id, label, waitS) {
+  const jobsEl = pane.querySelector('#jobs');
+  jobsEl?.insertAdjacentHTML('afterbegin',
+    `<div class="job-pill" id="job-${job_id}"><span class="txt">⏳ <strong>${esc(label)}</strong> — <span class="p">Queued…</span></span>` +
+    `<button class="x" aria-label="Cancel ${esc(label)}">×</button></div>`);
+  const pill = document.getElementById(`job-${job_id}`);
+  activeJobs[job_id] = { label, el: pill };
+  const x = pill?.querySelector('.x');
+  if (x) x.onclick = async () => {
+    x.disabled = true;
+    activeJobs[job_id].cancelling = true;
+    pill.querySelector('.p').textContent = 'Cancelling…';
+    try { await post(`/jobs/${encodeURIComponent(job_id)}/cancel`); }
+    catch (err) { x.disabled = false; activeJobs[job_id].cancelling = false; alert(err.message); }
+  };
+  let job;
+  try { job = await pollJob(job_id, waitS); }
+  catch (e) {
+    if (e.timedOut) { alert(`${label} is still being made on your computer — it will be in Studio when it's done.`); return renderNotebook(nb.id); }
+    throw e;
+  } finally { document.getElementById(`job-${job_id}`)?.remove(); delete activeJobs[job_id]; }
+  if (job.status === 'error') alert(job.result || `${label} failed.`);
+  renderNotebook(nb.id);
+}
+
+async function loadDoc(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.doc)}`);
+    let text;
+    if (a.kind === 'research' && typeof a.data === 'object') {
+      text = rich(a.data.md) + (a.data.sources?.length
+        ? `<div class="sec">Sources read</div>` + a.data.sources.map(s =>
+            `<p style="font-size:13px"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a></p>`).join('')
+        : '');
+    } else {
+      text = rich(typeof a.data === 'string' ? a.data : '```' + JSON.stringify(a.data, null, 2) + '```');
+    }
+    el.innerHTML = text || '<p class="empty">Empty.</p>';
+    hydrate(el);
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---------------------------- interactive pages --------------------------- */
+/* Same sandbox as the desktop (src/lib/interactive.ts sandboxDoc): scripts run
+   in an opaque-origin frame with the network off, so the page can't reach this
+   one, the device key or anything online. */
+const PAGE_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+const PAGE_ERROR = 'brewlm-interactive-error';
+function pageDoc(html, dark) {
+  const theme = dark ? 'dark' : 'light';
+  const head = `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">
+<meta name="color-scheme" content="${theme}">
+<script>(function(){document.documentElement.setAttribute("data-theme","${theme}");
+var send=function(m){try{parent.postMessage({type:"${PAGE_ERROR}",message:String(m).slice(0,400)},"*")}catch(e){}};
+addEventListener("error",function(e){send((e.message||"Script error")+(e.lineno?" (line "+e.lineno+")":""))});
+addEventListener("unhandledrejection",function(e){send((e.reason&&e.reason.message)||e.reason||"Unhandled promise rejection")});
+addEventListener("securitypolicyviolation",function(e){send("Blocked loading "+(e.blockedURI||"a resource")+" - the page must be fully self-contained")});})();<\/script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) {
+    const at = m.index + m[0].length;
+    return html.slice(0, at) + head + html.slice(at);
+  }
+  return head + html;
+}
+
+let closeViewer = null;
+async function openPage(btn) {
+  btn.disabled = true;
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(btn.dataset.page)}`);
+    const html = a.data && typeof a.data.html === 'string' ? a.data.html : '';
+    if (!html.trim()) throw new Error("This page's data looks malformed.");
+    showPage(a.title, html);
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; }
+}
+
+function showPage(title, html) {
+  closeViewer?.();
+  const v = document.createElement('div');
+  v.className = 'viewer';
+  v.innerHTML = `<div class="bar"><h3>${esc(title)}</h3><button class="btn" id="v-close">Done</button></div>
+    <iframe sandbox="allow-scripts" src="/assets/sandbox.html?v=${ASSETS_V}" title="${esc(title)}"></iframe><p class="warn" hidden></p>`;
+  const frame = v.querySelector('iframe');
+  // The frame page (the web app's public/sandbox.html, with its own no-network
+  // policy) says "ready", then gets the page; a srcdoc frame would inherit this
+  // page's policy, which blocks the page's inline scripts.
+  const doc = pageDoc(html, M_THEMES[currentTheme]?.scheme === 'dark');
+  const warn = v.querySelector('.warn');
+  const onMsg = (e) => {
+    if (e.source !== frame.contentWindow) return;
+    if (e.data?.type === 'brewlm-sandbox-ready') {
+      frame.contentWindow.postMessage({ type: 'brewlm-sandbox-page', html: doc }, '*');
+      return;
+    }
+    if (e.data?.type !== PAGE_ERROR || !warn.hidden) return;
+    warn.hidden = false;
+    warn.textContent = `This page hit an error (${String(e.data.message || 'unknown').slice(0, 200)}). Use Fix with AI on it in BrewLM on your computer.`;
+  };
+  window.addEventListener('message', onMsg);
+  closeViewer = () => {
+    window.removeEventListener('message', onMsg);
+    v.remove();
+    document.body.classList.remove('viewing');
+    closeViewer = null;
+  };
+  v.querySelector('#v-close').onclick = () => closeViewer();
+  document.body.appendChild(v);
+  document.body.classList.add('viewing');
+}
+
+async function loadPlan(el) {
+  el.dataset.done = '1';
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.plan)}`);
+    el.innerHTML = rich(a.data?.storyboard || '') || '<p class="empty">No plan saved.</p>';
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; delete el.dataset.done; }
+}
+
+/* -------------------------------- mind maps ------------------------------- */
+/* Stored as a nested bullet outline, "Label: definition" per bullet; parsed
+   the way the desktop does it (src/lib/mindmap.ts parseMindmap) and shown as
+   a tree you open branch by branch. */
+const mmPlain = (s) => s.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/`(.+?)`/g, '$1').trim();
+function mmSplit(text) {
+  const t = mmPlain(text);
+  const m = t.match(/^(.+?)(?::[ \t]+| [—–] )(.+)$/);
+  return m ? { label: m[1].trim(), note: m[2].trim() } : { label: t, note: '' };
+}
+function parseMindmap(data, title) {
+  const roots = [], stack = [];
+  for (const raw of data.split('\n')) {
+    const line = raw.replace(/\t/g, '  ');
+    const m = line.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (!m) {
+      // an indented plain line under a bullet continues its definition
+      const cont = line.trim();
+      const last = stack[stack.length - 1];
+      if (cont && last && /^\s+/.test(line) && !/^#/.test(cont))
+        last.node.note = [last.node.note, mmPlain(cont)].filter(Boolean).join(' ');
+      continue;
+    }
+    const indent = m[1].length;
+    const { label, note } = mmSplit(m[2]);
+    if (!label) continue;
+    const node = { label, note, children: [] };
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    if (!stack.length) roots.push(node);
+    else stack[stack.length - 1].node.children.push(node);
+    stack.push({ node, indent });
+  }
+  if (!roots.length) return null;
+  return roots.length === 1 ? roots[0] : { label: title.trim() || 'Mind map', note: '', children: roots };
+}
+function mindTree(root, editing = false) {
+  const count = (n) => n.children.reduce((k, c) => k + 1 + count(c), 0);
+  // While editing, every label carries its node so a tap can open it.
+  const tag = (n) => editing && n.id ? ` data-node="${esc(n.id)}"` : '';
+  const node = (n, depth) => {
+    const note = n.note ? `<span class="nt">${esc(n.note)}</span>` : '';
+    if (!n.children.length) return `<li><div class="leaf"><span class="lb"${tag(n)}>${esc(n.label)}</span>${note}</div></li>`;
+    // The main branches start open; deeper ones open on tap.
+    return `<li><details${depth === 0 || editing ? ' open' : ''}><summary><span class="lb"${tag(n)}>${esc(n.label)}</span>` +
+      `<span class="count">${count(n)}</span></summary>${note}<ul>${n.children.map(c => node(c, depth + 1)).join('')}</ul></details></li>`;
+  };
+  return `<div class="mm${editing ? ' editing' : ''}"><div class="root"${tag(root)}>${esc(root.label)}</div>` +
+    (root.note ? `<div class="root-note">${esc(root.note)}</div>` : '') +
+    `<ul>${root.children.map(c => node(c, 0)).join('')}</ul></div>`;
+}
+async function loadMind(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  let a;
+  try { a = await api(`/artifacts/${encodeURIComponent(el.dataset.mind)}`); }
+  catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const text = typeof a.data === 'string' ? a.data : '';
+  const r = renderer();
+  const root = (r?.parseMindmap || parseMindmap)(text, a.title);
+  if (!root) { el.innerHTML = rich(text) || '<p class="empty">Empty.</p>'; return; }
+  let seq = 0;
+  const walk = (n, parent) => { n.id ||= `pm${seq++}`; n.parent = parent; n.children.forEach(c => walk(c, n)); };
+  walk(root, null);
+  // Editing writes the outline back in the desktop's own format (src/lib/mindmap.ts).
+  const canEdit = SCOPE === 'full' && r?.serializeMindmap;
+  let editing = false;
+  const sheetRoot = () => el.closest('#pane')?.querySelector('#sheetroot');
+  const find = (id, n = root) => n.id === id ? n : n.children.map(c => find(id, c)).find(Boolean);
+  const save = async () => {
+    const strip = (n) => ({ id: n.id, label: n.label, note: n.note, children: n.children.map(strip) });
+    const status = el.querySelector('.mm-status');
+    if (status) status.textContent = 'Saving…';
+    try {
+      await runEdit(`/artifacts/${encodeURIComponent(a.id)}/edit`, { op: 'set-data', data: r.serializeMindmap(strip(root)) });
+      if (status) status.textContent = 'Saved';
+    } catch (e) { alert(e.message); loadMind(el); }
+  };
+  const editNode = (n) => {
+    const host = sheetRoot();
+    if (!host) return;
+    const close = () => host.innerHTML = '';
+    host.innerHTML = `<div class="sheet" id="sheet"><div>
+      <h3>${n === root ? 'Central topic' : 'Branch'}</h3>
+      <label class="flabel">Label</label><input class="field" id="mm-label" value="${esc(n.label)}">
+      <label class="flabel">Definition (optional)</label><textarea class="field" id="mm-note" rows="2">${esc(n.note)}</textarea>
+      <button class="btn btn-primary" id="mm-save">Save</button>
+      <button class="btn" id="mm-add">Add a branch under it</button>
+      ${n === root ? '' : '<button class="btn btn-danger" id="mm-del">Delete</button>'}
+      <button class="btn" id="mm-cancel">Cancel</button>
+    </div></div>`;
+    host.querySelector('#mm-cancel').onclick = close;
+    host.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+    const apply = () => {
+      const label = host.querySelector('#mm-label').value.trim();
+      if (!label) { alert('A branch needs a label.'); return false; }
+      n.label = label; n.note = host.querySelector('#mm-note').value.trim();
+      return true;
+    };
+    host.querySelector('#mm-save').onclick = () => { if (!apply()) return; close(); paint(); save(); };
+    host.querySelector('#mm-add').onclick = () => {
+      if (!apply()) return;
+      const child = { id: `pm${seq++}`, label: 'New branch', note: '', children: [], parent: n };
+      n.children.push(child);
+      paint(); save(); editNode(child);
+    };
+    host.querySelector('#mm-del')?.addEventListener('click', () => {
+      if (n.children.length && !confirm(`Delete “${n.label}” and the ${n.children.length} branch${n.children.length > 1 ? 'es' : ''} under it?`)) return;
+      n.parent.children = n.parent.children.filter(c => c !== n);
+      close(); paint(); save();
+    });
+  };
+  const paint = () => {
+    el.innerHTML = (canEdit ? `<div class="mm-tools"><button class="btn" data-mmedit>${editing ? 'Done' : 'Edit'}</button>
+      <span class="mm-status hint">${editing ? 'Tap a branch to change it.' : ''}</span></div>` : '') + mindTree(root, editing);
+    el.querySelector('[data-mmedit]')?.addEventListener('click', (e) => { e.stopPropagation(); editing = !editing; paint(); });
+    if (editing) el.querySelectorAll('[data-node]').forEach(lb => lb.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      editNode(find(lb.dataset.node));
+    }));
+  };
+  paint();
+}
+
+async function loadScript(el) {
+  el.dataset.done = '1';
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.script)}`);
+    const d = a.data;
+    let script = '';
+    if (typeof d === 'object' && d) {
+      if (Array.isArray(d.script))
+        script = d.script.map(t => `**${t.speaker}:** ${t.text}`).join('\n');
+      else if (typeof d.script === 'string') script = d.script;
+    }
+    el.innerHTML = rich(script) || '<p class="empty">No script saved.</p>';
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* Flashcards one at a time, as the desktop shows them: tap to flip, arrows
+   (or a swipe) to move through the deck. */
+async function loadCards(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  let cards = [];
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.fc)}`);
+    const parsed = typeof a.data === 'string' ? JSON.parse(a.data) : a.data;
+    cards = Array.isArray(parsed) ? parsed.filter(c => c?.front && c?.back) : [];
+  } catch (e) { return el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (!cards.length) return el.innerHTML = '<p class="empty">No cards.</p>';
+  let i = 0, flipped = false;
+  const go = (dir) => { i = Math.max(0, Math.min(cards.length - 1, i + dir)); flipped = false; paint(); };
+  const paint = () => {
+    const c = cards[i];
+    el.innerHTML = `<div class="deck">
+      <button class="deck-card${flipped ? ' flipped' : ''}" data-flip>
+        <span class="deck-label">${flipped ? 'Answer' : 'Card'}</span>
+        <span class="deck-text">${esc(flipped ? c.back : c.front)}</span>
+      </button>
+      <div class="deck-nav">
+        <button data-go="-1" aria-label="Previous card" ${i === 0 ? 'disabled' : ''}>‹</button>
+        <span>${i + 1} / ${cards.length}</span>
+        <button data-go="1" aria-label="Next card" ${i === cards.length - 1 ? 'disabled' : ''}>›</button>
+        <button data-flip aria-label="Flip card">↻</button>
+      </div>
+      <p class="hint">Tap the card to flip it · swipe for the next one.</p></div>`;
+    el.querySelectorAll('[data-flip]').forEach(b => b.onclick = (e) => { e.stopPropagation(); flipped = !flipped; paint(); });
+    el.querySelectorAll('[data-go]').forEach(b => b.onclick = (e) => { e.stopPropagation(); go(Number(b.dataset.go)); });
+  };
+  let x0 = null;
+  el.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+  });
+  paint();
+}
+
+async function loadQuiz(el) {
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  let qs = [];
+  try {
+    const a = await api(`/artifacts/${encodeURIComponent(el.dataset.quiz)}`);
+    qs = typeof a.data === 'string' ? JSON.parse(a.data) : a.data;
+  } catch (e) { return el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (!Array.isArray(qs) || !qs.length) return el.innerHTML = '<p class="empty">No questions.</p>';
+  let done = 0, right = 0;
+  el.innerHTML = `<span class="score" data-score></span>` + qs.map((q, i) => `
+    <div class="card" style="cursor:default">
+      <p><strong>${i + 1}.</strong> ${esc(q.question)}</p>
+      ${q.options.map((o, j) => `<button class="q-opt" data-q="${i}" data-j="${j}">${esc(o)}</button>`).join('')}
+      <div class="q-exp" data-exp="${i}" hidden></div>
+    </div>`).join('');
+  const scoreEl = el.querySelector('[data-score]');
+  const upd = () => scoreEl.textContent = done ? `Score: ${right}/${done}` : '';
+  upd();
+  el.querySelectorAll('.q-opt').forEach(btn => btn.addEventListener('click', () => {
+    const qEl = btn.closest('.card');
+    if (qEl.dataset.answered) return;
+    qEl.dataset.answered = '1';
+    const q = qs[Number(btn.dataset.q)];
+    const isRight = Number(btn.dataset.j) === Number(q.answerIndex);
+    done++; if (isRight) right++;
+    qEl.querySelectorAll('.q-opt').forEach(b => {
+      if (Number(b.dataset.j) === Number(q.answerIndex)) b.classList.add('correct');
+    });
+    if (!isRight) btn.classList.add('wrong');
+    const exp = qEl.querySelector(`[data-exp]`);
+    exp.hidden = false;
+    exp.textContent = q.explanation || '';
+    upd();
+  }));
+}
+
+/* ------------------------------ sources tab ----------------------------- */
+function renderSourcesTab(pane, nb, st) {
+  let h = `
+    <div class="write-only">
+    <div class="sec">Add a source</div>
+    <div class="card" style="cursor:default">
+      <button class="btn btn-primary" id="src-files">Upload files</button>
+      <p class="hint">PDF, Word, PowerPoint, Excel, eBooks, text, pictures, audio and video — read by BrewLM on your computer, as when you add them there.</p>
+      <div id="src-progress"></div>
+    </div>
+    <div class="card" style="cursor:default">
+      <input class="field" id="src-title" placeholder="Note title (optional)">
+      <textarea class="field" id="src-text" placeholder="Paste or write a note…"></textarea>
+      <button class="btn btn-primary" id="src-add">Add note</button>
+    </div>
+    <div class="card" style="cursor:default">
+      <input class="field" id="src-url" placeholder="https://… — fetch a webpage into sources">
+      <button class="btn btn-primary" id="src-fetch">Fetch link</button>
+    </div>
+    ${!nb.sources.some(x => x.type === 'context') && renderer()?.constitutions
+      ? `<div class="card" style="cursor:default">
+          <button class="btn" id="src-constitution">Add constitution</button>
+          <p class="hint">A document that steers every chat answer in this notebook — pick a starting point.</p>
+        </div>` : ''}
+    </div>
+    <div class="sec">Sources · ${nb.sources.length}</div>
+    ${nb.sources.map(s => `<button class="card src-item has-menu" data-src="${esc(s.id)}"><p class="t">📄 ${esc(s.title)}</p>
+      <span class="date">${esc(s.type)} · ${fmtDate(s.created_at)}${s.pinned ? ' · Pinned' : ''}</span>
+      <span class="menu write-only" data-smenu="${esc(s.id)}" aria-label="More for ${esc(s.title)}">⋯</span></button>`).join('') || '<p class="empty">No sources yet.</p>'}
+    <div id="sheetroot"></div>`;
+  pane.innerHTML = h;
+  pane.querySelectorAll('[data-src]').forEach(c => c.onclick = (e) => {
+    const root = pane.querySelector('#sheetroot');
+    if (e.target.closest('[data-smenu]')) return sourceActions(root, nb, nb.sources.find(s => s.id === c.dataset.src));
+    openSource(root, c.dataset.src);
+  });
+
+  // The desktop's file picker list (src/lib/source.ts ACCEPT_STRING).
+  pane.querySelector('#src-files').onclick = async (e) => {
+    const files = await pickFiles('.pdf,.pptx,.docx,.xlsx,.epub,.rtf,.txt,.md,.markdown,.csv,.json,.html,text/*,image/*,audio/*,video/*', true);
+    if (!files.length) return;
+    const btn = e.target;
+    const progress = pane.querySelector('#src-progress');
+    btn.disabled = true;
+    const problems = [];
+    for (const [i, file] of files.entries()) {
+      progress.textContent = `Adding ${file.name}${files.length > 1 ? ` (${i + 1} of ${files.length})` : ''}…`;
+      try {
+        const r = await sendFile(`/notebooks/${encodeURIComponent(nb.id)}/files`, file);
+        problems.push(...(r.errors || []));
+      } catch (err) { problems.push(err.message); }
+    }
+    progress.textContent = '';
+    btn.disabled = false;
+    if (problems.length) alert(problems.join('\n\n'));
+    renderNotebook(nb.id);
+  };
+  const cons = pane.querySelector('#src-constitution');
+  if (cons) cons.onclick = () => actionSheet(pane.querySelector('#sheetroot'), 'Add constitution',
+    renderer().constitutions.map(t => ({
+      label: `${t.name} — ${t.tagline}`,
+      run: () => runEdit(`/notebooks/${encodeURIComponent(nb.id)}/op`, { op: 'constitution', template: t.id }),
+    })), () => renderNotebook(nb.id));
+
+  pane.querySelector('#src-add').onclick = async (e) => {
+    const text = pane.querySelector('#src-text').value.trim();
+    if (!text) return;
+    e.target.disabled = true;
+    try {
+      await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/text`, {
+        title: pane.querySelector('#src-title').value.trim(), text });
+      renderNotebook(nb.id);
+    } catch (err) { alert(err.message); e.target.disabled = false; }
+  };
+  pane.querySelector('#src-fetch').onclick = async (e) => {
+    const url = pane.querySelector('#src-url').value.trim();
+    if (!url) return;
+    e.target.disabled = true; e.target.textContent = 'Fetching…';
+    try {
+      // BrewLM on the computer reads the page (same reader as Add link there:
+      // video transcripts, PDFs, Office files); this waits for it.
+      const { job_id } = await post(`/notebooks/${encodeURIComponent(nb.id)}/sources/url`, { url });
+      const job = await pollJob(job_id, 120);
+      if (job.status !== 'done') throw new Error(job.result || "Couldn't read that link.");
+      renderNotebook(nb.id);
+    } catch (err) { alert(err.message); e.target.disabled = false; e.target.textContent = 'Fetch link'; }
+  };
+}
+
+/* What the AI reads from one source — the desktop's "What the AI sees". */
+async function openSource(root, id) {
+  const close = () => root.innerHTML = '';
+  root.innerHTML = '<div class="sheet" id="sheet"><div><p class="empty">Loading…</p></div></div>';
+  const box = root.querySelector('#sheet > div');
+  root.querySelector('#sheet').onclick = (e) => { if (e.target.id === 'sheet') close(); };
+  let s;
+  try { s = await api(`/sources/${encodeURIComponent(id)}`); }
+  catch (e) { s = null; box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  if (s) {
+    const meta = [esc(s.type), fmtDate(s.created_at),
+      s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a>` : '']
+      .filter(Boolean).join(' · ');
+    box.innerHTML = `<h3>${esc(s.title)}</h3><p class="meta">${meta}</p>
+      ${s.image ? `<img class="src-img" alt="${esc(s.title)}" src="${esc(s.image)}">` : ''}
+      <div class="sec" style="margin-top:4px">What the AI sees</div>
+      ${s.text.trim() ? `<div class="src-text">${esc(s.text)}</div>`
+        : '<p class="empty">Nothing readable yet — BrewLM on your computer reads it before the next question.</p>'}
+      ${s.truncated ? `<p class="empty">Showing the first 200,000 of ${Number(s.chars).toLocaleString()} characters — the rest is on your computer.</p>` : ''}`;
+  }
+  box.insertAdjacentHTML('beforeend', '<div style="margin-top:12px"><button class="btn" id="s-close">Close</button></div>');
+  root.querySelector('#s-close').onclick = close;
+}
+
+/* --------------------------------- router -------------------------------- */
+function route() {
+  if (MODE === 'p') return renderPairing();
+  const h = location.hash;
+  if (h.startsWith('#nb/')) renderNotebook(decodeURIComponent(h.slice(4)));
+  else renderHome();
+}
+window.addEventListener('hashchange', () => {
+  document.getElementById('composer')?.remove();
+  closeViewer?.();
+  route();
+});
+
+(async () => {
+  await initTheme();
+  if (MODE === 'd' && !(await guardDevice())) return;
+  route();
+})();

@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { isMediaValue, mediaBytes, mediaExt, mediaSrc } from "../lib/blobs";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
-import { artifactText } from "../lib/mentions";
+import { artifactText, exportName } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
 import {
   INTERACTIVE_ERROR_MESSAGE,
@@ -36,10 +36,6 @@ import { platform } from "../platform";
 import { GhostButton, IconButton } from "./ui";
 
 /** Filesystem-safe name for downloads. */
-function exportName(title: string, ext: string): string {
-  const base = title.replace(/[/\\?%*:|"<>]/g, "").trim().slice(0, 60);
-  return `${base || "brewlm-output"}.${ext}`;
-}
 
 /**
  * An opened Studio output. It takes over the Studio panel (not a popup), so

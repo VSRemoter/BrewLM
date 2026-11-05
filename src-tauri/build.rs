@@ -14,6 +14,11 @@ fn phone_assets() {
         bytes.hash(&mut hasher);
         std::fs::write(out.join(name), bytes).unwrap();
     }
+    // The page and its own script are versioned with the renderer.
+    for src in ["mobile.html", "mobile.js", "../public/sandbox.html"] {
+        println!("cargo:rerun-if-changed={src}");
+        std::fs::read(src).unwrap_or_default().hash(&mut hasher);
+    }
     // Cache-busting version for the asset URLs.
     println!("cargo:rustc-env=PHONE_ASSETS_V={:x}", hasher.finish());
 }
