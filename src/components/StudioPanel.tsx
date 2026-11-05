@@ -55,6 +55,15 @@ import {
 } from "../lib/studio";
 import type { StudioCommand } from "../lib/studioCommands";
 import {
+  hasFocus,
+  interactivePrior,
+  pickAngle,
+  pickFormat,
+  shuffleQuizOptions,
+  varietyNote,
+  withVariety,
+} from "../lib/studioVariety";
+import {
   INTERACTIVE_REVISE_FORMAT,
   buildPagePrompt,
   PAGE_SYSTEM,
@@ -297,11 +306,17 @@ const StudioPanel = forwardRef<
     const job = startStudioJob(notebookId, tool.kind, title, "Generating…");
     const meter = newUsageMeter();
     try {
-      const prompt = opts?.prompt ?? tool.prompt;
+      const base = opts?.prompt ?? tool.prompt;
+      // Variety: what this notebook already has of this kind, plus a random
+      // angle when the user gave no focus — otherwise every run looks alike.
+      const prompt = withVariety(
+        base,
+        varietyNote(tool.kind as "flashcards" | "quiz" | "mindmap", artifacts, { focused: hasFocus(base) })
+      );
       const raw = await complete({
         ...llmRequest(job.signal, meter),
         messages: [
-          { role: "system", content: await groundedSystem(usedSources, prompt, { exhaustive: true, onPhase: job.setPhase, signal: job.signal }) },
+          { role: "system", content: await groundedSystem(usedSources, base, { exhaustive: true, onPhase: job.setPhase, signal: job.signal }) },
           { role: "user", content: prompt },
         ],
       });
@@ -320,7 +335,7 @@ const StudioPanel = forwardRef<
         const parsed = JSON.parse(extractJson(raw));
         if (!Array.isArray(parsed) || parsed.length === 0)
           throw new Error("The model returned an unexpected format. Try again.");
-        data = JSON.stringify(parsed);
+        data = JSON.stringify(tool.kind === "quiz" ? shuffleQuizOptions(parsed) : parsed);
         count = parsed.length;
       }
 
@@ -441,8 +456,10 @@ const StudioPanel = forwardRef<
     const job = startStudioJob(notebookId, "interactive", title, "Planning the storyboard…");
     const meter = newUsageMeter();
     try {
-      const prompt = buildStoryboardPrompt(opts);
-      const system = await groundedSystem(scopedSources(opts.sourceIds), opts.topic || prompt, {
+      // No topic: draw an angle and a format so blank runs don't all pick the same idea.
+      const lens = opts.topic.trim() ? {} : { angle: pickAngle(), format: pickFormat() };
+      const prompt = buildStoryboardPrompt(opts, { ...lens, prior: interactivePrior(artifacts) });
+      const system = await groundedSystem(scopedSources(opts.sourceIds), opts.topic || buildStoryboardPrompt(opts, lens), {
         exhaustive: true,
         onPhase: job.setPhase,
         signal: job.signal,
@@ -538,7 +555,11 @@ const StudioPanel = forwardRef<
     const job = startStudioJob(notebookId, "audio", title, "Writing script…");
     const meter = newUsageMeter();
     try {
-      const o = opts ?? oneClickAudio();
+      const picked = opts ?? oneClickAudio();
+      const o: AudioOptions = {
+        ...picked,
+        variety: varietyNote("audio", artifacts, { focused: picked.description.trim() !== "" }),
+      };
       const scoped = scopedSources(o.sourceIds);
       const turns = await writeAudioScript(
         o,

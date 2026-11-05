@@ -54,6 +54,8 @@ export interface AudioOptions {
   description: string;
   /** Custom name for the saved artifact (falls back to the tool default). */
   title?: string;
+  /** Variety paragraph (studioVariety.ts) for the script/outline prompt; set at generation time. */
+  variety?: string;
 }
 
 export interface ReportOptions {
@@ -262,13 +264,17 @@ Rules:
 const audioFocus = (opts: AudioOptions) =>
   opts.description ? `\nFocus especially on: ${opts.description}.` : "";
 
+/** Variety goes to the prompts that shape the episode (single script, outline); parts follow the outline. */
+const audioVariety = (opts: AudioOptions) =>
+  opts.variety?.trim() ? `\n\n${opts.variety.trim()}` : "";
+
 /** One-request script (Short episodes, and the fallback when an outline fails). */
 export function buildAudioPrompt(opts: AudioOptions): string {
   const minutes = AUDIO_LENGTH_MINUTES[opts.length];
   return `You are writing a ${minutes}-minute podcast-style "audio overview" of my sources. ${audioVoiceRules(opts)}
 
 Length: about ${audioWordTarget(opts.length)} spoken words in total (≈${minutes} minutes read aloud) — cover the material in real depth rather than skimming.${audioFocus(opts)}
-Open by naming what this episode covers ${opts.mode === "solo" ? "and start with the Host" : "with the Host speaking first"}; close with the 2–3 biggest takeaways.`;
+Open by naming what this episode covers ${opts.mode === "solo" ? "and start with the Host" : "with the Host speaking first"}; close with the 2–3 biggest takeaways.${audioVariety(opts)}`;
 }
 
 /** Step 1 of a long episode: plan its parts. */
@@ -279,7 +285,7 @@ export function buildAudioOutlinePrompt(opts: AudioOptions): string {
 Split it into exactly ${parts} consecutive parts that together cover the most important material in my sources, in a sensible teaching order. The first part introduces the topic; the last part ends with the biggest takeaways.
 
 Return ONLY ${parts} lines, one per part, in this format:
-<short part title> — <one sentence on what this part covers, naming the specific concepts from the sources>`;
+<short part title> — <one sentence on what this part covers, naming the specific concepts from the sources>${audioVariety(opts)}`;
 }
 
 /** Step 2 of a long episode: write one part, continuing from the previous one. */
@@ -294,7 +300,7 @@ export function buildAudioSectionPrompt(
   const first = index === 0;
   const last = index === parts - 1;
   const position = first
-    ? `This is the opening part: open by naming what this episode covers${opts.mode === "solo" ? "" : ", with the Host speaking first"}.`
+    ? `This is the opening part: open with a fresh hook (a surprising fact, a question, a short scenario or a striking detail from the sources), not a generic welcome, then name what this episode covers${opts.mode === "solo" ? "" : ", with the Host speaking first"}.`
     : last
       ? "This is the final part: wrap up with the 2–3 biggest takeaways of the whole episode and a short sign-off."
       : "This is a middle part: no greetings, intros or sign-offs — carry straight on from where the previous part stopped.";

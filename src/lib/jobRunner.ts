@@ -13,6 +13,7 @@ import {
   getDb,
   getNotebookConstitutionOn,
   getNotebookGrounded,
+  listArtifacts,
   listMessages,
   listSources,
   renameChat,
@@ -21,6 +22,7 @@ import {
   touchNotebook,
 } from "./db";
 import { complete, extractJson, type StreamUsage } from "./llm";
+import { shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -328,15 +330,20 @@ async function runGenerateJob(p: {
     });
   };
 
+  // Variety, as in the Studio panel: what the notebook already has of this
+  // kind, plus a random angle when no focus was given.
+  const artifacts = await listArtifacts(p.notebook_id);
+  const focused = (o.focus ?? "").trim() !== "";
+  const vary = (kind: "flashcards" | "quiz" | "mindmap", prompt: string) =>
+    withVariety(prompt, varietyNote(kind, artifacts, { focused }));
+
   let title: string;
   let data: string;
   let done: string;
   switch (p.kind) {
     case "flashcards": {
-      const raw = await ask(
-        buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus }),
-        { exhaustive: true }
-      );
+      const base = buildFlashcardsPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
+      const raw = await ask(vary("flashcards", base), { exhaustive: true, query: base });
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
       title = "Flashcards";
@@ -345,19 +352,18 @@ async function runGenerateJob(p: {
       break;
     }
     case "quiz": {
-      const raw = await ask(
-        buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus }),
-        { exhaustive: true }
-      );
+      const base = buildQuizPrompt({ amount: o.amount, difficulty: o.difficulty, sourceIds: [], description: o.focus });
+      const raw = await ask(vary("quiz", base), { exhaustive: true, query: base });
       const parsed = JSON.parse(extractJson(raw));
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("The model returned an unexpected format. Try again.");
       title = "Quiz";
-      data = JSON.stringify(parsed);
+      data = JSON.stringify(shuffleQuizOptions(parsed));
       done = `Saved a ${parsed.length}-question quiz to Studio.`;
       break;
     }
     case "mindmap": {
-      const raw = await ask(buildMindmapPrompt(o.focus), { exhaustive: true });
+      const base = buildMindmapPrompt(o.focus);
+      const raw = await ask(vary("mindmap", base), { exhaustive: true, query: base });
       data = raw
         .replace(/```(?:markdown|md)?\s*\n?/g, "")
         .replace(/```$/gm, "")
@@ -382,6 +388,7 @@ async function runGenerateJob(p: {
         mode: "conversation",
         sourceIds: [],
         description: o.focus,
+        variety: varietyNote("audio", artifacts, { focused }),
       };
       const turns = await writeAudioScript(
         opts,

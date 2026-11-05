@@ -39,13 +39,30 @@ export function parseInteractive(data: string): InteractiveData | null {
 
 /* --------------------------------- prompts --------------------------------- */
 
-export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "topic">): string {
+/**
+ * Variety for one storyboard (studioVariety.ts). `angle` and `format` are drawn
+ * only when the user gave no topic; `prior` lists pages the notebook already has.
+ */
+export interface StoryboardVariety {
+  angle?: string;
+  format?: string;
+  prior?: string;
+}
+
+export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "topic">, variety: StoryboardVariety = {}): string {
+  const lean = [
+    variety.format ? `Lean toward ${variety.format}` : "",
+    variety.angle ? `${variety.format ? ", looking at" : "Look at"} my sources through this lens: ${variety.angle}` : "",
+  ].join("");
   const request = opts.topic.trim()
     ? `What I want: ${opts.topic.trim()}`
-    : "What I want: you choose — pick the idea in my sources that gains most from being seen and played with, and the format that shows it best.";
+    : `What I want: you choose — pick an idea from my sources that comes alive when it's seen and played with.${
+        lean ? ` ${lean}. If that clearly doesn't suit my sources, pick the format that does.` : " Pick the format that shows it best."
+      }`;
+  const prior = variety.prior?.trim() ? `\n\n${variety.prior.trim()}` : "";
   return `I want to turn part of my sources into an interactive web page — a web app, animation, game, simulation, explorer, quiz or whatever format fits.
 
-${request}
+${request}${prior}
 
 Write the storyboard for it in markdown — not the code. Include:
 1. **Title**, the **format** (e.g. guided animation, simulation, game, web app) and a one-sentence goal.
@@ -67,7 +84,8 @@ Hard requirements:
 - The page runs in a sandbox: do not use localStorage, sessionStorage, cookies, alert, confirm, prompt, window.open or forms.
 - Fill the viewport and work from 320px wide up to a full desktop screen. No horizontal scrolling. Readable text (at least 13px), large click targets.
 - Theming: define every color as a CSS variable on :root (light palette) and override them under :root[data-theme="dark"]. The host sets data-theme on <html>. Use a clear, restrained palette; color-code meaningfully and add a legend.
-- Controls that fit the format: animations get Play/Pause, Back, Next, Restart, a step indicator and a speed control (Space toggles play, ←/→ step; start paused on step 1); simulations get labelled sliders/toggles with live values and units, a Reset and a few "Try this" presets; games get a Start screen, instant feedback explaining why, a visible score and a recap with Play again. Anything else gets whatever controls the storyboard describes.
+- Controls that fit the format, as the storyboard describes them. Sensible defaults, not a checklist: animations usually want Play/Pause, stepping, Restart and a step indicator (Space toggles play, ←/→ step; start paused on step 1); simulations want labelled sliders/toggles with live values and units and a Reset; games want instant feedback explaining why and a visible score. Add only what this page needs.
+- Design the page around this storyboard's own idea: let its layout, visual style and interaction follow from the content rather than a stock template.
 - Label every structure and show values with units. Be accurate to the storyboard.
 - Plain, robust JavaScript: wrap it in an IIFE, guard against null elements, no console errors. Keep the code compact — no dead code or long comments.`;
 
