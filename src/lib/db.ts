@@ -118,6 +118,9 @@ async function initDb(): Promise<SqlDb> {
     await db.execute("ALTER TABLE sources ADD COLUMN text TEXT NOT NULL DEFAULT ''");
   }
   const chatCols = await db.select<{ name: string }[]>("PRAGMA table_info(chats)");
+  // Chats that came with a shared link (replaced when the link updates; the viewer's own stay).
+  if (!chatCols.some((c) => c.name === "from_share"))
+    await db.execute("ALTER TABLE chats ADD COLUMN from_share INTEGER NOT NULL DEFAULT 0");
   if (!chatCols.some((c) => c.name === "pinned")) {
     await db.execute("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
@@ -201,6 +204,13 @@ async function initDb(): Promise<SqlDb> {
   // notebooks gain constitution_on (/constitution toggle: 0 = keep it but ignore it).
   if (!nbCols.some((c) => c.name === "constitution_on"))
     await db.execute("ALTER TABLE notebooks ADD COLUMN constitution_on INTEGER NOT NULL DEFAULT 1");
+  // Notebooks opened from someone's shared link (shareView.ts): read-only, never synced.
+  if (!nbCols.some((c) => c.name === "share_id")) {
+    await db.execute("ALTER TABLE notebooks ADD COLUMN share_id TEXT NOT NULL DEFAULT ''");
+    await db.execute("ALTER TABLE notebooks ADD COLUMN share_key TEXT NOT NULL DEFAULT ''");
+    await db.execute("ALTER TABLE notebooks ADD COLUMN share_version INTEGER NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE notebooks ADD COLUMN shared_by TEXT NOT NULL DEFAULT ''");
+  }
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -240,8 +250,57 @@ async function initDb(): Promise<SqlDb> {
       parent_id TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     )`);
+  // Shared links this account published (shareLinks.ts). Synced, key and all
+  // (inside the encrypted vault), so any of the owner's devices can update one.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS shares (
+      id TEXT PRIMARY KEY,
+      notebook_id TEXT NOT NULL,
+      share_key TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 0,
+      include_chats INTEGER NOT NULL DEFAULT 0,
+      include_media INTEGER NOT NULL DEFAULT 1,
+      shared_by TEXT NOT NULL DEFAULT '',
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
   await ensureSyncTracking(db);
+  await ensureShareGuards(db);
   return db;
+}
+
+/* ------------------------ Shared (read-only) notebooks ------------------------ */
+
+export const SHARED_READ_ONLY = "This notebook was shared with you, so it's read-only. Save a copy to change it.";
+
+/**
+ * A notebook opened from someone's link shows their sources and Studio
+ * outputs as they published them: these triggers refuse changes to them from
+ * anywhere (chat commands, the phone server…). Writing a link's content in
+ * (shareView.ts) sets `share_writing`; pulled sync changes are let through as
+ * always. Chats stay open: they're the viewer's own. Deleting the notebook
+ * removes its row first, after which its leftovers aren't guarded.
+ */
+export async function ensureShareGuards(db: SqlDb): Promise<void> {
+  const open = `EXISTS (SELECT 1 FROM sync_state WHERE key IN ('share_writing', 'applying') AND value = '1')`;
+  const shared = (ref: string) => `(SELECT share_id FROM notebooks WHERE id = ${ref}.notebook_id) != ''`;
+  for (const [tbl, cols] of [
+    ["sources", "title, content, notebook_id"],
+    ["artifacts", "title, data, kind, notebook_id"],
+  ]) {
+    for (const [op, ref] of [
+      ["INSERT", "NEW"],
+      [`UPDATE OF ${cols}`, "OLD"],
+      ["DELETE", "OLD"],
+    ]) {
+      const name = `share_guard_${tbl}_${op.split(" ")[0].toLowerCase()}`;
+      await db.execute(`
+        CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${op} ON ${tbl}
+        WHEN ${shared(ref)} AND NOT ${open}
+        BEGIN SELECT RAISE(ABORT, '${SHARED_READ_ONLY.replace(/'/g, "''")}'); END`);
+    }
+  }
 }
 
 /* ------------------------- Sync change tracking ------------------------- */
@@ -482,12 +541,13 @@ export async function touchNotebook(id: string): Promise<void> {
 
 export async function deleteNotebook(id: string): Promise<void> {
   const d = await getDb();
+  // The row first: a shared notebook's contents are guarded only while it exists.
+  await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
   await d.execute("DELETE FROM sources WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM source_chunks WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM messages WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM chats WHERE notebook_id = $1", [id]);
   await d.execute("DELETE FROM artifacts WHERE notebook_id = $1", [id]);
-  await d.execute("DELETE FROM notebooks WHERE id = $1", [id]);
   await pruneOrphanImages();
   await pruneOrphanReasoning();
 }
@@ -847,18 +907,24 @@ export async function pruneOrphanBlobs(): Promise<void> {
     console.info(`media: removed ${res.removed} unused file(s), ${(res.freed_bytes / 1e6).toFixed(1)} MB`);
 }
 
-/** Every `brewblob:` reference any row holds (cleanup keeps these; Sync moves them). */
-export async function referencedBlobRefs(): Promise<string[]> {
+/**
+ * Every `brewblob:` reference any row holds (cleanup keeps these). With
+ * `synced`, only rows Sync carries: notebooks opened from someone's link stay
+ * on this device, and so do their files.
+ */
+export async function referencedBlobRefs(opts: { synced?: boolean } = {}): Promise<string[]> {
   const d = await getDb();
   const has = (col: string) => `instr(${col}, 'brewblob:') > 0`;
+  const own = opts.synced ? " AND share_id = ''" : "";
+  const ownChild = opts.synced ? " AND notebook_id NOT IN (SELECT id FROM notebooks WHERE share_id != '')" : "";
   const rows = await d.select<{ v: string }[]>(
-    `SELECT cover AS v FROM notebooks WHERE ${has("cover")}
-     UNION ALL SELECT chat_bg FROM notebooks WHERE ${has("chat_bg")}
+    `SELECT cover AS v FROM notebooks WHERE ${has("cover")}${own}
+     UNION ALL SELECT chat_bg FROM notebooks WHERE ${has("chat_bg")}${own}
      UNION ALL SELECT cover FROM folders WHERE ${has("cover")}
-     UNION ALL SELECT content FROM sources WHERE ${has("content")}
-     UNION ALL SELECT data FROM images WHERE ${has("data")}
-     UNION ALL SELECT data FROM artifacts WHERE ${has("data")}
-     UNION ALL SELECT content FROM messages WHERE ${has("content")}`
+     UNION ALL SELECT content FROM sources WHERE ${has("content")}${ownChild}
+     UNION ALL SELECT data FROM images WHERE ${has("data")}${ownChild}
+     UNION ALL SELECT data FROM artifacts WHERE ${has("data")}${ownChild}
+     UNION ALL SELECT content FROM messages WHERE ${has("content")}${ownChild}`
   );
   return [...new Set(rows.flatMap((r) => blobRefsIn(r.v)))];
 }

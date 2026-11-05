@@ -9,6 +9,7 @@ import {
   ImagePlus,
   LayoutGrid,
   LayoutTemplate,
+  Link2,
   List,
   Pencil,
   Plus,
@@ -91,6 +92,7 @@ export default function Home({
   onRestoreBulk,
   onDeleteForeverBulk,
   onSettings,
+  onOpenLink,
   updateInfo,
   onDismissUpdate,
   trashRetentionDays = 0,
@@ -126,6 +128,8 @@ export default function Home({
   /** Sources-only starter copy of a notebook ("Use as template" card action). */
   onUseTemplate: (id: string) => void;
   onSettings: () => void;
+  /** Open a shared notebook link someone sent. */
+  onOpenLink: () => void;
   /** Newer release found at launch (Settings → About); null = up to date / dismissed. */
   updateInfo?: UpdateInfo | null;
   onDismissUpdate?: () => void;
@@ -1097,6 +1101,14 @@ export default function Home({
                 </>
               ) : (
                 <>
+                  <button
+                    onClick={onOpenLink}
+                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                    title="Open a notebook someone shared with you"
+                  >
+                    <Link2 size={13} strokeWidth={1.8} />
+                    Open link
+                  </button>
                   <button
                     onClick={() => setSelecting(true)}
                     className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"

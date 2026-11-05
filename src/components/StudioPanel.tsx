@@ -150,6 +150,8 @@ const StudioPanel = forwardRef<
     onOpenSettings: () => void;
     /** An output is open (true) or minimized (false) — the layout widens the panel for reading. */
     onReadingChange?: (reading: boolean) => void;
+    /** A notebook shared with you: outputs can be opened, not made, revised or deleted. */
+    readOnly?: boolean;
   }
 >(function StudioPanel({
   notebookId,
@@ -161,6 +163,7 @@ const StudioPanel = forwardRef<
   onSourcesChanged,
   onOpenSettings,
   onReadingChange,
+  readOnly = false,
 }, ref) {
   /** This notebook's generations in flight — several can run at once. */
   const jobs = useStudioJobs(notebookId);
@@ -961,7 +964,7 @@ const StudioPanel = forwardRef<
 
         <div className="flex-1 overflow-y-auto p-3">
           {/* generation grid */}
-          <div className="stagger grid grid-cols-2 gap-2">
+          <div className={`stagger grid grid-cols-2 gap-2 ${readOnly ? "hidden" : ""}`}>
             {TOOLS.map((t) => (
               <div
                 key={t.kind}
@@ -1084,13 +1087,13 @@ const StudioPanel = forwardRef<
           )}
 
           {/* saved artifacts */}
-          <div className="mt-5">
+          <div className={readOnly ? "" : "mt-5"}>
             <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
               Saved
             </p>
             {artifacts.length === 0 && jobs.length === 0 ? (
               <p className="px-1 text-[12px] leading-relaxed text-ink-3">
-                Generated study materials will appear here.
+                {readOnly ? "No Studio outputs were shared." : "Generated study materials will appear here."}
               </p>
             ) : (
               <div className="stagger flex flex-col gap-1">
@@ -1171,7 +1174,7 @@ const StudioPanel = forwardRef<
                       >
                         <Pin size={12.5} fill={a.pinned ? "currentColor" : "none"} />
                       </button>
-                      {a.kind !== "drawing" && (
+                      {a.kind !== "drawing" && !readOnly && (
                         <button
                           onClick={() => openRevise(a)}
                           className="shrink-0 rounded p-1 text-ink-3 opacity-0 transition-all hover:text-ink group-hover:opacity-100"
@@ -1181,6 +1184,7 @@ const StudioPanel = forwardRef<
                           <Pencil size={12.5} />
                         </button>
                       )}
+                      {!readOnly && (
                       <button
                         onClick={async () => {
                           const ok = await confirmAction({
@@ -1196,6 +1200,7 @@ const StudioPanel = forwardRef<
                       >
                         <Trash2 size={12.5} />
                       </button>
+                      )}
                     </div>
                   );
                 })}

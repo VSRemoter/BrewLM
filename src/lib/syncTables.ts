@@ -14,4 +14,5 @@ export const SYNCED_TABLES: Record<string, string> = {
   // Machine-specific keys (local model server…) get filtered at push time.
   settings: "key",
   usage_events: "id",
+  shares: "id",
 };

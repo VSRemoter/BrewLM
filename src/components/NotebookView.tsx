@@ -3,6 +3,7 @@ import {
   Library,
   MessageSquare,
   Settings as SettingsIcon,
+  Share2,
   Smartphone,
   Sparkles,
 } from "lucide-react";
@@ -35,6 +36,8 @@ import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
 import { confirmAction } from "./ConfirmDialog";
 import PairPhonePanel from "./PairPhonePanel";
+import ShareDialog from "./ShareDialog";
+import SharedBanner from "./SharedBanner";
 import SourcesPanel from "./SourcesPanel";
 import StudioPanel, { type StudioPanelHandle } from "./StudioPanel";
 import { IconButton, Modal } from "./ui";
@@ -82,6 +85,9 @@ export default function NotebookView({
 }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [pairOpen, setPairOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  /** Opened from someone's link: their sources and outputs can't be changed here. */
+  const readOnly = !!notebook.share_id;
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -384,9 +390,15 @@ export default function NotebookView({
         onChange={(e) => setTitleDraft(e.target.value)}
         onBlur={commitTitle}
         onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        readOnly={readOnly}
         className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
         aria-label="Notebook title"
       />
+      {!readOnly && (
+        <IconButton onClick={() => setShareOpen(true)} label="Share notebook">
+          <Share2 size={15} strokeWidth={1.8} />
+        </IconButton>
+      )}
       {platform.kind === "desktop" && (
         <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
           <Smartphone size={15} strokeWidth={1.8} />
@@ -406,6 +418,7 @@ export default function NotebookView({
       constitutionOn={constitutionOn}
       onChanged={refreshSources}
       showDetails={settings.showDetails}
+      readOnly={readOnly}
     />
   );
   // Studio never sees the constitution — it governs chat only; Studio tools
@@ -488,6 +501,7 @@ export default function NotebookView({
       onArtifactsChanged={refreshArtifacts}
       onSourcesChanged={refreshSources}
       onOpenSettings={onOpenSettings}
+      readOnly={readOnly}
     />
   );
 
@@ -495,6 +509,33 @@ export default function NotebookView({
     <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
       <PairPhonePanel />
     </Modal>
+  );
+
+  const sharedBanner = readOnly && (
+    <SharedBanner
+      notebook={notebook}
+      onUpdated={() => {
+        refreshSources();
+        refreshArtifacts();
+        void refreshChats();
+        onNotebookMoved(); // App reloads the notebook row (its version)
+      }}
+      onCopied={(id) => {
+        onNotebookMoved();
+        onOpenNotebook(id);
+      }}
+    />
+  );
+
+  const shareModal = shareOpen && (
+    <ShareDialog
+      notebookId={notebook.id}
+      onClose={() => setShareOpen(false)}
+      onOpenSettings={() => {
+        setShareOpen(false);
+        onOpenSettings();
+      }}
+    />
   );
 
   if (phone) {
@@ -508,6 +549,7 @@ export default function NotebookView({
     return (
       <div className="flex h-full flex-col">
         {header}
+        {sharedBanner}
         <div className="relative min-h-0 flex-1">
           <div className={`absolute inset-0 flex flex-col bg-panel ${tab === "sources" ? "" : "hidden"}`}>{sourcesPanel}</div>
           <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{chatPanel}</div>
@@ -546,6 +588,7 @@ export default function NotebookView({
           </Modal>
         )}
         {pairModal}
+        {shareModal}
       </div>
     );
   }
@@ -553,7 +596,9 @@ export default function NotebookView({
   return (
     <div className="flex h-full flex-col">
       {!tabbed && header}
+      {sharedBanner}
       {pairModal}
+      {shareModal}
 
       {/* three panels */}
       <div className="flex min-h-0 flex-1">

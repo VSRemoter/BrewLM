@@ -124,17 +124,21 @@ export function snapshotBlobRefs(snap: NotebookSnapshot): string[] {
 }
 
 /**
- * The same snapshot under fresh ids, every row pointing at `notebookId`.
+ * The same snapshot under fresh ids (`newId(oldId)`), every row pointing at `notebookId`.
  * Links between rows follow: chunks → sources, messages → chats, images →
  * chats and parent images, `brewimg:` references in messages and outputs.
  * A link to something outside the snapshot is cleared rather than left
  * pointing at another notebook's row.
  */
-export function remapSnapshot(snap: NotebookSnapshot, notebookId: string, newId: () => string = uid): NotebookSnapshot {
+export function remapSnapshot(
+  snap: NotebookSnapshot,
+  notebookId: string,
+  newId: (oldId: string) => string = () => uid()
+): NotebookSnapshot {
   const ids = new Map<string, string>();
   const fresh = (old: string) => {
     let id = ids.get(old);
-    if (!id) ids.set(old, (id = newId()));
+    if (!id) ids.set(old, (id = newId(old)));
     return id;
   };
   snap.sources.forEach((s) => fresh(s.id));
@@ -149,12 +153,12 @@ export function remapSnapshot(snap: NotebookSnapshot, notebookId: string, newId:
     sources: snap.sources.map((s) => ({ ...s, id: fresh(s.id), notebook_id: notebookId })),
     chunks: snap.chunks
       .filter((c) => ids.has(c.source_id))
-      .map((c) => ({ ...c, id: newId(), source_id: fresh(c.source_id), notebook_id: notebookId })),
-    artifacts: snap.artifacts.map((a) => ({ ...a, id: newId(), notebook_id: notebookId, data: relinkImages(a.data) })),
+      .map((c) => ({ ...c, id: newId(c.id), source_id: fresh(c.source_id), notebook_id: notebookId })),
+    artifacts: snap.artifacts.map((a) => ({ ...a, id: newId(a.id), notebook_id: notebookId, data: relinkImages(a.data) })),
     chats: snap.chats.map((c) => ({ ...c, id: fresh(c.id), notebook_id: notebookId })),
     messages: snap.messages.map((m) => ({
       ...m,
-      id: newId(),
+      id: newId(m.id),
       notebook_id: notebookId,
       chat_id: known(m.chat_id),
       content: relinkImages(m.content),
@@ -183,7 +187,6 @@ export interface WriteOptions {
 export async function writeSnapshot(snap: NotebookSnapshot, opts: WriteOptions = {}): Promise<Notebook> {
   if (snap.format !== SNAPSHOT_FORMAT) throw new Error("Not a BrewLM notebook");
   if (snap.version > SNAPSHOT_VERSION) throw new Error("This notebook needs a newer version of BrewLM");
-  const d = await getDb();
   const now = Date.now();
   const nb: Notebook = {
     ...snap.notebook,
@@ -197,52 +200,147 @@ export async function writeSnapshot(snap: NotebookSnapshot, opts: WriteOptions =
   };
   const s = remapSnapshot(snap, nb.id);
   try {
-    for (const r of s.sources) {
-      await d.execute(
-        "INSERT INTO sources (id, notebook_id, type, title, content, mime, pinned, text, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-        [r.id, r.notebook_id, r.type, r.title, r.content, r.mime, r.pinned ?? 0, r.text ?? "", r.created_at]
-      );
-    }
-    for (const c of s.chunks) {
-      await d.execute(
-        "INSERT INTO source_chunks (id, source_id, notebook_id, seq, page, text, embedding) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        [c.id, c.source_id, c.notebook_id, c.seq, c.page, c.text, c.embedding]
-      );
-    }
-    for (const a of s.artifacts) {
-      await d.execute(
-        "INSERT INTO artifacts (id, notebook_id, kind, title, data, pinned, usage, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        [a.id, a.notebook_id, a.kind, a.title, a.data, a.pinned ?? 0, a.usage ?? null, a.created_at]
-      );
-    }
-    for (const c of s.chats) {
-      await d.execute(
-        "INSERT INTO chats (id, notebook_id, title, pinned, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
-        [c.id, c.notebook_id, c.title, c.pinned ?? 0, c.created_at, c.updated_at]
-      );
-    }
-    for (const i of s.images) {
-      await d.execute(
-        "INSERT INTO images (id, notebook_id, chat_id, prompt, model, mime, data, width, height, parent_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        [i.id, i.notebook_id, i.chat_id, i.prompt, i.model, i.mime, i.data, i.width, i.height, i.parent_id, i.created_at]
-      );
-    }
-    for (const m of s.messages) {
-      await d.execute(
-        "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-        [m.id, m.notebook_id, m.chat_id, m.role, m.content, m.created_at]
-      );
-    }
-    await d.execute(
-      "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, constitution_on, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-      [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.constitution_on, nb.created_at, nb.updated_at]
-    );
+    await insertRows(s);
+    await insertNotebook(nb);
   } catch (e) {
-    for (const t of ["sources", "source_chunks", "artifacts", "chats", "images", "messages"])
-      await d.execute(`DELETE FROM ${t} WHERE notebook_id = $1`, [nb.id]).catch(() => {});
+    await deleteRows(nb.id);
     throw e;
   }
   return nb;
+}
+
+/** Insert a remapped snapshot's rows (`fromShare` marks its chats as the link's). */
+async function insertRows(s: NotebookSnapshot, fromShare = false): Promise<void> {
+  const d = await getDb();
+  for (const r of s.sources) {
+    await d.execute(
+      "INSERT INTO sources (id, notebook_id, type, title, content, mime, pinned, text, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [r.id, r.notebook_id, r.type, r.title, r.content, r.mime, r.pinned ?? 0, r.text ?? "", r.created_at]
+    );
+  }
+  for (const c of s.chunks) {
+    await d.execute(
+      "INSERT INTO source_chunks (id, source_id, notebook_id, seq, page, text, embedding) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [c.id, c.source_id, c.notebook_id, c.seq, c.page, c.text, c.embedding]
+    );
+  }
+  for (const a of s.artifacts) {
+    await d.execute(
+      "INSERT INTO artifacts (id, notebook_id, kind, title, data, pinned, usage, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+      [a.id, a.notebook_id, a.kind, a.title, a.data, a.pinned ?? 0, a.usage ?? null, a.created_at]
+    );
+  }
+  for (const c of s.chats) {
+    await d.execute(
+      "INSERT INTO chats (id, notebook_id, title, pinned, from_share, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [c.id, c.notebook_id, c.title, c.pinned ?? 0, fromShare ? 1 : 0, c.created_at, c.updated_at]
+    );
+  }
+  for (const i of s.images) {
+    await d.execute(
+      "INSERT INTO images (id, notebook_id, chat_id, prompt, model, mime, data, width, height, parent_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+      [i.id, i.notebook_id, i.chat_id, i.prompt, i.model, i.mime, i.data, i.width, i.height, i.parent_id, i.created_at]
+    );
+  }
+  for (const m of s.messages) {
+    await d.execute(
+      "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+      [m.id, m.notebook_id, m.chat_id, m.role, m.content, m.created_at]
+    );
+  }
+}
+
+async function insertNotebook(nb: Notebook): Promise<void> {
+  const d = await getDb();
+  await d.execute(
+    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, constitution_on, share_id, share_key, share_version, shared_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.constitution_on, nb.share_id ?? "", nb.share_key ?? "", nb.share_version ?? 0, nb.shared_by ?? "", nb.created_at, nb.updated_at]
+  );
+}
+
+/** Best-effort removal of a notebook's rows (a failed import's leftovers). */
+async function deleteRows(notebookId: string): Promise<void> {
+  const d = await getDb();
+  for (const t of ["sources", "source_chunks", "artifacts", "chats", "images", "messages"])
+    await d.execute(`DELETE FROM ${t} WHERE notebook_id = $1`, [notebookId]).catch(() => {});
+}
+
+/** Where a shared notebook came from. */
+export interface ShareOrigin {
+  id: string;
+  key: string;
+  version: number;
+  sharedBy: string;
+}
+
+/** A row id for a link's row: the same every time that link is opened, so updates replace rows in place. */
+async function stableIds(shareId: string, olds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const enc = new TextEncoder();
+  for (const old of olds) {
+    const h = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(`brewlm-share:${shareId}:${old}`)));
+    const x = [...h.subarray(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    out.set(old, `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`);
+  }
+  return out;
+}
+
+/**
+ * Write a shared link's snapshot as a read-only notebook, or bring an earlier
+ * copy of it up to date: its sources, outputs and the link's own chats are
+ * replaced, and the viewer's chats stay (row ids are stable per link, so
+ * whatever they point at still resolves). Returns the notebook's id.
+ */
+export async function writeSharedSnapshot(snap: NotebookSnapshot, origin: ShareOrigin): Promise<string> {
+  if (snap.format !== SNAPSHOT_FORMAT) throw new Error("Not a BrewLM notebook");
+  if (snap.version > SNAPSHOT_VERSION) throw new Error("This notebook needs a newer version of BrewLM");
+  const olds = ["notebook", ...[snap.sources, snap.chunks, snap.artifacts, snap.chats, snap.messages, snap.images].flat().map((r) => r.id)];
+  const ids = await stableIds(origin.id, olds);
+  const nbId = ids.get("notebook")!;
+  const s = remapSnapshot(snap, nbId, (old) => ids.get(old)!);
+  const d = await getDb();
+  const [existing] = await d.select<Notebook[]>("SELECT * FROM notebooks WHERE id = $1", [nbId]);
+  const now = Date.now();
+  await d.execute("INSERT INTO sync_state (key, value) VALUES ('share_writing', '1') ON CONFLICT(key) DO UPDATE SET value = '1'");
+  try {
+    if (existing) {
+      const linkChats = "SELECT id FROM chats WHERE notebook_id = $1 AND from_share = 1";
+      await d.execute(`DELETE FROM messages WHERE chat_id IN (${linkChats})`, [nbId]);
+      await d.execute(`DELETE FROM images WHERE chat_id IN (${linkChats})`, [nbId]);
+      await d.execute("DELETE FROM chats WHERE notebook_id = $1 AND from_share = 1", [nbId]);
+      for (const t of ["source_chunks", "sources", "artifacts"]) await d.execute(`DELETE FROM ${t} WHERE notebook_id = $1`, [nbId]);
+      await insertRows(s, true);
+      const n = snap.notebook;
+      // The version last: a failure part-way leaves it behind, so the update is offered again.
+      await d.execute(
+        "UPDATE notebooks SET title = $1, description = $2, cover = $3, chat_bg = $4, chat_bg_dim = $5, grounded = $6, constitution_on = $7, share_key = $8, shared_by = $9, share_version = $10, updated_at = $11 WHERE id = $12",
+        [n.title, n.description, n.cover, n.chat_bg, n.chat_bg_dim, n.grounded, n.constitution_on, origin.key, origin.sharedBy, origin.version, now, nbId]
+      );
+    } else {
+      try {
+        await insertRows(s, true);
+        await insertNotebook({
+          ...snap.notebook,
+          id: nbId,
+          starred: 0,
+          folder_id: "",
+          trashed_at: 0,
+          share_id: origin.id,
+          share_key: origin.key,
+          share_version: origin.version,
+          shared_by: origin.sharedBy,
+          created_at: now,
+          updated_at: now,
+        });
+      } catch (e) {
+        await deleteRows(nbId);
+        throw e;
+      }
+    }
+  } finally {
+    await d.execute("UPDATE sync_state SET value = '0' WHERE key = 'share_writing'");
+  }
+  return nbId;
 }
 
 /**

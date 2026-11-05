@@ -1,0 +1,3 @@
+# Shared notebook links (/s/<id>#<key>) open the app, which reads the link.
+# Everything else that is missing stays a real 404 (see web/wrangler.jsonc).
+/s/* / 200

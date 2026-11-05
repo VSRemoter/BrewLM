@@ -1,8 +1,10 @@
-import { Settings as SettingsIcon, Smartphone } from "lucide-react";
+import { Settings as SettingsIcon, Share2, Smartphone } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Home from "./components/Home";
 import NotebookView from "./components/NotebookView";
 import PairPhonePanel from "./components/PairPhonePanel";
+import ShareDialog from "./components/ShareDialog";
+import OpenLinkDialog from "./components/OpenLinkDialog";
 import QuickSwitcher from "./components/QuickSwitcher";
 import TabStrip from "./components/TabStrip";
 import { IconButton, Modal } from "./components/ui";
@@ -14,6 +16,7 @@ import { startJobRunner } from "./lib/jobRunner";
 import { migrateMedia } from "./lib/mediaMigration";
 import { onRemoteChanges, startSync } from "./lib/sync";
 import { cloneNotebook } from "./lib/share";
+import { cleanUpShares, parseShareUrl } from "./lib/shareLinks";
 import {
   createFolder,
   createNotebook,
@@ -62,6 +65,10 @@ export default function App() {
   const narrow = useMediaQuery(NARROW);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pairOpen, setPairOpen] = useState(false);
+  /** Notebook whose Share dialog is open (tab strip button). */
+  const [sharingId, setSharingId] = useState<string | null>(null);
+  /** Opening someone's shared link: pasted (no `initial`) or from the web app's address. */
+  const [linkDialog, setLinkDialog] = useState<{ initial?: { id: string; secret: Uint8Array } } | null>(null);
   const byId = useMemo(() => new Map(notebooks.map((n) => [n.id, n])), [notebooks]);
 
   // Close tabs whose notebook was trashed or deleted (here or on another device).
@@ -168,6 +175,13 @@ export default function App() {
         await refresh();
         setReady(true);
         bootDone();
+        // Arrived through a shared link (web app: /s/<id>#<key>): open it, and
+        // take the key out of the address bar and history.
+        const link = parseShareUrl(window.location.href);
+        if (link) {
+          window.history.replaceState(null, "", "/");
+          setLinkDialog({ initial: link });
+        }
         // Background maintenance: repair garbage file sources left by old
         // versions, then move inline media into files (one-time; resumes if
         // interrupted) — its compaction also reclaims the repaired rows' space.
@@ -178,7 +192,10 @@ export default function App() {
           .catch((e) => console.warn("source repair:", e))
           .then(() => migrateMedia())
           .catch((e) => console.warn("media migration:", e));
-        void startSync().catch((e) => console.warn("sync:", e));
+        // Links of notebooks deleted for good stop working (also those deleted on another device).
+        void startSync()
+          .then(() => cleanUpShares())
+          .catch((e) => console.warn("sync:", e));
         // Non-blocking update check — never delays or breaks startup.
         if (s.updateCheckOnLaunch && platform.kind === "desktop") {
           void checkForUpdate().then((info) => {
@@ -249,6 +266,11 @@ export default function App() {
             actions={
               active && (
                 <>
+                  {!active.share_id && (
+                    <IconButton onClick={() => setSharingId(active.id)} label="Share notebook">
+                      <Share2 size={15} strokeWidth={1.8} />
+                    </IconButton>
+                  )}
                   {platform.kind === "desktop" && (
                     <IconButton onClick={() => setPairOpen(true)} label="Pair your phone">
                       <Smartphone size={15} strokeWidth={1.8} />
@@ -298,6 +320,7 @@ export default function App() {
             trashRetentionDays={settings.trashRetentionDays}
             onOpen={(id, background) => openTab(id, background)}
             onSettings={() => setSettingsOpen(true)}
+            onOpenLink={() => setLinkDialog({})}
             onCreate={createAndOpen}
             onTrash={async (id) => {
               await trashNotebook(id);
@@ -309,6 +332,7 @@ export default function App() {
             }}
             onDeleteForever={async (id) => {
               await deleteNotebook(id);
+              void cleanUpShares();
               await refresh();
             }}
             onMoveNotebookBulk={async (ids, folderId) => {
@@ -325,6 +349,7 @@ export default function App() {
             }}
             onDeleteForeverBulk={async (ids) => {
               for (const id of ids) await deleteNotebook(id);
+              void cleanUpShares();
               await refresh();
             }}
             onUpdateDetails={async (id, title, description) => {
@@ -396,6 +421,27 @@ export default function App() {
           <Modal title="Pair your phone" onClose={() => setPairOpen(false)}>
             <PairPhonePanel />
           </Modal>
+        )}
+        {linkDialog && (
+          <OpenLinkDialog
+            initial={linkDialog.initial}
+            onClose={() => setLinkDialog(null)}
+            onOpened={async (id) => {
+              setLinkDialog(null);
+              await refresh();
+              openTab(id);
+            }}
+          />
+        )}
+        {sharingId && (
+          <ShareDialog
+            notebookId={sharingId}
+            onClose={() => setSharingId(null)}
+            onOpenSettings={() => {
+              setSharingId(null);
+              setSettingsOpen(true);
+            }}
+          />
         )}
 
         {settingsOpen && (

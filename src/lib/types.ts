@@ -20,6 +20,14 @@ export interface Notebook {
   grounded: number;
   /** SQLite boolean: 1 = the constitution shapes replies (default); 0 = kept but ignored (/constitution off). */
   constitution_on: number;
+  /** Opened from someone's shared link (read-only): the link's id; "" for your own notebooks. */
+  share_id?: string;
+  /** That link's key (base64url), to fetch its updates. */
+  share_key?: string;
+  /** The link's version this copy shows. */
+  share_version?: number;
+  /** The name the owner chose to show, if any. */
+  shared_by?: string;
   created_at: number;
   updated_at: number;
 }

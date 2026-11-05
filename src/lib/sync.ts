@@ -451,6 +451,13 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       for (const r of found) rows.set(`${tbl}:${r[pk]}`, r);
     }
 
+    // Notebooks opened from someone's shared link stay on this device, with everything in them.
+    const sharedHere = new Set(
+      (await d.select<{ id: string }[]>("SELECT id FROM notebooks WHERE share_id != ''")).map((r) => r.id)
+    );
+    const fromSharedLink = (tbl: string, row: Record<string, unknown> | undefined) =>
+      !!row && sharedHere.has(String(tbl === "notebooks" ? row.id : row.notebook_id ?? ""));
+
     const changes: { key: string; hlc: string; payload: string }[] = [];
     /** Each record's own file (rows too big for the change log), by key. */
     const pointers = new Map<string, string | null>();
@@ -463,11 +470,15 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       // Big rows fill a push sooner; the rest wait for the next one.
       if (changes.length > 0 && batchChars >= PUSH_CHARS) break;
       const label = `${e.tbl}:${e.row_id}`;
-      if (!SYNCED_TABLES[e.tbl] || (e.tbl === "settings" && !syncsSetting(e.row_id, syncKeys))) {
+      const row = rows.get(label);
+      if (
+        !SYNCED_TABLES[e.tbl] ||
+        (e.tbl === "settings" && !syncsSetting(e.row_id, syncKeys)) ||
+        fromSharedLink(e.tbl, row)
+      ) {
         sent.push({ ...e, hlc: null }); // never leaves this device: just clear it
         continue;
       }
-      const row = rows.get(label);
       let json = JSON.stringify({ v: 1, tbl: e.tbl, id: e.row_id, deleted: !row, ...(row ? { row } : {}) });
       if (json.length > MAX_RECORD) {
         if (!oversized.has(label)) log(`${label} is too large to sync (${json.length} chars)`, true);
@@ -539,7 +550,7 @@ const media = {
 const fileId = (keys: VaultKeys, name: string) => hiddenId(keys, `file:${name}`);
 
 async function scanMedia(): Promise<void> {
-  const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
+  const names = (await referencedBlobRefs({ synced: true })).map((r) => r.slice(BLOB_PREFIX.length));
   const absent = new Set(await platform.blobs.missing(names));
   for (const n of names) (absent.has(n) ? media.wanted : media.toUpload).add(n);
   media.scanned = true;
@@ -732,7 +743,7 @@ async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   if (pending.some((r) => !oversized.has(r.k))) return;
 
   const d = await getDb();
-  const names = (await referencedBlobRefs()).map((r) => r.slice(BLOB_PREFIX.length));
+  const names = (await referencedBlobRefs({ synced: true })).map((r) => r.slice(BLOB_PREFIX.length));
   const recordFiles = (await d.select<{ blob: string }[]>("SELECT blob FROM sync_record_blobs")).map((r) => r.blob);
   const live = [...(await Promise.all(names.map((n) => fileId(keys, n)))), ...recordFiles];
   let res: { removed: number; freed: number; waiting?: number; retryInMs?: number; usedBytes?: number };
@@ -1010,6 +1021,17 @@ export async function fetchThroughServer(
     throw new Error(detail || `The sync server couldn't fetch that page (HTTP ${res.status}).`);
   }
   return res;
+}
+
+/** The sync server's address, signed in or not (shared links are public); null when this build has none. */
+export async function syncServerUrl(): Promise<string | null> {
+  const s = server ?? (await platform.sync.config());
+  return s ? s.url.replace(/\/$/, "") : null;
+}
+
+/** The sync server and this account's session, for shared links (shareLinks.ts); null when signed out. */
+export function shareServer(): { url: string; session: string } | null {
+  return server && account ? { url: server.url.replace(/\/$/, ""), session: account.session } : null;
 }
 
 /** Plan, trial and storage use for Settings; also decides whether this device uploads. */

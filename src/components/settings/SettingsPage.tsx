@@ -7,6 +7,7 @@ import {
   Info,
   Palette,
   RefreshCw,
+  Share2,
   Smartphone,
   Sparkles,
   Wand2,
@@ -23,6 +24,7 @@ import AiModelSection from "./AiModelSection";
 import AppearanceSection from "./AppearanceSection";
 import AudioSection from "./AudioSection";
 import DataSection from "./DataSection";
+import SharingSection from "./SharingSection";
 import StudioSection from "./StudioSection";
 import SyncSection, { useSyncStatus } from "./SyncSection";
 import UsageSection from "./UsageSection";
@@ -36,6 +38,7 @@ const SECTIONS = [
   { id: "data", label: "Data & Storage", icon: Database, group: 2 },
   { id: "phone", label: "Phone Pairing", icon: Smartphone, group: 2 },
   { id: "sync", label: "Sync", icon: RefreshCw, group: 2 },
+  { id: "sharing", label: "Sharing", icon: Share2, group: 2 },
   { id: "about", label: "About & Updates", icon: Info, group: 3 },
 ] as const;
 
@@ -97,7 +100,7 @@ export default function SettingsPage({
           >
             {SECTIONS.filter(
               // Phone Pairing serves the library from this computer: desktop only.
-              (s) => (s.id !== "sync" || syncAvailable) && (s.id !== "phone" || platform.kind === "desktop")
+              (s) => ((s.id !== "sync" && s.id !== "sharing") || syncAvailable) && (s.id !== "phone" || platform.kind === "desktop")
             ).map((s, i, list) => {
               const Icon = s.icon;
               const active = section === s.id;
@@ -151,6 +154,7 @@ export default function SettingsPage({
                   </div>
                 )}
                 {section === "sync" && <SyncSection />}
+                {section === "sharing" && <SharingSection />}
                 {section === "about" && (
                   <AboutSection settings={settings} patch={patch} updateInfo={updateInfo} />
                 )}

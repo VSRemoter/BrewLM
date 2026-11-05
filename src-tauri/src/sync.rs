@@ -33,6 +33,7 @@ const SYNCED: &[(&str, &str)] = &[
     ("images", "id"),
     ("settings", "key"),
     ("usage_events", "id"),
+    ("shares", "id"),
 ];
 
 fn pk_of(tbl: &str) -> Option<&'static str> {

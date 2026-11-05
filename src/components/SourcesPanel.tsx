@@ -44,6 +44,7 @@ export default function SourcesPanel({
   constitutionOn = true,
   onChanged,
   showDetails = false,
+  readOnly = false,
 }: {
   notebookId: string;
   sources: Source[];
@@ -52,6 +53,8 @@ export default function SourcesPanel({
   onChanged: () => void;
   /** Response details setting: the source viewer shows storage. */
   showDetails?: boolean;
+  /** A notebook shared with you: view only (no adding, renaming or removing). */
+  readOnly?: boolean;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -94,7 +97,7 @@ export default function SourcesPanel({
   };
 
   const hasDraggedFiles = (e: React.DragEvent) =>
-    Array.from(e.dataTransfer.types).includes("Files");
+    !readOnly && Array.from(e.dataTransfer.types).includes("Files");
 
   return (
     <div
@@ -135,7 +138,7 @@ export default function SourcesPanel({
         <span className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">
           Sources
         </span>
-        <div className="relative">
+        <div className={`relative ${readOnly ? "hidden" : ""}`}>
           <IconButton onClick={() => setMenuOpen((v) => !v)} label="Add source">
             <Plus size={16} strokeWidth={2} />
           </IconButton>
@@ -194,7 +197,9 @@ export default function SourcesPanel({
               <FileText size={15} strokeWidth={1.8} className="text-ink-3" />
             </div>
             <p className="text-[12.5px] leading-relaxed text-ink-3">
-              Add PDFs, text, links, images, or audio. The AI will ground its answers in these sources.
+              {readOnly
+                ? "This shared notebook has no sources."
+                : "Add PDFs, text, links, images, or audio. The AI will ground its answers in these sources."}
             </p>
           </div>
         )}
@@ -289,7 +294,7 @@ export default function SourcesPanel({
                   <Pin size={12} fill={s.pinned ? "currentColor" : "none"} />
                 </button>
               )}
-              {!isRenaming && (
+              {!isRenaming && !readOnly && (
                 <button
                   onClick={() => {
                     setRenamingId(s.id);
@@ -301,6 +306,7 @@ export default function SourcesPanel({
                   <Pencil size={12} />
                 </button>
               )}
+              {!readOnly && (
               <button
                 onClick={async () => {
                   const ok = await confirmAction({
@@ -317,6 +323,7 @@ export default function SourcesPanel({
               >
                 <X size={13} />
               </button>
+              )}
             </div>
           );
         })}
