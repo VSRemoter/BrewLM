@@ -1141,6 +1141,13 @@ export default function ChatPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachInputRef = useRef<HTMLInputElement>(null);
 
+  // Re-fit the composer whenever the draft changes from anywhere — notably
+  // setDraft("") on send, which otherwise leaves the box at its old height.
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    if (ta) autoSize(ta);
+  }, [draft]);
+
   /** Append @Title tokens for freshly added sources, then focus the input. */
   const insertMentions = (titles: string[]) => {
     setDraft((prev) => {
