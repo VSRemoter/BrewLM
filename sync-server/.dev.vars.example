@@ -14,3 +14,8 @@ POLAR_WEBHOOK_SECRET=
 ADMIN_TOKEN=
 # Optional. Where reports of shared links are emailed (needs RESEND_API_KEY); without it they're printed here.
 REPORT_EMAIL=
+# Optional, for BrewLM AI (src/ai.ts). A management key from openrouter.ai/settings/management-keys
+# (give it an expiry date) and any long random string that encrypts the per-user keys stored in D1.
+# Never change AI_KEY_SECRET once keys exist: stored keys couldn't be read (users would get new ones next month).
+OPENROUTER_MANAGEMENT_KEY=
+AI_KEY_SECRET=

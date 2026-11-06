@@ -13,6 +13,7 @@
  *   POST   /v1/webhooks/polar        subscription updates from Polar
  *   POST   /v1/fetch                 { url, method?, headers?, body? } → the page   (fetch.ts; web app)
  *   /v1/shares…                      shared notebook links (shares.ts)
+ *   /v1/ai/…                         BrewLM AI: model config, the account's OpenRouter key, usage (ai.ts)
  *
  * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
@@ -39,6 +40,7 @@
  * reads always work, so a lapsed account can still download its library.
  * `Env` is generated from wrangler.jsonc by `npm run types`.
  */
+import { aiRoutes, reconcileAll } from "./ai";
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
 import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
@@ -197,9 +199,10 @@ export default {
     out.headers.append("vary", "Origin");
     return out;
   },
-  /** Hourly (wrangler.jsonc triggers): expired and abandoned shared links. */
+  /** Hourly (wrangler.jsonc triggers): expired and abandoned shared links; AI allowances and keys. */
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(sweepShares(env).then((r) => r.removed && console.log(`shares: removed ${r.removed}`)));
+    ctx.waitUntil(reconcileAll(env).then((r) => r.checked && console.log(`ai: checked ${r.checked}, failed ${r.failed}`)));
   },
 } satisfies ExportedHandler<Env>;
 
@@ -209,6 +212,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (account) return account;
   const shared = await shareRoutes(req, env, url.pathname);
   if (shared) return shared;
+  const ai = await aiRoutes(req, env, url.pathname);
+  if (ai) return ai;
   if (url.pathname === "/v1/fetch") {
     if (req.method !== "POST") return fetchFail(405, "method not allowed");
     const who = await fetchCaller(req, env);

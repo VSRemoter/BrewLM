@@ -2,6 +2,17 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "sync-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "sync-server",
+        "run",
+        "dev"
+      ],
+      "port": 8787
+    },
+    {
       "name": "vite",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

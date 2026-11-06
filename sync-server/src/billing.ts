@@ -11,10 +11,18 @@
  */
 import { page, type User } from "./auth";
 
-export type Plan = "trial" | "sync" | "plus" | "none";
+/** Pro and Max are Sync and Sync Plus with BrewLM AI included (ai.ts). */
+export type Plan = "trial" | "sync" | "plus" | "pro" | "max" | "none";
 
 const GB = 1024 ** 3;
-export const LIMITS: Record<Plan, number> = { trial: 10 * GB, sync: 10 * GB, plus: 100 * GB, none: 10 * GB };
+export const LIMITS: Record<Plan, number> = {
+  trial: 10 * GB,
+  sync: 10 * GB,
+  plus: 100 * GB,
+  pro: 10 * GB,
+  max: 100 * GB,
+  none: 10 * GB,
+};
 /** Polar keeps retrying a failed renewal for a while; don't cut sync off meanwhile. */
 const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYING = new Set(["active", "trialing", "past_due"]);
@@ -31,7 +39,7 @@ export interface Entitlement {
 }
 
 interface SubscriptionRow {
-  plan: "sync" | "plus";
+  plan: "sync" | "plus" | "pro" | "max";
   status: string;
   current_period_end: number | null;
   cancel_at_period_end: number;
