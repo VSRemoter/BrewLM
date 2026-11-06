@@ -14,6 +14,9 @@
  * - Spending is tracked per account, not per key: a key revoked mid-month
  *   (plan lapsed, refund) carries what it spent, so a new key only gets what's
  *   left. Each key's OpenRouter limit = cap + top-ups − carried.
+ * - Top-ups (Polar one-time orders, billing.ts) add to the cycle's allowance.
+ *   The plan's allowance is spent first; unused top-up credit carries into
+ *   the next month for as long as the plan lasts.
  * - A key lives for one cycle: the first request of a new month deletes it and
  *   the next POST /v1/ai/key creates a fresh one (a leaked key dies monthly).
  *   Keys also expire on OpenRouter two days into the next month, as a backstop.
@@ -126,14 +129,20 @@ export async function reconcile(env: Env, userId: string, now = Date.now()): Pro
     }
 
     if (row.cycle !== cycle) {
-      // A new month: the old key retires with its month, and spending starts over.
-      if (row.key_hash) await deleteKey(env, row.key_hash);
+      // A new month: the old key retires with its month, and spending starts
+      // over. Unused top-up credit (spent after the allowance) carries over.
+      let spent = row.carried;
+      if (row.key_hash) {
+        spent += (await getKey(env, row.key_hash))?.usage ?? 0;
+        await deleteKey(env, row.key_hash);
+      }
       if (monthly <= 0) {
         const del = await env.DB.prepare("DELETE FROM ai_accounts WHERE user_id = ? AND rev = ?").bind(userId, row.rev).run();
         if (del.meta.changes === 1) return null;
         continue;
       }
-      const fresh = { cycle, monthly, cap: monthly, topup: 0, carried: 0, key_hash: null, key_enc: null, key_created_at: null };
+      const topup = usd(Math.max(0, row.topup - Math.max(0, spent - row.cap)));
+      const fresh = { cycle, monthly, cap: monthly, topup, carried: 0, key_hash: null, key_enc: null, key_created_at: null };
       if (await save(env, row, fresh, now)) return load(env, userId);
       continue;
     }
@@ -167,6 +176,62 @@ export async function reconcile(env: Env, userId: string, now = Date.now()): Pro
     if (!(await save(env, row, next, now))) continue;
     if (next.key_hash) await updateKey(env, next.key_hash, { limit: keyLimit({ ...row, ...next }) });
     return load(env, userId);
+  }
+  throw new Error("ai account busy");
+}
+
+/* -------------------------------- top-ups --------------------------------- */
+
+/** What the account has spent this cycle: earlier keys plus the current one. */
+async function spentThisCycle(env: Env, row: AiAccount): Promise<number> {
+  return row.carried + (row.key_hash ? ((await getKey(env, row.key_hash))?.usage ?? 0) : 0);
+}
+
+/**
+ * Adds a paid top-up order's credit, once per order (Polar may deliver the
+ * same order in several events). An account without an AI plan keeps the
+ * record but gets nothing; checkout only sells top-ups to Pro and Max.
+ */
+export async function applyTopup(env: Env, userId: string, orderId: string, credit: number, netAmount: number, now = Date.now()): Promise<void> {
+  const ins = await env.DB.prepare(
+    "INSERT OR IGNORE INTO ai_topups (order_id, user_id, credit, net_amount, created_at) VALUES (?, ?, ?, ?, ?)"
+  )
+    .bind(orderId, userId, credit, netAmount, now)
+    .run();
+  if (ins.meta.changes === 0) return;
+  try {
+    await adjustTopup(env, userId, () => credit, now);
+  } catch (e) {
+    // Let Polar's retry apply it again.
+    await env.DB.prepare("DELETE FROM ai_topups WHERE order_id = ?").bind(orderId).run();
+    throw e;
+  }
+}
+
+/** A (partial) refund of a top-up order takes back its share — never below what's already spent. */
+export async function refundTopup(env: Env, userId: string, orderId: string, refundedAmount: number, now = Date.now()): Promise<void> {
+  const t = await env.DB.prepare("SELECT credit, net_amount, refunded_amount FROM ai_topups WHERE order_id = ? AND user_id = ?")
+    .bind(orderId, userId)
+    .first<{ credit: number; net_amount: number; refunded_amount: number }>();
+  if (!t || refundedAmount <= t.refunded_amount) return;
+  const share = t.net_amount > 0 ? Math.min(1, (refundedAmount - t.refunded_amount) / t.net_amount) : 1;
+  const res = await env.DB.prepare("UPDATE ai_topups SET refunded_amount = ? WHERE order_id = ? AND refunded_amount = ?")
+    .bind(refundedAmount, orderId, t.refunded_amount)
+    .run();
+  if (res.meta.changes === 0) return; // another delivery of the same refund
+  await adjustTopup(env, userId, (row, spent) => -Math.min(t.credit * share, Math.max(0, row.cap + row.topup - spent)), now);
+}
+
+/** Changes the cycle's top-up by `delta(row, spent)` and the key's limit with it. */
+async function adjustTopup(env: Env, userId: string, delta: (row: AiAccount, spent: number) => number, now: number): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const row = await reconcile(env, userId, now);
+    if (!row) return;
+    const spent = await spentThisCycle(env, row);
+    const topup = usd(Math.max(0, row.topup + delta(row, spent)));
+    if (!(await save(env, row, { topup }, now))) continue;
+    if (row.key_hash) await updateKey(env, row.key_hash, { limit: keyLimit({ ...row, topup }) });
+    return;
   }
   throw new Error("ai account busy");
 }
@@ -221,9 +286,8 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
   const { plan, trial } = await monthlyAllowance(env, user.id, now);
   const resetsAt = monthStart(now, 1);
   if (!row || row.monthly <= 0) return json({ plan: null, trial: false, usedFraction: 0, resetsAt, left: null });
-  const keySpent = row.key_hash ? ((await getKey(env, row.key_hash))?.usage ?? 0) : 0;
   const allowance = row.cap + row.topup;
-  const spent = row.carried + keySpent;
+  const spent = await spentThisCycle(env, row);
   const remaining = Math.max(0, allowance - spent);
   const left = Object.fromEntries(Object.entries(AI_ESTIMATES).map(([k, cost]) => [k, Math.floor(remaining / cost)]));
   return json({

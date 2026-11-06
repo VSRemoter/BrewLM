@@ -13,9 +13,14 @@ GET    /v1/auth/verify?token=          confirm page; POST (its button) approves
 POST   /v1/auth/poll                   { pendingId } → { status, session?, vault? }
 DELETE /v1/auth/session
 GET    /v1/me                          → plan, trial, storage used/limit
-POST   /v1/billing/checkout            { plan, interval } → { url }   (Polar)
+POST   /v1/billing/checkout            { plan, interval } or { plan: "topup" } → { url }   (Polar)
+POST   /v1/billing/change              { plan, interval } → { when: "now"|"renewal" }
 POST   /v1/billing/portal              → { url }
-POST   /v1/webhooks/polar              Standard Webhooks-signed subscription events
+POST   /v1/webhooks/polar              Standard Webhooks-signed subscription and order events
+
+GET    /v1/ai/config                   public: which model does each job (src/aiConfig.ts)
+POST   /v1/ai/key                      the account's capped OpenRouter key (Pro/Max)
+GET    /v1/ai/usage                    → { usedFraction, resetsAt, left: { chats, audioOverviews, … } }
 
 POST /v1/vaults/:vault/push            { device, changes: [{ key, hlc, payload }] }
 GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
@@ -50,7 +55,10 @@ secret that only the QR code carries, stored under an id derived from it.
 
 Accounts: email sign-in links (the app polls while you confirm in the
 browser; opening the link alone never signs in), a 14-day trial without a
-card, then Sync (10 GB) or Sync Plus (100 GB) through Polar. Without a plan or
+card, then Sync (10 GB) or Sync Plus (100 GB) through Polar, or Pro (10 GB) and
+Max (100 GB) with BrewLM AI included. An account has one subscription:
+`/v1/billing/change` switches it, upgrading now (Polar charges the prorated
+difference first) and downgrading at renewal. Without a plan or
 trial a vault is read-only (402 on uploads); uploads past the limit get 413.
 The limit is checked inside the vault's Durable Object on every write, one
 at a time, so parallel uploads can't share the same free space: an upload
@@ -58,6 +66,16 @@ counts in full from the moment it's let in, R2 stores exactly the bytes
 counted, and any file found in R2 that isn't counted starts counting.
 Records count their key and a fixed overhead too. Every pull, push, upload
 and sweep returns `usedBytes`, so the app's storage figure is always current.
+
+BrewLM AI (src/ai.ts): each Pro/Max account gets a monthly allowance in
+dollars of OpenRouter credit (src/aiConfig.ts), spent through an OpenRouter
+key this server creates with that limit (src/openrouter.ts) and stores
+encrypted. Months are calendar months (UTC): the first is prorated, a plan
+change adds or removes the difference, a lapsed plan's key is deleted, and
+every key is replaced at the start of a month. Spending is tracked per
+account, so a new key only gets what's left. Top-ups (a one-time Polar
+product) add credit that carries over while the plan lasts. The hourly cron
+grants, revokes and rolls over; webhooks do it right away.
 
 Conflicts are last-writer-wins on each change's hybrid logical clock
 (`<ms>:<counter>:<device>`), checked here and again on the device
@@ -77,7 +95,9 @@ npm run typecheck
 No Cloudflare account is needed for any of this. Without `RESEND_API_KEY`
 sign-in links are printed to this console. For billing in Polar's sandbox,
 set `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET` and the `POLAR_PRODUCT_*`
-ids. After changing `wrangler.jsonc`, run `npm run types`.
+ids. For BrewLM AI, set `OPENROUTER_MANAGEMENT_KEY` (a management key, with
+an expiry date) and `AI_KEY_SECRET` (any long random string; never change it
+once keys exist). After changing `wrangler.jsonc`, run `npm run types`.
 
 To watch two copies of BrewLM sync on one machine, run the app with
 `npm run tauri dev` and then `scripts/sync-dev-copy.sh a` and
@@ -103,13 +123,23 @@ npm run migrate:remote                               # account tables
 npx wrangler secret put RESEND_API_KEY               # each prompts for the value
 npx wrangler secret put POLAR_ACCESS_TOKEN
 npx wrangler secret put POLAR_WEBHOOK_SECRET
+npx wrangler secret put OPENROUTER_MANAGEMENT_KEY    # BrewLM AI
+npx wrangler secret put AI_KEY_SECRET
 ```
 
-Set the four `POLAR_PRODUCT_*` ids in `wrangler.jsonc` (they're public), then
-`npm run deploy`. Cloudflare attaches `sync.brewlm.com` and its certificate.
-In Polar, add a webhook to `https://sync.brewlm.com/v1/webhooks/polar` for the
-`subscription.*` events. Never set `SYNC_DEV_TOKEN` in production (the server
-ignores it there anyway).
+Set the `POLAR_PRODUCT_*` ids in `wrangler.jsonc` (they're public; an empty
+one isn't for sale), then `npm run deploy`. Cloudflare attaches
+`sync.brewlm.com` and its certificate. In Polar, add a webhook to
+`https://sync.brewlm.com/v1/webhooks/polar` for the `subscription.*` events
+and `order.paid`, `order.updated` and `order.refunded` (AI top-ups). Never set
+`SYNC_DEV_TOKEN` in production (the server ignores it there anyway).
+
+Polar settings for BrewLM AI: give Pro and Max a trial on the product (it
+asks for a card), turn on **Prevent trial abuse**, and turn off plan changes
+in the customer portal (the app changes plans through `/v1/billing/change`,
+which charges upgrades before they apply). Refunding a subscription order
+doesn't stop its AI: revoke the subscription for that (Polar does when it
+refunds to head off a chargeback).
 
 Production uses live Polar (`api.polar.sh`) and the live products in
 `wrangler.jsonc`; `.dev.vars` points local development at Polar's sandbox.

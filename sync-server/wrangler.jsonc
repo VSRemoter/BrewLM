@@ -41,7 +41,14 @@
     "POLAR_PRODUCT_SYNC_MONTHLY": "2c5b79e7-3ea2-497a-bcf8-3fa70f50cdad",
     "POLAR_PRODUCT_SYNC_YEARLY": "8b553fae-d7ce-415d-aec4-c03e7b00e63f",
     "POLAR_PRODUCT_PLUS_MONTHLY": "7a50c5ce-dabb-4127-9a52-558945554dcf",
-    "POLAR_PRODUCT_PLUS_YEARLY": "07300213-6aa1-4e95-bfb9-4d4dc15c440b"
+    "POLAR_PRODUCT_PLUS_YEARLY": "07300213-6aa1-4e95-bfb9-4d4dc15c440b",
+    // BrewLM AI plans and the one-time AI top-up: fill in once the products
+    // exist in Polar (empty = not for sale yet; checkout answers 503).
+    "POLAR_PRODUCT_PRO_MONTHLY": "",
+    "POLAR_PRODUCT_PRO_YEARLY": "",
+    "POLAR_PRODUCT_MAX_MONTHLY": "",
+    "POLAR_PRODUCT_MAX_YEARLY": "",
+    "POLAR_PRODUCT_AI_TOPUP": ""
   },
   // Hourly: delete expired and abandoned shared links (src/shares.ts sweepShares);
   // grant, revoke and roll over BrewLM AI allowances (src/ai.ts reconcileAll).

@@ -32,6 +32,9 @@ async function fakeSite(req: Request, url: URL): Promise<Response> {
  * two test-only routes: POST /__usage { hash, usage } sets what a key has
  * spent, GET /__keys lists the keys that exist.
  */
+/** Polar calls that change something (plan changes), for tests to inspect via GET https://polar.test/__calls. */
+const polarCalls: { path: string; body: unknown }[] = [];
+
 const orKeys = new Map<string, { key: string; name: string; limit: number | null; usage: number; disabled: boolean; expires_at: string }>();
 async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
@@ -92,6 +95,11 @@ export default defineConfig(async () => ({
           POLAR_PRODUCT_SYNC_YEARLY: "prod-sync-y",
           POLAR_PRODUCT_PLUS_MONTHLY: "prod-plus-m",
           POLAR_PRODUCT_PLUS_YEARLY: "prod-plus-y",
+          POLAR_PRODUCT_PRO_MONTHLY: "prod-pro-m",
+          POLAR_PRODUCT_PRO_YEARLY: "prod-pro-y",
+          POLAR_PRODUCT_MAX_MONTHLY: "prod-max-m",
+          POLAR_PRODUCT_MAX_YEARLY: "prod-max-y",
+          POLAR_PRODUCT_AI_TOPUP: "prod-ai-topup",
           OPENROUTER_API_URL: "https://openrouter.test/api/v1",
           OPENROUTER_MANAGEMENT_KEY: "or-mgmt-test",
           AI_KEY_SECRET: "ai-test-secret",
@@ -102,7 +110,17 @@ export default defineConfig(async () => ({
           if (url.host === "page.test") return fakeSite(req, url);
           if (url.host === "openrouter.test") return fakeOpenRouter(req, url);
           if (url.host !== "polar.test") return new Response("no network in tests", { status: 503 });
+          if (url.pathname === "/__calls") return Response.json(polarCalls);
           const body = (await req.json()) as Record<string, unknown>;
+          // Plan changes (POST /v1/billing/change). A subscription id containing
+          // "declined" fails like a card that won't take the prorated charge.
+          const sub = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
+          if (sub && req.method === "PATCH") {
+            polarCalls.push({ path: url.pathname, body });
+            if (sub[1].includes("declined") && body.product_id)
+              return Response.json({ detail: "payment failed" }, { status: 422 });
+            return Response.json({ id: sub[1], ...body });
+          }
           if (url.pathname === "/v1/checkouts/")
             return Response.json({
               url: `https://polar.test/checkout?product=${(body.products as string[])[0]}&customer=${body.external_customer_id}&auth=${req.headers.get("authorization")}`,

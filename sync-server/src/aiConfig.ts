@@ -51,3 +51,5 @@ export const AI_ESTIMATES = {
 export const AI_MONTHLY: Record<string, number> = { pro: 4, max: 10 };
 /** During a plan's (card-backed) Polar trial, whatever the plan. */
 export const AI_TRIAL = 0.5;
+/** What one AI top-up (POLAR_PRODUCT_AI_TOPUP, sold for $7) adds. Unused top-ups carry over while the plan lasts. */
+export const AI_TOPUP_CREDIT = 5;

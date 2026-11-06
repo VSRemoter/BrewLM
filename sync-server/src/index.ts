@@ -7,7 +7,8 @@
  *   POST   /v1/auth/poll             { pendingId } → { status, session?, email?, vault? }
  *   DELETE /v1/auth/session          sign this device out
  *   GET    /v1/me                    → { email, vault, plan, canSync, limitBytes, usedBytes, … }
- *   POST   /v1/billing/checkout      { plan, interval } → { url }   (Polar-hosted)
+ *   POST   /v1/billing/checkout      { plan, interval } or { plan: "topup" } → { url }   (Polar-hosted)
+ *   POST   /v1/billing/change        { plan, interval } → { ok, when }   (switch plans; upgrades now, downgrades at renewal)
  *   POST   /v1/billing/portal        → { url }
  *   GET    /v1/billing/done          "return to BrewLM" page
  *   POST   /v1/webhooks/polar        subscription updates from Polar
@@ -42,7 +43,7 @@
  */
 import { aiRoutes, reconcileAll } from "./ai";
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
-import { billingDone, checkout, entitlement, polarWebhook, portal } from "./billing";
+import { billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
 import { sharedBytes, shareRoutes, sweepShares } from "./shares";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
@@ -149,7 +150,7 @@ async function accountRoutes(req: Request, env: Env, path: string): Promise<Resp
   if (path === "/v1/billing/done" && req.method === "GET") return billingDone();
   if (path === "/v1/webhooks/polar" && req.method === "POST") return polarWebhook(req, env);
 
-  const signedIn = ["/v1/auth/session", "/v1/me", "/v1/billing/checkout", "/v1/billing/portal"];
+  const signedIn = ["/v1/auth/session", "/v1/me", "/v1/billing/checkout", "/v1/billing/change", "/v1/billing/portal"];
   if (!signedIn.includes(path)) return null;
   const user = await userForSession(env, bearer(req));
   if (!user) return fail(401, "unauthorized");
@@ -157,6 +158,7 @@ async function accountRoutes(req: Request, env: Env, path: string): Promise<Resp
   if (path === "/v1/auth/session" && req.method === "DELETE") return signOut(env, bearer(req));
   if (path === "/v1/me" && req.method === "GET") return me(env, user);
   if (path === "/v1/billing/checkout" && req.method === "POST") return checkout(req, env, user);
+  if (path === "/v1/billing/change" && req.method === "POST") return changePlan(req, env, user);
   if (path === "/v1/billing/portal" && req.method === "POST") return portal(env, user);
   return fail(405, "method not allowed");
 }

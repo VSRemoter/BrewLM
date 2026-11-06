@@ -1,14 +1,22 @@
 /**
  * Plans, the free trial and Polar billing.
  *
- * - Trial: 14 days from sign-up, no card. Plans: Sync (10 GB) and Sync Plus
- *   (100 GB), each billed monthly or yearly through Polar, the merchant of
- *   record. Polar products are named by env vars (POLAR_PRODUCT_*).
+ * - Trial: 14 days from sign-up, no card. Plans: Sync (10 GB), Sync Plus
+ *   (100 GB), and Pro (10 GB) and Max (100 GB) with BrewLM AI included
+ *   (ai.ts), each billed monthly or yearly through Polar, the merchant of
+ *   record. Pro and Max may carry a Polar trial (card required, set on the
+ *   product). The AI top-up is a one-time product. Polar products are named by
+ *   env vars (POLAR_PRODUCT_*).
  * - Checkout and the billing portal are Polar-hosted pages the app opens in
  *   the browser; Polar's webhooks keep `subscriptions` current.
+ * - An account has one subscription: checkout refuses a second, and
+ *   POST /v1/billing/change switches plans instead — upgrades now (Polar
+ *   charges the prorated difference first), downgrades at the next renewal.
  * - Without an active plan or trial, sync is read-only: devices can still
  *   download their library but not upload.
  */
+import { applyTopup, monthlyAllowance, reconcile, refundTopup } from "./ai";
+import { AI_TOPUP_CREDIT } from "./aiConfig";
 import { page, type User } from "./auth";
 
 /** Pro and Max are Sync and Sync Plus with BrewLM AI included (ai.ts). */
@@ -38,8 +46,14 @@ export interface Entitlement {
   cancelAtPeriodEnd: boolean;
 }
 
+type PaidPlan = "sync" | "plus" | "pro" | "max";
+const PAID_PLANS: PaidPlan[] = ["sync", "plus", "pro", "max"];
+/** Higher is more: moving up a rank is an upgrade. */
+const RANK: Record<PaidPlan, number> = { sync: 1, plus: 2, pro: 3, max: 4 };
+type Interval = "month" | "year";
+
 interface SubscriptionRow {
-  plan: "sync" | "plus" | "pro" | "max";
+  plan: PaidPlan;
   status: string;
   current_period_end: number | null;
   cancel_at_period_end: number;
@@ -72,36 +86,76 @@ const json = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
-function productFor(env: Env, plan: string, interval: string): string | undefined {
-  const key = `POLAR_PRODUCT_${plan.toUpperCase()}_${interval === "year" ? "YEARLY" : "MONTHLY"}` as keyof Env;
-  const id = env[key];
+function envString(env: Env, key: string): string | undefined {
+  const id = env[key as keyof Env];
   return typeof id === "string" && id ? id : undefined;
 }
 
-function planForProduct(env: Env, productId: string): "sync" | "plus" | null {
-  if (productId === env.POLAR_PRODUCT_SYNC_MONTHLY || productId === env.POLAR_PRODUCT_SYNC_YEARLY) return "sync";
-  if (productId === env.POLAR_PRODUCT_PLUS_MONTHLY || productId === env.POLAR_PRODUCT_PLUS_YEARLY) return "plus";
+function productFor(env: Env, plan: PaidPlan, interval: Interval): string | undefined {
+  return envString(env, `POLAR_PRODUCT_${plan.toUpperCase()}_${interval === "year" ? "YEARLY" : "MONTHLY"}`);
+}
+
+function planForProduct(env: Env, productId: string): { plan: PaidPlan; interval: Interval } | null {
+  for (const plan of PAID_PLANS)
+    for (const interval of ["month", "year"] as const) if (productId === productFor(env, plan, interval)) return { plan, interval };
   return null;
 }
 
-async function polar(env: Env, path: string, body: unknown): Promise<Record<string, unknown>> {
-  if (!env.POLAR_ACCESS_TOKEN) throw new Error("billing isn't configured on this server");
+class PolarError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+async function polar(env: Env, path: string, body: unknown, method = "POST"): Promise<Record<string, unknown>> {
+  if (!env.POLAR_ACCESS_TOKEN) throw new PolarError(503, "billing isn't configured on this server");
   const res = await fetch(`${env.POLAR_API_URL.replace(/\/$/, "")}${path}`, {
-    method: "POST",
+    method,
     headers: { authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Polar HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  if (!res.ok) throw new PolarError(res.status, `Polar HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
 
-/** POST /v1/billing/checkout { plan: "sync"|"plus", interval: "month"|"year" } → { url } */
+const isPaidPlan = (p: string): p is PaidPlan => (PAID_PLANS as string[]).includes(p);
+const isInterval = (i: string): i is Interval => i === "month" || i === "year";
+
+/** The account's subscription when it still counts (so a second one would double-bill). */
+async function liveSubscription(env: Env, userId: string) {
+  const sub = await env.DB.prepare(
+    "SELECT polar_subscription_id, plan, status, current_period_end, cancel_at_period_end FROM subscriptions WHERE user_id = ?"
+  )
+    .bind(userId)
+    .first<SubscriptionRow & { polar_subscription_id: string }>();
+  return sub && PAYING.has(sub.status) ? sub : null;
+}
+
+/**
+ * POST /v1/billing/checkout → { url }
+ *   { plan: "sync"|"plus"|"pro"|"max", interval: "month"|"year" }   a new subscription
+ *   { plan: "topup" }                                                more AI this month (Pro/Max only)
+ */
 export async function checkout(req: Request, env: Env, user: User): Promise<Response> {
   const body = await req.json<{ plan?: unknown; interval?: unknown }>().catch(() => ({}) as Record<string, unknown>);
   const plan = String(body.plan ?? "");
   const interval = String(body.interval ?? "");
-  if (!["sync", "plus"].includes(plan) || !["month", "year"].includes(interval)) return json({ error: "bad plan" }, 400);
-  const product = productFor(env, plan, interval);
+  let product: string | undefined;
+  let kind = "subscription";
+  if (plan === "topup") {
+    if ((await monthlyAllowance(env, user.id)).monthly <= 0)
+      return json({ error: "AI top-ups are for the Pro and Max plans." }, 402);
+    product = envString(env, "POLAR_PRODUCT_AI_TOPUP");
+    kind = "ai_topup";
+  } else {
+    if (!isPaidPlan(plan) || !isInterval(interval)) return json({ error: "bad plan" }, 400);
+    if (await liveSubscription(env, user.id))
+      return json({ error: "You already have a plan. Change it instead of buying a second one.", change: true }, 409);
+    product = productFor(env, plan, interval);
+  }
   if (!product) return json({ error: "That plan isn't set up on this server yet." }, 503);
   try {
     const res = await polar(env, "/v1/checkouts/", {
@@ -109,12 +163,55 @@ export async function checkout(req: Request, env: Env, user: User): Promise<Resp
       customer_email: user.email,
       external_customer_id: user.id,
       success_url: `${env.PUBLIC_URL.replace(/\/$/, "")}/v1/billing/done`,
-      metadata: { user_id: user.id },
+      metadata: { user_id: user.id, kind },
     });
     return json({ url: res.url });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 502);
   }
+}
+
+/**
+ * POST /v1/billing/change { plan, interval } → { ok, when: "now"|"renewal" }
+ *
+ * Moves the account's subscription to another plan. Up a rank (or monthly →
+ * yearly) applies now and Polar charges the prorated difference first: if
+ * that payment fails, nothing changes (402). Down a rank (or yearly →
+ * monthly) waits for the renewal, so nobody upgrades, spends Max's AI
+ * allowance and drops back before paying. A pending cancellation is undone
+ * first (Polar won't change a plan that's set to cancel).
+ */
+export async function changePlan(req: Request, env: Env, user: User): Promise<Response> {
+  const body = await req.json<{ plan?: unknown; interval?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+  const plan = String(body.plan ?? "");
+  const interval = String(body.interval ?? "");
+  if (!isPaidPlan(plan) || !isInterval(interval)) return json({ error: "bad plan" }, 400);
+  const product = productFor(env, plan, interval);
+  if (!product) return json({ error: "That plan isn't set up on this server yet." }, 503);
+  const sub = await liveSubscription(env, user.id);
+  if (!sub) return json({ error: "You don't have a plan to change. Choose one instead." }, 409);
+  // Unknown for subscriptions last updated before product ids were stored.
+  const current = await currentInterval(env, sub.polar_subscription_id);
+  if (sub.plan === plan && current === interval) return json({ error: "You're already on that plan." }, 400);
+  const down = RANK[plan] < RANK[sub.plan] || (RANK[plan] === RANK[sub.plan] && current === "year" && interval === "month");
+  const path = `/v1/subscriptions/${encodeURIComponent(sub.polar_subscription_id)}`;
+  try {
+    if (sub.cancel_at_period_end) await polar(env, path, { cancel_at_period_end: false }, "PATCH");
+    await polar(env, path, { product_id: product, proration_behavior: down ? "next_period" : "invoice" }, "PATCH");
+    return json({ ok: true, when: down ? "renewal" : "now" });
+  } catch (e) {
+    if (e instanceof PolarError && (e.status === 402 || e.status === 400 || e.status === 422))
+      return json({ error: "The payment for the change didn't go through. Check your card in Manage billing and try again." }, 402);
+    return json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
+}
+
+/** The billing interval of the subscription's current product, as last seen by a webhook. */
+async function currentInterval(env: Env, subscriptionId: string): Promise<Interval | null> {
+  const row = await env.DB.prepare("SELECT product_id FROM subscriptions WHERE polar_subscription_id = ?")
+    .bind(subscriptionId)
+    .first<{ product_id: string | null }>();
+  return row?.product_id ? (planForProduct(env, row.product_id)?.interval ?? null) : null;
 }
 
 /** POST /v1/billing/portal → { url } (Polar's page to change plan, card, or cancel) */
@@ -190,43 +287,99 @@ interface PolarSubscription {
   customer?: { external_id?: string | null };
 }
 
+interface PolarOrder {
+  id: string;
+  status: string;
+  paid?: boolean;
+  product_id: string | null;
+  /** Cents, before tax. */
+  net_amount: number;
+  refunded_amount: number;
+  metadata?: Record<string, unknown>;
+  customer?: { external_id?: string | null };
+}
+
+const userIdOf = (d: { customer?: { external_id?: string | null }; metadata?: Record<string, unknown> }) =>
+  d.customer?.external_id || (typeof d.metadata?.user_id === "string" ? d.metadata.user_id : "");
+
+async function knownUser(env: Env, userId: string): Promise<boolean> {
+  return !!userId && !!(await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first());
+}
+
 /** POST /v1/webhooks/polar */
 export async function polarWebhook(req: Request, env: Env): Promise<Response> {
   const body = await req.text();
   if (!(await verifyWebhook(env.POLAR_WEBHOOK_SECRET ?? "", req.headers, body))) return json({ error: "bad signature" }, 403);
-  const event = JSON.parse(body) as { type?: string; data?: PolarSubscription };
+  const event = JSON.parse(body) as { type?: string; data?: unknown };
   const fresh = await env.DB.prepare("INSERT OR IGNORE INTO webhook_events (id, received_at) VALUES (?, ?)")
     .bind(req.headers.get("webhook-id"), Date.now())
     .run();
   if (fresh.meta.changes === 0) return json({ ok: true, duplicate: true });
-  if (!event.type?.startsWith("subscription.") || !event.data) return json({ ok: true, ignored: event.type });
+  let res: Response;
+  if (!event.data) res = json({ ok: true, ignored: event.type });
+  else if (event.type?.startsWith("subscription.")) res = await subscriptionEvent(env, event.data as PolarSubscription);
+  else if (event.type === "order.paid" || event.type === "order.refunded" || event.type === "order.updated")
+    res = await orderEvent(env, event.data as PolarOrder);
+  else res = json({ ok: true, ignored: event.type });
+  // Not handled: forget the delivery so Polar's retry isn't taken for a duplicate.
+  if (res.status >= 500) await env.DB.prepare("DELETE FROM webhook_events WHERE id = ?").bind(req.headers.get("webhook-id")).run();
+  return res;
+}
 
-  const sub = event.data;
-  const userId = sub.customer?.external_id || (typeof sub.metadata?.user_id === "string" ? sub.metadata.user_id : "");
-  const plan = planForProduct(env, sub.product_id);
-  if (!userId || !plan) return json({ ok: true, ignored: "not a BrewLM Sync subscription" });
-  const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
-  if (!user) return json({ ok: true, ignored: "unknown user" });
+async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Response> {
+  const userId = userIdOf(sub);
+  const product = planForProduct(env, sub.product_id);
+  if (!userId || !product) return json({ ok: true, ignored: "not a BrewLM subscription" });
+  if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
 
   // Deliveries can arrive out of order: keep the most recently modified state.
   const modified = Date.parse(sub.modified_at ?? sub.created_at) || Date.now();
   await env.DB.prepare(
-    `INSERT INTO subscriptions (user_id, polar_subscription_id, plan, status, current_period_end, cancel_at_period_end, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO subscriptions (user_id, polar_subscription_id, plan, status, current_period_end, cancel_at_period_end, updated_at, product_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (user_id) DO UPDATE SET polar_subscription_id = excluded.polar_subscription_id, plan = excluded.plan,
        status = excluded.status, current_period_end = excluded.current_period_end,
-       cancel_at_period_end = excluded.cancel_at_period_end, updated_at = excluded.updated_at
+       cancel_at_period_end = excluded.cancel_at_period_end, updated_at = excluded.updated_at,
+       product_id = excluded.product_id
      WHERE excluded.updated_at >= subscriptions.updated_at`
   )
     .bind(
       userId,
       sub.id,
-      plan,
+      product.plan,
       sub.status,
       sub.current_period_end ? Date.parse(sub.current_period_end) : null,
       sub.cancel_at_period_end ? 1 : 0,
-      modified
+      modified,
+      sub.product_id
     )
     .run();
+  // The AI allowance follows the plan right away (the hourly cron retries a failure).
+  await reconcile(env, userId).catch((e) => console.error(`ai reconcile ${userId}: ${e instanceof Error ? e.message : String(e)}`));
+  return json({ ok: true });
+}
+
+/**
+ * AI top-ups: a paid order adds AI_TOPUP_CREDIT to the account's allowance; a
+ * refund takes back the refunded share (never below what's already spent).
+ * Refunds of subscription orders change nothing here: to cut AI off when
+ * refunding, revoke the subscription in Polar (Polar does that itself when it
+ * refunds to head off a chargeback), and its webhook revokes the key.
+ */
+async function orderEvent(env: Env, order: PolarOrder): Promise<Response> {
+  const topupProduct = envString(env, "POLAR_PRODUCT_AI_TOPUP");
+  if (!topupProduct || order.product_id !== topupProduct) return json({ ok: true, ignored: "not an AI top-up" });
+  const userId = userIdOf(order);
+  if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
+  const paid = order.paid === true || ["paid", "refunded", "partially_refunded"].includes(order.status);
+  if (!paid) return json({ ok: true, ignored: "not paid yet" });
+  try {
+    await applyTopup(env, userId, order.id, AI_TOPUP_CREDIT, order.net_amount);
+    if (order.refunded_amount > 0) await refundTopup(env, userId, order.id, order.refunded_amount);
+  } catch (e) {
+    // Polar retries the delivery; applying is idempotent per order.
+    console.error(`ai topup ${order.id}: ${e instanceof Error ? e.message : String(e)}`);
+    return json({ error: "try again" }, 503);
+  }
   return json({ ok: true });
 }
