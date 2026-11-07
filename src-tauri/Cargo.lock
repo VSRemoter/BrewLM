@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "brewlm"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
