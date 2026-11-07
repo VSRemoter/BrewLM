@@ -32,6 +32,8 @@ import { cancelStudioJob, startStudioJob, throwIfCancelled, useStudioJobs } from
 import { reviseOutput } from "../lib/revise";
 import { deepResearch } from "../lib/research";
 import { activeKey, noKeyMessage } from "../lib/settings";
+import { aiBlock } from "../lib/brewlmAi";
+import { AiBlockedNotice } from "./settings/BrewLmAi";
 import { contextBudget } from "../lib/local";
 import {
   addOutputUsage,
@@ -982,11 +984,16 @@ const StudioPanel = forwardRef<
             </button>
           </div>
 
-          {error && (
-            <p className="mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
-              {error}
-            </p>
-          )}
+          {error &&
+            (aiBlock(error) ? (
+              <div className="mt-3 rounded-lg border border-warn-edge bg-warn-bg px-3 py-2.5">
+                <AiBlockedNotice message={error} onOpenSettings={onOpenSettings} />
+              </div>
+            ) : (
+              <p className="mt-3 rounded-lg border border-danger-edge bg-danger-bg px-3 py-2 text-[12px] leading-snug text-danger">
+                {error}
+              </p>
+            ))}
 
           {/* saved artifacts */}
           <div className={readOnly ? "" : "mt-5"}>

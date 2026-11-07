@@ -21,6 +21,8 @@ import {
   openBillingPortal,
   refreshAccount,
   openCheckout,
+  changePlan,
+  type PaidPlan,
   recoverSync,
   setSyncApiKeys,
   setUpSync,
@@ -36,6 +38,8 @@ import { formatTime } from "../../lib/source";
 import { GhostButton, Modal, PrimaryButton } from "../ui";
 import { Card, Footnote, Row, SectionTitle, Toggle } from "./controls";
 import { platform } from "../../platform";
+import { confirmAction } from "../ConfirmDialog";
+import { BrewLmAiStatusRow } from "./BrewLmAi";
 
 /** What to call the device this runs on ("this computer" / "this device"). */
 const HERE = platform.kind === "desktop" ? "computer" : "device";
@@ -344,22 +348,47 @@ function planLine(a: AccountInfo): string {
   return `${PLAN_LABEL[a.plan]}${end}`;
 }
 
-/** Plans as sold (Polar's checkout shows the final price, with any tax). */
-const PLANS = [
-  { id: "sync" as const, name: "Sync", storage: "10 GB", month: "$5 / month", year: "$40 / year ($3.33 / month)" },
-  { id: "plus" as const, name: "Sync Plus", storage: "100 GB", month: "$9 / month", year: "$80 / year ($6.67 / month)" },
+/** Plans as sold (Polar's checkout shows the final price, with any tax), cheapest first. */
+const PLANS: { id: PaidPlan; name: string; storage: string; ai: boolean; month: string; year: string }[] = [
+  { id: "sync", name: "Sync", storage: "10 GB", ai: false, month: "$5 / month", year: "$40 / year ($3.33 / month)" },
+  { id: "plus", name: "Sync Plus", storage: "100 GB", ai: false, month: "$9 / month", year: "$80 / year ($6.67 / month)" },
+  { id: "pro", name: "Pro", storage: "10 GB", ai: true, month: "$12 / month", year: "$99 / year ($8.25 / month)" },
+  { id: "max", name: "Max", storage: "100 GB", ai: true, month: "$25 / month", year: "$199 / year ($16.58 / month)" },
 ];
+const RANK: Record<PaidPlan, number> = { sync: 1, plus: 2, pro: 3, max: 4 };
 
-function PlanModal({ onClose }: { onClose: () => void }) {
-  const [interval, setBilling] = useState<"year" | "month">("year");
+function PlanModal({ account, onClose }: { account: AccountInfo; onClose: () => void }) {
+  const current = account.plan === "sync" || account.plan === "plus" || account.plan === "pro" || account.plan === "max" ? account.plan : null;
+  const [interval, setBilling] = useState<"year" | "month">(account.interval ?? "year");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const choose = async (plan: "sync" | "plus") => {
-    setBusy(plan);
+  const [done, setDone] = useState<string | null>(null);
+  const choose = async (plan: PaidPlan) => {
     setError(null);
+    // Already paying: switch the subscription instead of starting a second one.
+    if (current) {
+      const p = PLANS.find((x) => x.id === plan)!;
+      const up = RANK[plan] > RANK[current] || (RANK[plan] === RANK[current] && interval === "year");
+      const ok = await confirmAction({
+        title: `Switch to ${p.name}?`,
+        message: up
+          ? `${p.name} starts now. Your card is charged the difference for the rest of your current ${account.interval === "month" ? "month" : "billing period"}, then ${interval === "year" ? p.year.split(" (")[0] : p.month}.`
+          : `${p.name} starts when your current period ends${account.periodEnd ? ` on ${day(account.periodEnd)}` : ""}; you keep everything you have until then.${
+              PLANS.find((x) => x.id === current)!.ai && !p.ai ? " BrewLM AI ends with it." : ""
+            }${current === "max" || current === "plus" ? (p.storage === "10 GB" ? " Storage goes down to 10 GB, so keep your library under that." : "") : ""}`,
+        confirmLabel: `Switch to ${p.name}`,
+      });
+      if (!ok) return;
+    }
+    setBusy(plan);
     try {
-      await openCheckout(plan, interval);
-      onClose();
+      if (current) {
+        const when = await changePlan(plan, interval);
+        setDone(when === "now" ? "Done — your new plan is active." : "Done — your new plan starts at renewal.");
+      } else {
+        await openCheckout(plan, interval);
+        onClose();
+      }
     } catch (e) {
       setError(message(e));
     } finally {
@@ -367,7 +396,7 @@ function PlanModal({ onClose }: { onClose: () => void }) {
     }
   };
   return (
-    <Modal title="Choose a plan" onClose={onClose}>
+    <Modal title={current ? "Change plan" : "Choose a plan"} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <div className="flex gap-1 self-start rounded-full border border-edge p-0.5 text-[12.5px]">
           {(["year", "month"] as const).map((i) => (
@@ -377,23 +406,38 @@ function PlanModal({ onClose }: { onClose: () => void }) {
               onClick={() => setBilling(i)}
               className={`rounded-full px-3 py-1 ${interval === i ? "bg-hover font-medium text-ink" : "text-ink-3"}`}
             >
-              {i === "year" ? "Yearly — save 20%" : "Monthly"}
+              {i === "year" ? "Yearly — save over 25%" : "Monthly"}
             </button>
           ))}
         </div>
-        {PLANS.map((p) => (
-          <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-edge px-4 py-3">
-            <div>
-              <div className="text-[14px] font-semibold text-ink">{p.name}</div>
-              <div className="text-[12.5px] text-ink-3">
-                {p.storage} · {interval === "year" ? p.year : p.month}
+        {PLANS.map((p) => {
+          const isCurrent = current === p.id && (account.interval ?? interval) === interval;
+          return (
+            <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-edge px-4 py-3">
+              <div>
+                <div className="text-[14px] font-semibold text-ink">
+                  {p.name}
+                  {p.ai && <span className="ml-2 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink-2">BrewLM AI included</span>}
+                </div>
+                <div className="text-[12.5px] text-ink-3">
+                  {p.storage} · {interval === "year" ? p.year : p.month}
+                </div>
               </div>
+              {isCurrent ? (
+                <span className="text-[12.5px] font-medium text-ink-3">Current plan</span>
+              ) : (
+                <PrimaryButton onClick={() => void choose(p.id)} disabled={busy !== null || done !== null}>
+                  {busy === p.id ? (current ? "Switching…" : "Opening…") : current ? "Switch" : "Choose"}
+                </PrimaryButton>
+              )}
             </div>
-            <PrimaryButton onClick={() => void choose(p.id)} disabled={busy !== null}>
-              {busy === p.id ? "Opening…" : "Choose"}
-            </PrimaryButton>
-          </div>
-        ))}
+          );
+        })}
+        <p className="text-[11.5px] leading-relaxed text-ink-3">
+          BrewLM AI means AI that works without an API key: chat, Studio, audio overviews, research and
+          transcription, with a monthly allowance (Max's is 2.5× Pro's) and top-ups if you need more.
+        </p>
+        {done && <p className="text-[12.5px] font-medium text-ink">{done}</p>}
         <p className="text-[11.5px] leading-relaxed text-ink-3">
           Checkout opens in your browser (payments by Polar, our reseller, who handles tax). Your plan updates here
           within a minute of paying.
@@ -408,19 +452,23 @@ function AccountCard({ account }: { account: AccountInfo }) {
   const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const used = Math.min(1, account.usedBytes / Math.max(1, account.limitBytes));
-  const paid = account.plan === "sync" || account.plan === "plus";
+  const paid = account.plan === "sync" || account.plan === "plus" || account.plan === "pro" || account.plan === "max";
   return (
     <>
       <Card>
         <Row label={account.email} desc={planLine(account)}>
           {paid ? (
-            <GhostButton onClick={() => void openBillingPortal().catch((e) => setError(message(e)))}>
-              Manage billing…
-            </GhostButton>
+            <div className="flex gap-1.5">
+              <GhostButton onClick={() => setChoosing(true)}>Change plan…</GhostButton>
+              <GhostButton onClick={() => void openBillingPortal().catch((e) => setError(message(e)))}>
+                Manage billing…
+              </GhostButton>
+            </div>
           ) : (
             <PrimaryButton onClick={() => setChoosing(true)}>Choose a plan…</PrimaryButton>
           )}
         </Row>
+        {(account.plan === "pro" || account.plan === "max") && <BrewLmAiStatusRow />}
         <Row label="Storage" desc={`${formatBytes(account.usedBytes)} of ${formatBytes(account.limitBytes)} used`}>
           <div className="h-2 w-44 overflow-hidden rounded-full bg-edge">
             <div
@@ -437,7 +485,7 @@ function AccountCard({ account }: { account: AccountInfo }) {
         </Footnote>
       )}
       {error && <Footnote>{error}</Footnote>}
-      {choosing && <PlanModal onClose={() => setChoosing(false)} />}
+      {choosing && <PlanModal account={account} onClose={() => setChoosing(false)} />}
     </>
   );
 }

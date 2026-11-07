@@ -21,6 +21,22 @@ export const AI_CONFIG = {
   },
   /** The tier new subscribers start on. */
   defaultTier: "fast",
+  /**
+   * Settings → AI Model → More models: other capable chat models, none
+   * pricier than Best. The app shows each one's cost next to Fast's from
+   * OpenRouter's public prices. Checked against the catalog 2026-11-06.
+   */
+  more: [
+    { label: "GPT-6 Luna", model: "openai/gpt-6-luna" },
+    { label: "Qwen3.8 Flash", model: "qwen/qwen3.8-flash" },
+    { label: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash-1017" },
+    { label: "Mistral Large 4", model: "mistralai/mistral-large-4-0" },
+    { label: "Gemini 3.8 Flash", model: "google/gemini-3.8-flash" },
+    { label: "GPT-6.1 Terra", model: "openai/gpt-6.1-terra" },
+    { label: "Grok 4.7", model: "x-ai/grok-4.7" },
+    { label: "Gemini 4 Argon", model: "google/gemini-4-argon" },
+    { label: "Kimi K3.1 Pro", model: "moonshotai/kimi-k3.1-pro" },
+  ],
   /** Fixed jobs; users don't choose these. */
   roles: {
     /** Titles, chunk summaries, condensing: always cheap, whatever tier is picked. */

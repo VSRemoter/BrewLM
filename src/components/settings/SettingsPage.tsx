@@ -13,6 +13,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { takeSettingsSection } from "../../lib/settingsNav";
 import { loadSettings, patchSettings } from "../../lib/settings";
 import type { Settings } from "../../lib/types";
 import type { UpdateInfo } from "../../lib/updates";
@@ -56,10 +57,14 @@ export default function SettingsPage({
   onClose: () => void;
 }) {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [section, setSection] = useState<SectionId>("appearance");
+  const [section, setSection] = useState<SectionId>(() => {
+    const asked = takeSettingsSection();
+    return SECTIONS.some((s) => s.id === asked) ? (asked as SectionId) : "appearance";
+  });
   // Phones show the section list and one section at a time, not side by side.
   const phone = usePhone();
-  const [listOpen, setListOpen] = useState(true);
+  // Phones show the list first, unless Settings was opened on a section.
+  const [listOpen, setListOpen] = useState(section === "appearance");
   const showList = !phone || listOpen;
   const showSection = !phone || !listOpen;
   // Sync appears only in builds with a sync server configured (dev, for now).

@@ -5,7 +5,7 @@
  *   GET  /v1/ai/config   → which model does each job (aiConfig.ts); public
  *   POST /v1/ai/openrouter/{chat/completions,audio/speech,embeddings,images}
  *                        → OpenRouter's response, run on the account's key   (402 without an AI plan)
- *   GET  /v1/ai/usage    → { plan, trial, usedFraction, resetsAt, left: { chats, audioOverviews, … } }
+ *   GET  /v1/ai/usage    → { plan, trial, usedFraction, resetsAt, left: { chats, audioOverviews, … }, topupAdds }
  *
  * Rules (ai_accounts in D1, one row per account):
  * - A cycle is a calendar month (UTC). The allowance is the plan's monthly
@@ -30,7 +30,7 @@
  * never logged.
  */
 import { userForSession, type User } from "./auth";
-import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TRIAL } from "./aiConfig";
+import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "./aiConfig";
 import { createKey, deleteKey, getKey, openKey, OpenRouterError, openRouterConfigured, sealKey, updateKey, usd } from "./openrouter";
 
 const DAY = 86_400_000;
@@ -312,6 +312,7 @@ export const ALLOWED_MODELS: ReadonlySet<string> = (() => {
     } else if (v && typeof v === "object") Object.values(v).forEach(walk);
   };
   walk(AI_CONFIG.tiers);
+  walk(AI_CONFIG.more);
   walk(AI_CONFIG.roles);
   return out;
 })();
@@ -403,13 +404,16 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
   const allowance = row.cap + row.topup;
   const spent = await spentThisCycle(env, row);
   const remaining = Math.max(0, allowance - spent);
-  const left = Object.fromEntries(Object.entries(AI_ESTIMATES).map(([k, cost]) => [k, Math.floor(remaining / cost)]));
+  const counts = (usd: number) => Object.fromEntries(Object.entries(AI_ESTIMATES).map(([k, cost]) => [k, Math.floor(usd / cost)]));
+  const left = counts(remaining);
   return json({
     plan,
     trial,
     usedFraction: allowance > 0 ? Math.min(1, Math.round((spent / allowance) * 1000) / 1000) : 1,
     resetsAt,
     left,
+    // What one top-up adds, in the same counts.
+    topupAdds: counts(AI_TOPUP_CREDIT),
   });
 }
 

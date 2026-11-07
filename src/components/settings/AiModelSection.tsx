@@ -430,7 +430,7 @@ export default function AiModelSection({
           </div>
         </Row>
         {isBrewlm ? (
-          <BrewLmAiStatusRow />
+          <BrewLmAiStatusRow model={settings.model} />
         ) : isLocal ? (
           <LocalServerRows
             key="local"

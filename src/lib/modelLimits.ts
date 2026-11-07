@@ -26,6 +26,8 @@ export interface OpenRouterModel {
   top_provider?: { context_length?: number | null; max_completion_tokens?: number | null } | null;
   supported_parameters?: string[];
   architecture?: { input_modalities?: string[] } | null;
+  /** US dollars per token, as decimal strings. */
+  pricing?: { prompt?: string; completion?: string } | null;
 }
 
 export const STANDARD_EFFORTS = ["low", "medium", "high"];

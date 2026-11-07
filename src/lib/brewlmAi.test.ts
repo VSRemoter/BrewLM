@@ -2,12 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let server: { url: string; session: string } | null = null;
 let plan: string | undefined;
+vi.mock("./modelLimits", () => ({
+  loadOpenRouterCatalog: async () => [
+    { id: "anthropic/claude-haiku-5.5", pricing: { prompt: "0.0000001", completion: "0.0000005" } },
+    { id: "anthropic/claude-sonnet-5.5", pricing: { prompt: "0.000002", completion: "0.00001" } },
+  ],
+}));
 vi.mock("./sync", () => ({
   shareServer: () => server,
   getSyncStatus: () => ({ state: "on", syncApiKeys: true, account: plan ? { plan } : undefined }),
 }));
 
-const { brewlmModelLabel, openRouterApi, OPENROUTER_API, planHasAi, SIGN_IN_FOR_AI, speaksOpenRouter, tierOf, aiConfigNow } = await import("./brewlmAi");
+const { aiBlock, brewlmChatModels, costLabel, costVsFast, brewlmModelLabel, openRouterApi, OPENROUTER_API, planHasAi, SIGN_IN_FOR_AI, speaksOpenRouter, tierOf, aiConfigNow } = await import("./brewlmAi");
 
 beforeEach(() => {
   server = null;
@@ -54,5 +60,30 @@ describe("BrewLM AI plans and tiers", () => {
     expect(tierOf(fast)).toBe("fast");
     expect(brewlmModelLabel(fast)).toBe("Fast");
     expect(brewlmModelLabel("someone/else")).toBe("someone/else");
+  });
+});
+
+describe("BrewLM AI allowance", () => {
+  it("recognises the proxy's refusals", () => {
+    expect(aiBlock("You've used this month's BrewLM AI. It refills on December 1, or add a top-up")).toBe("limit");
+    expect(aiBlock("BrewLM AI comes with the Pro and Max plans. Choose one in Settings → Sync")).toBe("plan");
+    expect(aiBlock("HTTP 500: upstream error")).toBeNull();
+  });
+
+  it("compares a model's chat cost with Fast's", async () => {
+    expect(await costVsFast("anthropic/claude-sonnet-5.5")).toBeCloseTo(20, 5);
+    expect(await costVsFast("nobody/unknown")).toBeNull();
+    expect(costLabel(20)).toBe("about 20× Fast");
+    expect(costLabel(3.4)).toBe("about 3× Fast");
+    expect(costLabel(2.2)).toBe("about 2.2× Fast");
+    expect(costLabel(1)).toBe("about the same as Fast");
+    expect(costLabel(0.4)).toBe("cheaper than Fast");
+  });
+
+  it("lists the tiers before More models", () => {
+    const all = brewlmChatModels();
+    expect(all.slice(0, 3)).toEqual(["anthropic/claude-haiku-5.5", "anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5"]);
+    expect(all.length).toBeGreaterThan(3);
+    expect(brewlmModelLabel("x-ai/grok-4.7")).toBe("Grok 4.7");
   });
 });

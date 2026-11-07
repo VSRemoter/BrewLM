@@ -283,7 +283,8 @@ export default function UsageSection() {
         Tokens are tracked for every provider. For cost, OpenRouter reports the real billed amount
         per generation; OpenAI and Anthropic costs are estimated from public list prices (unknown
         models estimate as $0). Web-search fees (billed per query by your provider) and TTS audio
-        aren't included.
+        aren't included. BrewLM AI is part of your plan, so its calls count tokens but no cost; see
+        how much of the month is left in Settings → AI Model.
       </Footnote>
 
       {/* Reset — quiet, at the very end */}

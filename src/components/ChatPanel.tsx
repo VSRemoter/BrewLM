@@ -69,7 +69,8 @@ import {
   type MentionItem,
 } from "../lib/mentions";
 import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
-import { AI_TIERS, brewlmModelLabel, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
+import { aiBlock, AI_TIERS, brewlmModelLabel, costLabel, costVsFast, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
+import { AiBlockedNotice } from "./settings/BrewLmAi";
 import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
@@ -1535,15 +1536,23 @@ export default function ChatPanel({
     const c = await loadAiConfig();
     const arg = text.replace(/^\/model\s*/i, "").trim().toLowerCase();
     const tiers = AI_TIERS.map((t) => `\`${t}\``).join(", ");
-    if (!arg) return `BrewLM AI is on **${brewlmModelLabel(model)}**. Switch with \`/model fast\`, \`/model smart\` or \`/model best\`.`;
+    const more = c.more ?? [];
+    if (!arg)
+      return `BrewLM AI is on **${brewlmModelLabel(model)}**. Switch with \`/model fast\`, \`/model smart\` or \`/model best\`${
+        more.length ? `, or a model from Settings → AI Model → More models (${more.map((m) => m.label).join(", ")})` : ""
+      }.`;
     const tier = AI_TIERS.find((t) => t === arg || c.tiers[t].label.toLowerCase() === arg || c.tiers[t].model === arg);
-    if (!tier)
-      return `BrewLM AI runs three models: ${tiers}. To use any other model, pick OpenRouter, OpenAI or Anthropic with your own key in **Settings → AI Model**.`;
-    const id = c.tiers[tier].model;
+    const extra = tier ? null : more.find((m) => m.label.toLowerCase() === arg || m.model === arg);
+    if (!tier && !extra)
+      return `BrewLM AI runs ${tiers}${more.length ? " and the models under Settings → AI Model → More models" : ""}. To use any other model, pick OpenRouter, OpenAI or Anthropic with your own key in **Settings → AI Model**.`;
+    const id = tier ? c.tiers[tier].model : extra!.model;
     await setSetting("model", id);
     setModel(id);
     onSettingsChanged();
-    return `BrewLM AI switched to **${c.tiers[tier].label}**. ${TIER_DESCRIPTIONS[tier]}`;
+    // Warn when a model eats the allowance much faster than Fast.
+    const ratio = await costVsFast(id);
+    const cost = ratio && ratio >= 1.5 ? ` Each chat uses ${costLabel(ratio).replace(/ Fast$/, "")} as much of your allowance as one on Fast.` : "";
+    return `BrewLM AI switched to **${brewlmModelLabel(id)}**.${tier ? ` ${TIER_DESCRIPTIONS[tier]}` : ""}${cost}`;
   };
 
   /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
@@ -2954,11 +2963,16 @@ export default function ChatPanel({
         )}
       </div>
 
-      {error && (
-        <div className="relative z-10 shrink-0 border-t border-danger-edge bg-danger-bg px-5 py-2.5 text-[12px] leading-snug text-danger">
-          {error}
-        </div>
-      )}
+      {error &&
+        (aiBlock(error) ? (
+          <div className="relative z-10 shrink-0 border-t border-warn-edge bg-warn-bg px-5 py-3">
+            <AiBlockedNotice message={error} onOpenSettings={onOpenSettings} />
+          </div>
+        ) : (
+          <div className="relative z-10 shrink-0 border-t border-danger-edge bg-danger-bg px-5 py-2.5 text-[12px] leading-snug text-danger">
+            {error}
+          </div>
+        ))}
 
       {/* input */}
       <div className="relative z-10 shrink-0 px-5 pb-5 pt-2">

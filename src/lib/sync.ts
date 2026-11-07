@@ -101,7 +101,11 @@ export interface AccountInfo {
   trialEndsAt: number;
   periodEnd: number | null;
   cancelAtPeriodEnd: boolean;
+  /** Paid plans: how it's billed (null when the server can't tell). */
+  interval?: "month" | "year" | null;
 }
+
+export type PaidPlan = "sync" | "plus" | "pro" | "max";
 
 interface Payload {
   v: 1;
@@ -1105,9 +1109,29 @@ async function forgetAccount(state: SyncState): Promise<void> {
 }
 
 /** Choose a plan: opens Polar's checkout in the browser. */
-export async function openCheckout(plan: "sync" | "plus", interval: "month" | "year"): Promise<void> {
+export async function openCheckout(plan: PaidPlan, interval: "month" | "year"): Promise<void> {
   if (!account) throw new Error("Sign in first.");
   const { url } = await accountApi<{ url: string }>("/v1/billing/checkout", "POST", { plan, interval }, account.session);
+  await platform.openUrl(url);
+}
+
+/**
+ * Switch a paid plan to another: upgrades start now (the card is charged the
+ * prorated difference), downgrades at renewal. Returns which.
+ */
+export async function changePlan(plan: PaidPlan, interval: "month" | "year"): Promise<"now" | "renewal"> {
+  if (!account) throw new Error("Sign in first.");
+  const { when } = await accountApi<{ when: "now" | "renewal" }>("/v1/billing/change", "POST", { plan, interval }, account.session);
+  // The webhook updates the plan within a few seconds; check twice.
+  setTimeout(() => void refreshAccount().catch(() => {}), 3000);
+  setTimeout(() => void refreshAccount().catch(() => {}), 12000);
+  return when;
+}
+
+/** Buy a BrewLM AI top-up (Pro and Max): opens Polar's checkout in the browser. */
+export async function buyAiTopup(): Promise<void> {
+  if (!account) throw new Error("Sign in first.");
+  const { url } = await accountApi<{ url: string }>("/v1/billing/checkout", "POST", { plan: "topup" }, account.session);
   await platform.openUrl(url);
 }
 

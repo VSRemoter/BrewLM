@@ -148,6 +148,8 @@ describe("changing plans", () => {
     expect(last.body).toEqual({ product_id: "prod-pro-m", proration_behavior: "invoice" });
 
     await subscription(a.id, "prod-max-y");
+    const me = (await (await call("/v1/me", { session: a.session })).json()) as { plan: string; interval: string };
+    expect(me).toMatchObject({ plan: "max", interval: "year" });
     const down = await change(a.session, { plan: "pro", interval: "year" });
     expect(down.body.when).toBe("renewal");
     expect((await polarCalls()).at(-1)!.body).toEqual({ product_id: "prod-pro-y", proration_behavior: "next_period" });

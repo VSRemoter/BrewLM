@@ -43,7 +43,8 @@ export async function recordUsage(
     `INSERT INTO usage_events
        (id, ts, provider, model, kind, input, output, cached_read, cached_write, cost_usd)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [uid(), Date.now(), provider, model, kind, input, output, cachedRead, cachedWrite, u.costUsd ?? null]
+    // BrewLM AI is part of the plan: its calls keep their token counts, never a dollar amount.
+    [uid(), Date.now(), provider, model, kind, input, output, cachedRead, cachedWrite, provider === "brewlm" ? null : (u.costUsd ?? null)]
   );
 }
 
@@ -152,6 +153,7 @@ function priceFor(model: string): PriceEntry | null {
  */
 export function estimateCostUsd(e: UsageEvent): number | null {
   if (e.provider === "local") return 0; // runs on the user's own hardware
+  if (e.provider === "brewlm") return null; // included with the plan: no dollars shown
   const p = priceFor(e.model);
   if (!p) return null;
   const freshInput =
@@ -174,6 +176,7 @@ export function replyCostUsd(
   model: string,
   u: StreamUsage
 ): { usd: number; estimated: boolean } | null {
+  if (provider === "brewlm") return null; // included with the plan: no dollars shown
   if (typeof u.costUsd === "number") return { usd: u.costUsd, estimated: false };
   const usd = estimateCostUsd({
     id: "",

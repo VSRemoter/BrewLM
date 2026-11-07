@@ -44,6 +44,8 @@ export interface Entitlement {
   /** Paid plans: when the current period ends (renewal or cancellation). */
   periodEnd: number | null;
   cancelAtPeriodEnd: boolean;
+  /** Paid plans: how it's billed (null when unknown, e.g. a product this server doesn't list). */
+  interval: Interval | null;
 }
 
 type PaidPlan = "sync" | "plus" | "pro" | "max";
@@ -57,16 +59,17 @@ interface SubscriptionRow {
   status: string;
   current_period_end: number | null;
   cancel_at_period_end: number;
+  product_id: string | null;
 }
 
 export async function entitlement(env: Env, user: User): Promise<Entitlement> {
   const now = Date.now();
   const sub = await env.DB.prepare(
-    "SELECT plan, status, current_period_end, cancel_at_period_end FROM subscriptions WHERE user_id = ?"
+    "SELECT plan, status, current_period_end, cancel_at_period_end, product_id FROM subscriptions WHERE user_id = ?"
   )
     .bind(user.id)
     .first<SubscriptionRow>();
-  const base = { trialEndsAt: user.trial_ends_at, periodEnd: null, cancelAtPeriodEnd: false };
+  const base = { trialEndsAt: user.trial_ends_at, periodEnd: null, cancelAtPeriodEnd: false, interval: null };
   if (sub && PAYING.has(sub.status) && (sub.current_period_end === null || sub.current_period_end + GRACE_MS > now))
     return {
       ...base,
@@ -75,6 +78,7 @@ export async function entitlement(env: Env, user: User): Promise<Entitlement> {
       limitBytes: LIMITS[sub.plan],
       periodEnd: sub.current_period_end,
       cancelAtPeriodEnd: sub.cancel_at_period_end === 1,
+      interval: sub.product_id ? (planForProduct(env, sub.product_id)?.interval ?? null) : null,
     };
   if (user.trial_ends_at > now) return { ...base, plan: "trial", canSync: true, limitBytes: LIMITS.trial };
   return { ...base, plan: "none", canSync: false, limitBytes: LIMITS.none };

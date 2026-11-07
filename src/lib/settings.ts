@@ -20,7 +20,7 @@ import type {
 } from "./types";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { parseRouting, serializeRouting } from "./routing";
-import { aiConfigNow, AI_TIERS, brewlmSession } from "./brewlmAi";
+import { aiConfigNow, brewlmChatModels, brewlmSession } from "./brewlmAi";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
   brewlm: "anthropic/claude-haiku-5.5",
@@ -32,7 +32,7 @@ const DEFAULT_MODELS: Record<Provider, string> = {
 };
 
 export const MODEL_PRESETS: Record<Provider, string[]> = {
-  // BrewLM AI's tiers come from its config (brewlmModels), not a saved list.
+  // BrewLM AI's tiers come from its config (brewlmChatModels), not a saved list.
   brewlm: [],
   openrouter: [
     "openai/gpt-4o-mini",
@@ -485,12 +485,6 @@ export function defaultModelFor(p: Provider): string {
   return DEFAULT_MODELS[p];
 }
 
-/** BrewLM AI's chat models, one per tier (Fast, Smart, Best). */
-export function brewlmModels(): string[] {
-  const c = aiConfigNow();
-  return AI_TIERS.map((t) => c.tiers[t].model);
-}
-
 /* -------------------- User-editable per-provider model lists -------------------- */
 
 const CUSTOM_MODELS_KEY = (p: Provider) => `customModels.${p}`;
@@ -498,7 +492,7 @@ const CUSTOM_MODELS_KEY = (p: Provider) => `customModels.${p}`;
 /** The provider's chip list: defaults unless the user has customized (added/removed).
  *  Local: whatever the server reports right now, plus any ids the user saved. */
 export async function loadModelList(p: Provider): Promise<string[]> {
-  if (p === "brewlm") return brewlmModels();
+  if (p === "brewlm") return brewlmChatModels(aiConfigNow());
   if (p === "local") {
     const [saved, served] = await Promise.all([loadSavedModels(p), listLocalModels().catch(() => [])]);
     return [...new Set([...served.filter((m) => !isEmbeddingModel(m)), ...saved])];

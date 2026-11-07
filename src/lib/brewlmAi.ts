@@ -9,6 +9,7 @@
  * and embeddings. GET /v1/ai/config says which; changing a model there needs
  * no app release.
  */
+import { loadOpenRouterCatalog } from "./modelLimits";
 import { getSyncStatus, shareServer } from "./sync";
 import type { Provider, TtsProvider } from "./types";
 
@@ -20,6 +21,8 @@ export interface AiConfig {
   version: number;
   tiers: Record<AiTier, { label: string; model: string }>;
   defaultTier: AiTier;
+  /** Other chat models subscribers may pick (Settings → AI Model → More models). */
+  more?: { label: string; model: string }[];
   roles: {
     background: string;
     research: { planner: string; reader: string };
@@ -39,6 +42,17 @@ const BUILT_IN: AiConfig = {
     best: { label: "Best", model: "anthropic/claude-opus-5.5" },
   },
   defaultTier: "fast",
+  more: [
+    { label: "GPT-6 Luna", model: "openai/gpt-6-luna" },
+    { label: "Qwen3.8 Flash", model: "qwen/qwen3.8-flash" },
+    { label: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash-1017" },
+    { label: "Mistral Large 4", model: "mistralai/mistral-large-4-0" },
+    { label: "Gemini 3.8 Flash", model: "google/gemini-3.8-flash" },
+    { label: "GPT-6.1 Terra", model: "openai/gpt-6.1-terra" },
+    { label: "Grok 4.7", model: "x-ai/grok-4.7" },
+    { label: "Gemini 4 Argon", model: "google/gemini-4-argon" },
+    { label: "Kimi K3.1 Pro", model: "moonshotai/kimi-k3.1-pro" },
+  ],
   roles: {
     background: "anthropic/claude-haiku-5.5",
     research: { planner: "anthropic/claude-sonnet-5.5", reader: "anthropic/claude-haiku-5.5" },
@@ -105,10 +119,40 @@ export function tierOf(model: string): AiTier | null {
   return AI_TIERS.find((t) => config.tiers[t].model === model) ?? null;
 }
 
-/** "Fast", "Smart"… for a tier model; the id itself otherwise. */
+/** "Fast", "Smart"…, or a More models name like "Grok 4.7"; the id itself otherwise. */
 export function brewlmModelLabel(model: string): string {
   const t = tierOf(model);
-  return t ? config.tiers[t].label : model;
+  return t ? config.tiers[t].label : (config.more?.find((m) => m.model === model)?.label ?? model);
+}
+
+/** Every chat model BrewLM AI runs: the tiers, then More models. */
+export function brewlmChatModels(c = config): string[] {
+  return [...AI_TIERS.map((t) => c.tiers[t].model), ...(c.more ?? []).map((m) => m.model)];
+}
+
+/**
+ * What one typical chat costs on `model` (about 20k tokens of sources read,
+ * 1k written), from OpenRouter's public prices; null when unknown.
+ */
+async function chatCost(model: string): Promise<number | null> {
+  const m = (await loadOpenRouterCatalog())?.find((x) => x.id === model);
+  const input = Number(m?.pricing?.prompt);
+  const output = Number(m?.pricing?.completion);
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input <= 0) return null;
+  return input * 20_000 + output * 1_000;
+}
+
+/** How many times as much of the allowance a chat on `model` uses as one on Fast (1 = the same); null when unknown. */
+export async function costVsFast(model: string): Promise<number | null> {
+  const [mine, fast] = await Promise.all([chatCost(model), chatCost(config.tiers.fast.model)]);
+  return mine && fast ? mine / fast : null;
+}
+
+/** "about the same as Fast", "about 20× Fast"… */
+export function costLabel(ratio: number): string {
+  if (ratio < 0.75) return "cheaper than Fast";
+  if (ratio < 1.5) return "about the same as Fast";
+  return `about ${ratio < 10 ? ratio.toFixed(ratio < 3 ? 1 : 0) : Math.round(ratio)}× Fast`;
 }
 
 /* -------------------------------- requests -------------------------------- */
@@ -154,8 +198,31 @@ export interface AiUsage {
   /** 0–1 of this month's allowance (top-ups included). */
   usedFraction: number;
   resetsAt: number;
-  /** Roughly how many of each are left; null without an AI plan. */
-  left: { chats: number; audioOverviews: number; researchRuns: number; transcriptionHours: number; images: number } | null;
+  /** Roughly how many of each are left (chats counted on Fast); null without an AI plan. */
+  left: AiCounts | null;
+  /** What one top-up adds, in the same counts. */
+  topupAdds?: AiCounts;
+}
+
+export interface AiCounts {
+  chats: number;
+  audioOverviews: number;
+  researchRuns: number;
+  transcriptionHours: number;
+  images: number;
+}
+
+/* --------------------------- blocked by the plan --------------------------- */
+
+/**
+ * Why a BrewLM AI request was refused, read from the proxy's message
+ * (sync-server/src/ai.ts writes these): the month's allowance is used up, or
+ * the account has no plan with AI.
+ */
+export function aiBlock(message: string): "limit" | "plan" | null {
+  if (/used this month's BrewLM AI/i.test(message)) return "limit";
+  if (/BrewLM AI comes with the Pro and Max plans/i.test(message)) return "plan";
+  return null;
 }
 
 /** This month's BrewLM AI allowance; null when signed out or the server can't be reached. */

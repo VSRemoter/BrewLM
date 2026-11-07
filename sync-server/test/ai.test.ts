@@ -209,6 +209,7 @@ describe("BrewLM AI proxy", () => {
     expect(sent.referer).toBe("https://brewlm.app");
 
     expect((await ask(p.session, { ...chat, model: `${AI_CONFIG.tiers.smart.model}:online` }, "chat/completions")).status).toBe(200);
+    expect((await ask(p.session, { ...chat, model: AI_CONFIG.more[0].model }, "chat/completions")).status).toBe(200);
     const other = await ask(p.session, { ...chat, model: "openai/gpt-9-ultra" }, "chat/completions");
     expect(other.status).toBe(403);
     expect(other.error).toMatch(/doesn't run openai\/gpt-9-ultra/);
@@ -266,6 +267,7 @@ describe("BrewLM AI usage", () => {
     expect(body.usedFraction).toBeCloseTo(0.5, 2);
     expect(body.left.audioOverviews).toBe(Math.floor(r.cap / 2 / 0.2));
     expect(body.resetsAt).toBe(nextMonth() - 3_600_000);
+    expect((body as unknown as { topupAdds: Record<string, number> }).topupAdds.audioOverviews).toBe(25);
     expect(JSON.stringify(body)).not.toMatch(/cap|carried|usd/i);
 
     const none = await account("usage-none@example.com");
