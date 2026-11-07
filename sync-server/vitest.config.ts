@@ -59,8 +59,26 @@ async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
     orLast = { path, auth: req.headers.get("authorization"), referer: req.headers.get("http-referer"), body };
     const k = [...orKeys.values()].find((x) => `Bearer ${x.key}` === req.headers.get("authorization"));
     if (!k || k.disabled) return Response.json({ error: { message: "User not found.", code: 401 } }, { status: 401 });
-    if (orBroke || (k.limit !== null && k.usage >= k.limit))
-      return Response.json({ error: { message: "Insufficient credits", code: 402 } }, { status: 402 });
+    // As OpenRouter answers: the key's own limit is a 403, the account's credit a 402.
+    if (k.limit !== null && k.usage >= k.limit) {
+      const hash = [...orKeys].find(([, x]) => x === k)![0];
+      return Response.json(
+        {
+          error: {
+            message: `Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/${hash} $${k.usage} of $${k.limit} used; does not reset.`,
+            code: 403,
+            metadata: { limit_source: "openrouter_key_limit", scope: "key_limit", limit_usd: k.limit, spend_usd: k.usage },
+          },
+        },
+        { status: 403 }
+      );
+    }
+    if (orBroke) return Response.json({ error: { message: "Insufficient credits", code: 402 } }, { status: 402 });
+    if ((body as { input?: unknown }).input === "fail/region")
+      return Response.json(
+        { error: { message: "Not available in your region. See https://openrouter.ai/docs/x", code: 403, metadata: { raw: "provider detail" } } },
+        { status: 403 }
+      );
     if (body.stream)
       return new Response(`data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n`, {
         headers: { "content-type": "text/event-stream", "x-secret-upstream": "1" },

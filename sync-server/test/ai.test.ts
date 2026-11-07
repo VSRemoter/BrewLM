@@ -228,8 +228,16 @@ describe("BrewLM AI proxy", () => {
     const spent = await getKey(p.session);
     expect(spent.status).toBe(402);
     expect(spent.error).toMatch(/used this month's BrewLM AI/);
+    // OpenRouter's own wording names the key's page and dollar amounts: none of it reaches the app.
+    expect(spent.text).not.toMatch(/openrouter\.ai|\$|keys\//);
 
     await setUsage(r.key_hash!, 0);
+    // Other errors keep their message, minus links and OpenRouter's details.
+    const other = await ask(p.session, { ...EMBED, input: "fail/region" });
+    expect(other.status).toBe(403);
+    expect(other.error).toBe("Not available in your region. See");
+    expect(other.text).not.toMatch(/openrouter\.ai|provider detail/);
+
     await fetch("https://openrouter.test/api/v1/__broke", { method: "POST", body: JSON.stringify({ on: true }) });
     try {
       expect((await getKey(p.session)).status).toBe(503);

@@ -370,6 +370,43 @@ const orFail = (status: number, message: string) =>
 const resetDate = (now: number) =>
   new Date(monthStart(now, 1)).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
 
+const LIMIT_REACHED = (now: number) =>
+  `You've used this month's BrewLM AI. It refills on ${resetDate(now)}, or add a top-up in Settings → Sync to keep going now.`;
+
+/**
+ * An error from OpenRouter, retold for the app. Its own messages can name the
+ * key's dashboard page and dollar amounts, so they never pass through as-is:
+ * the account's limit becomes "you've used this month's BrewLM AI" (OpenRouter
+ * answers 403, scope key_limit), BrewLM's own credit running out (402) a
+ * plain "unavailable", and anything else its message alone, links dropped.
+ */
+async function upstreamError(env: Env, res: Response, row: AiAccount, now: number): Promise<Response> {
+  const raw = await res.text().catch(() => "");
+  let err: { message?: unknown; metadata?: { scope?: unknown; limit_source?: unknown } } = {};
+  try {
+    err = (JSON.parse(raw) as { error?: typeof err }).error ?? {};
+  } catch {
+    /* not JSON */
+  }
+  const message = typeof err.message === "string" ? err.message : "";
+  const keyLimit =
+    err.metadata?.scope === "key_limit" || err.metadata?.limit_source === "openrouter_key_limit" || /key limit exceeded/i.test(message);
+  if (keyLimit) return orFail(402, LIMIT_REACHED(now));
+  if (res.status === 402) {
+    // Usually BrewLM's OpenRouter credit, but check the key in case a limit shows up this way.
+    const info = row.key_hash ? await getKey(env, row.key_hash).catch(() => null) : null;
+    if (info && info.limit !== null && info.usage >= info.limit - 0.0001) return orFail(402, LIMIT_REACHED(now));
+    console.error("ai proxy: OpenRouter refused for credit while the key has room; top up the OpenRouter account");
+    return orFail(503, UNAVAILABLE);
+  }
+  const clean = message
+    .replace(/https?:\/\/openrouter\.ai\/\S*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+  return orFail(res.status, clean || `The AI service said HTTP ${res.status}. Try again in a moment.`);
+}
+
 /**
  * POST /v1/ai/openrouter/<endpoint>: forwards one of BrewLM's AI requests to
  * OpenRouter with the account's key, for a model the config allows. The
@@ -418,15 +455,7 @@ async function proxy(req: Request, env: Env, user: User, endpoint: string, now =
       await forgetKey(env, acct.row, now);
       continue;
     }
-    if (res.status === 402) {
-      await res.body?.cancel();
-      // The account's own limit, or BrewLM's OpenRouter credit running out?
-      const info = acct.row.key_hash ? await getKey(env, acct.row.key_hash) : null;
-      if (info && info.limit !== null && info.usage >= info.limit - 0.0001)
-        return orFail(402, `You've used this month's BrewLM AI. It refills on ${resetDate(now)}, or add a top-up in Settings → Sync to keep going now.`);
-      console.error("ai proxy: OpenRouter refused for credit while the key has room; top up the OpenRouter account");
-      return orFail(503, UNAVAILABLE);
-    }
+    if (!res.ok) return upstreamError(env, res, acct.row, now);
     const headers = new Headers({ "cache-control": "no-store", "x-content-type-options": "nosniff" });
     const type = res.headers.get("content-type");
     if (type) headers.set("content-type", type);

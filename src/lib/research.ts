@@ -111,7 +111,27 @@ async function searchOpenRouter(
   if (!res.ok) throw await openRouterSearchError(res, model);
   const json = await res.json();
   noteUsage(via, model, usageFromJson(via, json), onUsage);
-  return collectCitations(json.choices?.[0]?.message?.annotations);
+  const msg = json.choices?.[0]?.message;
+  const hits = collectCitations(msg?.annotations);
+  // Some models (Claude through the web plugin) sometimes answer with the
+  // links in their text and no citations; the pages are fetched and checked
+  // next, so a link the model got wrong just drops out.
+  return hits.length ? hits : linksInText(String(msg?.content ?? ""));
+}
+
+/** Markdown links and bare http(s) URLs in a reply, first mention of each. */
+export function linksInText(text: string): WebHit[] {
+  const out: WebHit[] = [];
+  const seen = new Set<string>();
+  const add = (url: string, title?: string) => {
+    const u = url.replace(/[).,;:!?'"\]]+$/, "");
+    if (!/^https?:\/\/[^\s/]+\.[^\s]+/.test(u) || seen.has(u)) return;
+    seen.add(u);
+    out.push({ title: title?.trim() || u, url: u });
+  };
+  for (const m of text.matchAll(/\[([^\]]{1,300})\]\((https?:\/\/[^\s)]+)\)/g)) add(m[2], m[1]);
+  for (const m of text.matchAll(/https?:\/\/[^\s<>()\[\]"'`]+/g)) add(m[0]);
+  return out;
 }
 
 /** OpenAI: search-preview model emits url_citation annotations. */

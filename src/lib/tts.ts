@@ -44,6 +44,25 @@ function pcm16Base64ToFloat32(b64: string): Float32Array {
   return out;
 }
 
+/** Raw 16-bit LE PCM bytes → float samples. */
+function pcm16BytesToFloat32(bytes: Uint8Array): Float32Array {
+  const n = (bytes.length - (bytes.length % 2)) / 2;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = bytes[2 * i] | (bytes[2 * i + 1] << 8);
+    out[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768;
+  }
+  return out;
+}
+
+/**
+ * What OpenRouter's /audio/speech can return for this model: Gemini's TTS
+ * models only give raw 24 kHz mono pcm (they refuse "mp3"); others give mp3.
+ */
+function speechFormat(model: string): "pcm" | "mp3" {
+  return /gemini.*tts/i.test(model) ? "pcm" : "mp3";
+}
+
 /**
  * gpt-audio is a chat model — a system role barely steers it, but a direct
  * imperative user message makes it read verbatim (verified live). The strict
@@ -211,7 +230,7 @@ async function openRouterSpeech(
       "Content-Type": "application/json",
       ...api.headers,
     },
-    body: JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: "mp3" }),
+    body: JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: speechFormat(model) }),
     signal,
   });
   if (!resp.ok) {
@@ -382,6 +401,7 @@ export async function synthesizeScript(
       const voices = brewlm
         ? { Alex: tts.voices.host, Sam: tts.voices.cohost }
         : { Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") };
+      const clips: Float32Array[] = [];
       if (!isOpenRouterChatAudio(model)) {
         // hostVoice falls back to nova/onyx (gpt-audio voices); when a host has
         // no usable voice of its own, leave it out so the model uses its default.
@@ -391,18 +411,22 @@ export async function synthesizeScript(
           return raw && voices[host] === raw ? raw : "";
         };
         const speech = { Alex: own("Alex"), Sam: own("Sam") };
+        const pcm = speechFormat(model) === "pcm";
         const parts: Uint8Array[] = [];
         for (let i = 0; i < turns.length; i++) {
           onProgress?.(i, turns.length);
-          parts.push(await openRouterSpeech(api, model, speech[turns[i].speaker], turns[i].text, signal));
+          const clip = await openRouterSpeech(api, model, speech[turns[i].speaker], turns[i].text, signal);
+          if (pcm) clips.push(pcm16BytesToFloat32(clip));
+          else parts.push(clip);
         }
-        return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
-      }
-      const clips: Float32Array[] = [];
-      for (let i = 0; i < turns.length; i++) {
-        throwIfAborted(signal);
-        onProgress?.(i, turns.length);
-        clips.push(await speakScriptLine(api, model, voices[turns[i].speaker], turns[i].text, signal));
+        // mp3 clips join as they are; pcm ones are merged and encoded below.
+        if (!pcm) return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
+      } else {
+        for (let i = 0; i < turns.length; i++) {
+          throwIfAborted(signal);
+          onProgress?.(i, turns.length);
+          clips.push(await speakScriptLine(api, model, voices[turns[i].speaker], turns[i].text, signal));
+        }
       }
       const total = clips.reduce((n, c) => n + c.length, 0);
       const merged = new Float32Array(total);
