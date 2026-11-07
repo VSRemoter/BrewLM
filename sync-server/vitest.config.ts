@@ -31,7 +31,7 @@ async function fakeSite(req: Request, url: URL): Promise<Response> {
  * A stand-in for OpenRouter (src/openrouter.ts, the proxy in src/ai.ts): the
  * key-management API, and inference endpoints that answer on a provisioned
  * key. Test-only routes: POST /__usage { hash, usage } sets what a key has
- * spent, GET /__keys lists the keys that exist, GET /__last is the last
+ * spent, GET /__keys lists the keys that exist, GET /__last?hash= is the last
  * inference request, POST /__broke { on } makes the whole account run out of
  * credit, POST /__credits { total, used } sets what GET /credits reports.
  */
@@ -39,13 +39,14 @@ async function fakeSite(req: Request, url: URL): Promise<Response> {
 const polarCalls: { path: string; body: unknown }[] = [];
 
 const orKeys = new Map<string, { key: string; name: string; limit: number | null; usage: number; disabled: boolean; expires_at: string }>();
-let orLast: { path: string; auth: string | null; referer: string | null; body: unknown } | null = null;
+/** The last inference request per key hash (test files run at once, so never one shared "last"). */
+const orLast = new Map<string, { path: string; auth: string | null; referer: string | null; body: unknown }>();
 let orBroke = false;
 let orCredits = { total: 100, used: 0 };
 const INFERENCE = ["/chat/completions", "/audio/speech", "/embeddings", "/images"];
 async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
-  if (path === "/__last") return Response.json(orLast);
+  if (path === "/__last") return Response.json(orLast.get(url.searchParams.get("hash") ?? "") ?? null);
   if (path === "/__broke") {
     orBroke = ((await req.json()) as { on: boolean }).on;
     return Response.json({ ok: true });
@@ -56,8 +57,9 @@ async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
   }
   if (INFERENCE.includes(path)) {
     const body = (await req.json()) as { model: string; stream?: boolean };
-    orLast = { path, auth: req.headers.get("authorization"), referer: req.headers.get("http-referer"), body };
-    const k = [...orKeys.values()].find((x) => `Bearer ${x.key}` === req.headers.get("authorization"));
+    const found = [...orKeys].find(([, x]) => `Bearer ${x.key}` === req.headers.get("authorization"));
+    if (found) orLast.set(found[0], { path, auth: req.headers.get("authorization"), referer: req.headers.get("http-referer"), body });
+    const k = found?.[1];
     if (!k || k.disabled) return Response.json({ error: { message: "User not found.", code: 401 } }, { status: 401 });
     // As OpenRouter answers: the key's own limit is a 403, the account's credit a 402.
     if (k.limit !== null && k.usage >= k.limit) {

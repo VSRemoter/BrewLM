@@ -69,7 +69,9 @@ async function ask(session: string | undefined, body: unknown = EMBED, endpoint 
   return { status: res.status, text, error: res.headers.get("content-type")?.includes("json") ? (JSON.parse(text) as { error?: { message: string } }).error?.message : undefined, headers: res.headers };
 }
 /** The last request the fake OpenRouter received. */
-const last = async () => (await (await fetch("https://openrouter.test/api/v1/__last")).json()) as { path: string; auth: string; referer: string; body: Record<string, unknown> };
+/** The last request the fake OpenRouter received on this key. */
+const last = async (hash: string) =>
+  (await (await fetch(`https://openrouter.test/api/v1/__last?hash=${hash}`)).json()) as { path: string; auth: string; referer: string; body: Record<string, unknown> };
 const getKey = (session: string) => ask(session);
 
 const nextMonth = (now = Date.now()) => {
@@ -111,7 +113,7 @@ describe("BrewLM AI keys", () => {
     expect(first.headers.get("x-secret-upstream")).toBeNull();
     const mine = (await orKeys()).filter((k) => k.name === `brewlm:${pro.id}`);
     expect(mine).toHaveLength(1);
-    expect((await last()).auth).toBe(`Bearer ${mine[0].key}`);
+    expect((await last(mine[0].hash)).auth).toBe(`Bearer ${mine[0].key}`);
     await getKey(pro.session);
     expect((await orKeys()).filter((k) => k.name === `brewlm:${pro.id}`)).toHaveLength(1);
 
@@ -204,7 +206,7 @@ describe("BrewLM AI proxy", () => {
     expect(ok.status).toBe(200);
     expect(ok.headers.get("content-type")).toBe("text/event-stream");
     expect(ok.text).toContain("[DONE]");
-    const sent = await last();
+    const sent = await last((await row(p.id))!.key_hash!);
     expect(sent.body.user).toBe(p.id);
     expect(sent.referer).toBe("https://brewlm.app");
 

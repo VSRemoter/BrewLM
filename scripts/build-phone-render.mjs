@@ -4,6 +4,7 @@
 // them at /assets/…. Runs on npm install and before every dev/build.
 import { build } from "esbuild";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const out = "src-tauri/phone-render";
@@ -25,5 +26,6 @@ const result = await build({
 });
 
 const gz = (name, bytes) => writeFileSync(`${out}/${name}.gz`, gzipSync(bytes, { level: 9 }));
-for (const f of result.outputFiles) gz(f.path.split("/").pop(), f.contents);
+// basename, not split("/"): esbuild gives Windows paths with backslashes.
+for (const f of result.outputFiles) gz(basename(f.path), f.contents);
 gz("mermaid.js", readFileSync("node_modules/mermaid/dist/mermaid.min.js"));
