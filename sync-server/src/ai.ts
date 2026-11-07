@@ -392,6 +392,13 @@ async function upstreamError(env: Env, res: Response, row: AiAccount, now: numbe
   const keyLimit =
     err.metadata?.scope === "key_limit" || err.metadata?.limit_source === "openrouter_key_limit" || /key limit exceeded/i.test(message);
   if (keyLimit) return orFail(402, LIMIT_REACHED(now));
+  // BrewLM's own spending cap on OpenRouter (a guardrail's budget, for every key at once):
+  // not the subscriber's doing, so the same "unavailable" as BrewLM running out of credit.
+  const source = `${err.metadata?.limit_source ?? ""} ${err.metadata?.scope ?? ""}`;
+  if (/guardrail|budget|workspace|member/i.test(source) || /guardrail|budget/i.test(message)) {
+    console.error(`ai proxy: OpenRouter's budget limit refused a request (${source.trim() || message.slice(0, 120)})`);
+    return orFail(503, UNAVAILABLE);
+  }
   if (res.status === 402) {
     // Usually BrewLM's OpenRouter credit, but check the key in case a limit shows up this way.
     const info = row.key_hash ? await getKey(env, row.key_hash).catch(() => null) : null;

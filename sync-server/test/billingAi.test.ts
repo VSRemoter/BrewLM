@@ -175,6 +175,56 @@ describe("changing plans", () => {
   });
 });
 
+describe("two subscriptions on one account", () => {
+  const plan = async (session: string) => ((await (await call("/v1/me", { session })).json()) as { plan: string }).plan;
+  const extras = (id: string) =>
+    env.DB.prepare("SELECT polar_subscription_id, plan, notified_at FROM extra_subscriptions WHERE user_id = ?")
+      .bind(id)
+      .all<{ polar_subscription_id: string; plan: string; notified_at: number | null }>();
+
+  it("keeps the better plan, reports the extra once, and lets it take over if the plan in use ends", async () => {
+    const a = await account("dupe-pro-sync@example.com");
+    await subscription(a.id, "prod-pro-m");
+    await subscription(a.id, "prod-sync-m", "active", { id: `sub2-${a.id}` }); // the second checkout
+    expect(await plan(a.session)).toBe("pro");
+    expect((await row(a.id))?.monthly).toBe(AI_MONTHLY.pro); // AI untouched
+    let extra = (await extras(a.id)).results;
+    expect(extra).toMatchObject([{ polar_subscription_id: `sub2-${a.id}`, plan: "sync" }]);
+    const reported = extra[0].notified_at;
+    expect(reported).toBeGreaterThan(0);
+
+    await subscription(a.id, "prod-sync-m", "active", { id: `sub2-${a.id}` }); // its renewal
+    extra = (await extras(a.id)).results;
+    expect(extra[0].notified_at).toBe(reported); // reported once
+    expect(await plan(a.session)).toBe("pro");
+
+    // The plan in use ends while the extra is still paid for: the extra takes over.
+    await subscription(a.id, "prod-pro-m", "canceled");
+    expect(await plan(a.session)).toBe("sync");
+    expect((await extras(a.id)).results).toHaveLength(0);
+    expect((await row(a.id))?.monthly ?? 0).toBe(0);
+  });
+
+  it("switches to a better second subscription, and an ending extra changes nothing", async () => {
+    const a = await account("dupe-sync-max@example.com");
+    await subscription(a.id, "prod-sync-y");
+    await subscription(a.id, "prod-max-m", "active", { id: `sub2-${a.id}` });
+    expect(await plan(a.session)).toBe("max");
+    expect((await extras(a.id)).results).toMatchObject([{ polar_subscription_id: `sub-${a.id}`, plan: "sync" }]);
+
+    await subscription(a.id, "prod-sync-y", "canceled"); // the extra is revoked
+    expect(await plan(a.session)).toBe("max");
+  });
+
+  it("lets a new plan replace one that has ended", async () => {
+    const a = await account("dupe-resubscribe@example.com");
+    await subscription(a.id, "prod-sync-m", "canceled");
+    await subscription(a.id, "prod-pro-y", "active", { id: `sub2-${a.id}` });
+    expect(await plan(a.session)).toBe("pro");
+    expect((await extras(a.id)).results).toHaveLength(0);
+  });
+});
+
 describe("refunded plan payments", () => {
   const planOrder = (type: string, userId: string, orderId: string, refunded: number) =>
     send(type, {

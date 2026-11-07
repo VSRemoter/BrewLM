@@ -18,6 +18,7 @@
 import { applyTopup, monthlyAllowance, reconcile, refundPlanOrder, refundTopup } from "./ai";
 import { AI_TOPUP_CREDIT } from "./aiConfig";
 import { page, type User } from "./auth";
+import { sendAdminEmail } from "./email";
 
 /** Pro and Max are Sync and Sync Plus with BrewLM AI included (ai.ts). */
 export type Plan = "trial" | "sync" | "plus" | "pro" | "max" | "none";
@@ -330,14 +331,23 @@ export async function polarWebhook(req: Request, env: Env): Promise<Response> {
   return res;
 }
 
-async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Response> {
-  const userId = userIdOf(sub);
-  const product = planForProduct(env, sub.product_id);
-  if (!userId || !product) return json({ ok: true, ignored: "not a BrewLM subscription" });
-  if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
+/** A subscription's state as stored (subscriptions, extra_subscriptions). */
+interface SubState {
+  polar_subscription_id: string;
+  plan: PaidPlan;
+  status: string;
+  current_period_end: number | null;
+  cancel_at_period_end: number;
+  product_id: string | null;
+  updated_at: number;
+}
 
+/** Still paid for (or within the grace after its period, while Polar retries a renewal)? */
+const isLive = (s: Pick<SubState, "status" | "current_period_end">, now = Date.now()) =>
+  PAYING.has(s.status) && (s.current_period_end === null || s.current_period_end + GRACE_MS > now);
+
+async function writeMain(env: Env, userId: string, s: SubState): Promise<void> {
   // Deliveries can arrive out of order: keep the most recently modified state.
-  const modified = Date.parse(sub.modified_at ?? sub.created_at) || Date.now();
   await env.DB.prepare(
     `INSERT INTO subscriptions (user_id, polar_subscription_id, plan, status, current_period_end, cancel_at_period_end, updated_at, product_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -345,30 +355,117 @@ async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Resp
        status = excluded.status, current_period_end = excluded.current_period_end,
        cancel_at_period_end = excluded.cancel_at_period_end, updated_at = excluded.updated_at,
        product_id = excluded.product_id
-     WHERE excluded.updated_at >= subscriptions.updated_at`
+     WHERE excluded.updated_at >= subscriptions.updated_at OR excluded.polar_subscription_id != subscriptions.polar_subscription_id`
   )
-    .bind(
-      userId,
-      sub.id,
-      product.plan,
-      sub.status,
-      sub.current_period_end ? Date.parse(sub.current_period_end) : null,
-      sub.cancel_at_period_end ? 1 : 0,
-      modified,
-      sub.product_id
-    )
+    .bind(userId, s.polar_subscription_id, s.plan, s.status, s.current_period_end, s.cancel_at_period_end, s.updated_at, s.product_id)
     .run();
+}
+
+async function writeExtra(env: Env, userId: string, s: SubState): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO extra_subscriptions (polar_subscription_id, user_id, plan, status, current_period_end, cancel_at_period_end, product_id, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (polar_subscription_id) DO UPDATE SET plan = excluded.plan, status = excluded.status,
+       current_period_end = excluded.current_period_end, cancel_at_period_end = excluded.cancel_at_period_end,
+       product_id = excluded.product_id, updated_at = excluded.updated_at
+     WHERE excluded.updated_at >= extra_subscriptions.updated_at`
+  )
+    .bind(s.polar_subscription_id, userId, s.plan, s.status, s.current_period_end, s.cancel_at_period_end, s.product_id, s.updated_at)
+    .run();
+}
+
+/** Tell the admin, once per extra subscription, which one to refund. */
+async function reportDuplicate(env: Env, userId: string, kept: SubState, extra: SubState): Promise<void> {
+  const claim = await env.DB.prepare(
+    "UPDATE extra_subscriptions SET notified_at = ? WHERE polar_subscription_id = ? AND notified_at IS NULL"
+  )
+    .bind(Date.now(), extra.polar_subscription_id)
+    .run();
+  if (claim.meta.changes === 0) return;
+  const user = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first<{ email: string }>();
+  const text = `${user?.email ?? userId} has two BrewLM subscriptions at once (usually two checkouts opened before either was paid):
+
+  In use:  ${kept.plan} (Polar subscription ${kept.polar_subscription_id})
+  Extra:   ${extra.plan} (Polar subscription ${extra.polar_subscription_id})
+
+BrewLM gives them the ${kept.plan} plan and ignores the extra one, so nothing's broken for them. They're paying twice, though: in Polar, revoke the extra subscription and refund its payment. If they meant to change plans, they can do that from Settings → Sync in BrewLM.`;
+  try {
+    await sendAdminEmail(env, `BrewLM: ${user?.email ?? userId} has two subscriptions`, text);
+  } catch (e) {
+    console.error(`duplicate subscription email: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * A subscription webhook. One account has one plan (`subscriptions`). A
+ * second subscription that's live while the first is too goes to
+ * `extra_subscriptions`: BrewLM uses the better plan of the two (never
+ * downgrading someone for paying twice), emails the admin to refund the
+ * extra, and promotes it if the plan in use ends while it's still paid for.
+ */
+async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Response> {
+  const userId = userIdOf(sub);
+  const product = planForProduct(env, sub.product_id);
+  if (!userId || !product) return json({ ok: true, ignored: "not a BrewLM subscription" });
+  if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
+
+  const now = Date.now();
+  const incoming: SubState = {
+    polar_subscription_id: sub.id,
+    plan: product.plan,
+    status: sub.status,
+    current_period_end: sub.current_period_end ? Date.parse(sub.current_period_end) : null,
+    cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
+    product_id: sub.product_id,
+    updated_at: Date.parse(sub.modified_at ?? sub.created_at) || now,
+  };
+  const main = await env.DB.prepare(
+    "SELECT polar_subscription_id, plan, status, current_period_end, cancel_at_period_end, product_id, updated_at FROM subscriptions WHERE user_id = ?"
+  )
+    .bind(userId)
+    .first<SubState>();
+
+  if (!main || main.polar_subscription_id === incoming.polar_subscription_id || !isLive(main, now)) {
+    // The plan in use (or a new one replacing a plan that has ended).
+    await writeMain(env, userId, incoming);
+    await env.DB.prepare("DELETE FROM extra_subscriptions WHERE polar_subscription_id = ?").bind(incoming.polar_subscription_id).run();
+    if (!isLive(incoming, now)) {
+      // It ended: a still-paid extra subscription takes over.
+      const { results } = await env.DB.prepare(
+        "SELECT polar_subscription_id, plan, status, current_period_end, cancel_at_period_end, product_id, updated_at FROM extra_subscriptions WHERE user_id = ?"
+      )
+        .bind(userId)
+        .all<SubState>();
+      const next = results.filter((x) => isLive(x, now)).sort((a, b) => RANK[b.plan] - RANK[a.plan])[0];
+      if (next) {
+        await writeMain(env, userId, { ...next, updated_at: Math.max(next.updated_at, incoming.updated_at) });
+        await env.DB.prepare("DELETE FROM extra_subscriptions WHERE polar_subscription_id = ?").bind(next.polar_subscription_id).run();
+      }
+    }
+  } else if (!isLive(incoming, now)) {
+    // An extra subscription ending (or an old one's late delivery): the plan in use stays.
+    await writeExtra(env, userId, incoming);
+  } else if (RANK[incoming.plan] > RANK[main.plan]) {
+    // Two live subscriptions, the new one better: use it, and park the other.
+    await writeExtra(env, userId, main);
+    await writeMain(env, userId, incoming);
+    await reportDuplicate(env, userId, incoming, main);
+  } else {
+    await writeExtra(env, userId, incoming);
+    await reportDuplicate(env, userId, main, incoming);
+  }
   // The AI allowance follows the plan right away (the hourly cron retries a failure).
   await reconcile(env, userId).catch((e) => console.error(`ai reconcile ${userId}: ${e instanceof Error ? e.message : String(e)}`));
   return json({ ok: true });
 }
 
 /**
- * AI top-ups: a paid order adds AI_TOPUP_CREDIT to the account's allowance; a
- * refund takes back the refunded share (never below what's already spent).
- * Refunds of subscription orders change nothing here: to cut AI off when
- * refunding, revoke the subscription in Polar (Polar does that itself when it
- * refunds to head off a chargeback), and its webhook revokes the key.
+ * Orders. AI top-ups: a paid order adds AI_TOPUP_CREDIT to the account's
+ * allowance; a refund takes back the refunded share (never below what's
+ * already spent). A refunded Pro or Max payment takes back that share of
+ * what's left of this month's plan allowance (ai.ts refundPlanOrder). To stop
+ * AI in later months too, revoke the subscription in Polar (Polar does that
+ * itself when it refunds to head off a chargeback); its webhook ends the plan.
  */
 async function orderEvent(env: Env, order: PolarOrder): Promise<Response> {
   const topupProduct = envString(env, "POLAR_PRODUCT_AI_TOPUP");

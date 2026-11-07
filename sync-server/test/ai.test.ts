@@ -238,6 +238,12 @@ describe("BrewLM AI proxy", () => {
     expect(other.error).toBe("Not available in your region. See");
     expect(other.text).not.toMatch(/openrouter\.ai|provider detail/);
 
+    // BrewLM's own budget on OpenRouter is no fault of the subscriber's: "unavailable", no details.
+    const budget = await ask(p.session, { ...EMBED, input: "fail/budget" });
+    expect(budget.status).toBe(503);
+    expect(budget.error).toMatch(/isn't available right now/);
+    expect(budget.text).not.toMatch(/openrouter\.ai|\$|guardrail/i);
+
     await fetch("https://openrouter.test/api/v1/__broke", { method: "POST", body: JSON.stringify({ on: true }) });
     try {
       expect((await getKey(p.session)).status).toBe(503);

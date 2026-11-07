@@ -74,6 +74,17 @@ async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
       );
     }
     if (orBroke) return Response.json({ error: { message: "Insufficient credits", code: 402 } }, { status: 402 });
+    if ((body as { input?: unknown }).input === "fail/budget")
+      return Response.json(
+        {
+          error: {
+            message: "Guardrail budget exceeded: $100.00 of $100.00 daily budget used. Manage it at https://openrouter.ai/workspaces/default/guardrails",
+            code: 403,
+            metadata: { limit_source: "guardrail_budget", scope: "member" },
+          },
+        },
+        { status: 403 }
+      );
     if ((body as { input?: unknown }).input === "fail/region")
       return Response.json(
         { error: { message: "Not available in your region. See https://openrouter.ai/docs/x", code: 403, metadata: { raw: "provider detail" } } },
