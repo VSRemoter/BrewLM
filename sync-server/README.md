@@ -22,7 +22,11 @@ GET    /v1/ai/config                   public: which model does each job (src/ai
 POST   /v1/ai/openrouter/<endpoint>    Pro/Max: chat/completions, audio/speech, embeddings or images,
                                        forwarded to OpenRouter on the account's capped key (which
                                        never leaves the server); config models only
-GET    /v1/ai/usage                    → { usedFraction, resetsAt, left: { chats, audioOverviews, … } }
+GET    /v1/ai/usage                    → { usedFraction, resetsAt, left: { chats, audioOverviews, … }, topupAdds, paused }
+
+GET    /v1/admin/ai                    ADMIN_TOKEN: pause state, today's spend, credit left, limits
+POST   /v1/admin/ai/pause              ADMIN_TOKEN: { paused, reason? }   BrewLM AI off/on for everyone
+POST   /v1/admin/ai/block              ADMIN_TOKEN: { email, blocked, reason? }   … for one account
 
 POST /v1/vaults/:vault/push            { device, changes: [{ key, hlc, payload }] }
 GET  /v1/vaults/:vault/pull?since=<seq>&limit=<n>
@@ -127,6 +131,8 @@ npx wrangler secret put POLAR_ACCESS_TOKEN
 npx wrangler secret put POLAR_WEBHOOK_SECRET
 npx wrangler secret put OPENROUTER_MANAGEMENT_KEY    # BrewLM AI
 npx wrangler secret put AI_KEY_SECRET
+npx wrangler secret put ADMIN_TOKEN                  # admin routes (pause, block, shared links)
+npx wrangler secret put REPORT_EMAIL                 # where admin emails go
 ```
 
 Set the `POLAR_PRODUCT_*` ids in `wrangler.jsonc` (they're public; an empty
@@ -139,9 +145,38 @@ and `order.paid`, `order.updated` and `order.refunded` (AI top-ups). Never set
 Polar settings for BrewLM AI: give Pro and Max a trial on the product (it
 asks for a card), turn on **Prevent trial abuse**, and turn off plan changes
 in the customer portal (the app changes plans through `/v1/billing/change`,
-which charges upgrades before they apply). Refunding a subscription order
-doesn't stop its AI: revoke the subscription for that (Polar does when it
+which charges upgrades before they apply). A refunded Pro or Max payment
+takes back that share of the month's remaining AI allowance (`order.refunded`);
+to stop AI in later months too, revoke the subscription (Polar does when it
 refunds to head off a chargeback).
+
+### Protecting BrewLM AI (src/aiGuard.ts)
+
+Every subscriber's spending is capped by their key. On top of that:
+
+- **Spend watch, every 10 minutes:** today's whole OpenRouter spend (UTC).
+  At `AI_DAILY_ALERT_USD` you get an email; at `AI_DAILY_CEILING_USD`
+  BrewLM AI pauses for everyone until midnight UTC (resume sooner with the
+  pause route); below `AI_LOW_BALANCE_USD` of OpenRouter credit you get a
+  warning. Set the three in `wrangler.jsonc`.
+- **Daily summary**, shortly after midnight UTC: the day's spend, credit
+  left, subscribers, top-ups, who used the most, and anyone who used half a
+  month's allowance or more in a day.
+- **Pause** (the kill switch): `POST /v1/admin/ai/pause {"paused":true}`.
+  Spending stops at once, since the keys never leave the server. If the
+  server itself is in trouble, `npx wrangler secret put AI_PAUSED` (value 1)
+  pauses without a deploy; `npx wrangler secret delete AI_PAUSED` resumes.
+- **Block** one account: `POST /v1/admin/ai/block {"email":"…","blocked":true,"reason":"…"}`.
+- **Sign-ups:** throwaway inboxes can't start accounts (src/disposable.ts).
+  For Cloudflare Turnstile on the sign-in confirm page, create a widget for
+  `sync.brewlm.com` (and `127.0.0.1` for local testing) in the Cloudflare
+  dashboard, put its site key in `TURNSTILE_SITE_KEY` and
+  `npx wrangler secret put TURNSTILE_SECRET`. The server checks each answer
+  with Cloudflare (action `signin`, hostname from `PUBLIC_URL`).
+
+All admin emails go to `REPORT_EMAIL` through Resend (printed to the console
+without `RESEND_API_KEY`). Admin calls look like
+`curl -X POST https://sync.brewlm.com/v1/admin/ai/pause -H "authorization: Bearer $ADMIN_TOKEN" -d '{"paused":true}'`.
 
 Production uses live Polar (`api.polar.sh`) and the live products in
 `wrangler.jsonc`; `.dev.vars` points local development at Polar's sandbox.

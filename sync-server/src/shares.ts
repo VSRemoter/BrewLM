@@ -37,7 +37,7 @@
  * its own R2 object, so a reader never sees half of an update: the new one is
  * stored first, then the version (and object name) moves, then the old one goes.
  */
-import { userForSession, type User } from "./auth";
+import { isAdmin, userForSession, type User } from "./auth";
 import { entitlement } from "./billing";
 import { sendReportEmail } from "./email";
 
@@ -209,11 +209,7 @@ async function report(req: Request, env: Env, id: string): Promise<Response> {
 }
 
 async function adminRoute(req: Request, env: Env, id: string): Promise<Response> {
-  const token = env.ADMIN_TOKEN;
-  const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
-  const enc = new TextEncoder();
-  if (!token || given.length !== token.length || !crypto.subtle.timingSafeEqual(enc.encode(given), enc.encode(token)))
-    return fail(401, "unauthorized");
+  if (!isAdmin(req, env)) return fail(401, "unauthorized");
   if (req.method !== "POST") return fail(405, "method not allowed");
   const body = await req.json<{ disabled?: unknown }>().catch(() => ({}) as { disabled?: unknown });
   if (typeof body.disabled !== "boolean") return fail(400, "bad disabled");

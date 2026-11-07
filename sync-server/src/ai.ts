@@ -31,6 +31,7 @@
  */
 import { userForSession, type User } from "./auth";
 import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "./aiConfig";
+import { BLOCKED_MESSAGE, currentPause, isBlocked, PAUSED_MESSAGE } from "./aiGuard";
 import { createKey, deleteKey, getKey, openKey, OpenRouterError, openRouterConfigured, sealKey, updateKey, usd } from "./openrouter";
 
 const DAY = 86_400_000;
@@ -225,6 +226,42 @@ export async function refundTopup(env: Env, userId: string, orderId: string, ref
   await adjustTopup(env, userId, (row, spent) => -Math.min(t.credit * share, Math.max(0, row.cap + row.topup - spent)), now);
 }
 
+/**
+ * A refunded Pro or Max order: the refunded share of what's left of this
+ * month's plan allowance goes (all of it for a full refund), once per order.
+ * Top-up credit stays; ending the plan itself is Polar's subscription event.
+ */
+export async function refundPlanOrder(env: Env, userId: string, orderId: string, netAmount: number, refundedAmount: number, now = Date.now()): Promise<void> {
+  if (refundedAmount <= 0) return;
+  const prev = await env.DB.prepare("SELECT refunded_amount FROM ai_plan_refunds WHERE order_id = ?").bind(orderId).first<{ refunded_amount: number }>();
+  const before = prev?.refunded_amount ?? 0;
+  if (refundedAmount <= before) return;
+  // Claim this refund's increase (another delivery of it changes nothing).
+  const res = await env.DB.prepare(
+    `INSERT INTO ai_plan_refunds (order_id, user_id, refunded_amount, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (order_id) DO UPDATE SET refunded_amount = excluded.refunded_amount WHERE ai_plan_refunds.refunded_amount = ?`
+  )
+    .bind(orderId, userId, refundedAmount, now, before)
+    .run();
+  if (res.meta.changes === 0) return;
+  // This refund's share of the payment not refunded yet: a half refund then
+  // the other half takes half of what's left, then all of the rest.
+  const unrefunded = netAmount - before;
+  const share = unrefunded > 0 ? Math.min(1, (refundedAmount - before) / unrefunded) : 1;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const row = await reconcile(env, userId, now);
+    if (!row) return;
+    const spent = await spentThisCycle(env, row);
+    // The plan's allowance is spent before top-ups.
+    const planLeft = Math.max(0, row.cap - Math.min(spent, row.cap));
+    const cap = usd(row.cap - share * planLeft);
+    if (!(await save(env, row, { cap }, now))) continue;
+    if (row.key_hash) await updateKey(env, row.key_hash, { limit: keyLimit({ ...row, cap }) });
+    return;
+  }
+  throw new Error("ai account busy");
+}
+
 /** Changes the cycle's top-up by `delta(row, spent)` and the key's limit with it. */
 async function adjustTopup(env: Env, userId: string, delta: (row: AiAccount, spent: number) => number, now: number): Promise<void> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -354,6 +391,9 @@ async function proxy(req: Request, env: Env, user: User, endpoint: string, now =
   if (!modelAllowed(body.model)) return orFail(403, `BrewLM AI doesn't run ${typeof body.model === "string" ? body.model : "that model"}. Pick a model in Settings → AI Model, or use your own API key.`);
   // Fallback lists would let a request reach other models.
   if (Array.isArray(body.models) && !body.models.every(modelAllowed)) return orFail(403, "BrewLM AI doesn't run one of those models.");
+  // The kill switch, and accounts BrewLM AI is turned off for (aiGuard.ts).
+  if (await currentPause(env, now)) return orFail(503, PAUSED_MESSAGE);
+  if (await isBlocked(env, user.id)) return orFail(403, BLOCKED_MESSAGE);
   // OpenRouter's per-user id, for its abuse checks; the account id is opaque.
   if (endpoint === "chat/completions") body.user = user.id;
   const payload = JSON.stringify(body);
@@ -400,7 +440,9 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
   const row = await reconcile(env, user.id, now);
   const { plan, trial } = await monthlyAllowance(env, user.id, now);
   const resetsAt = monthStart(now, 1);
-  if (!row || row.monthly <= 0) return json({ plan: null, trial: false, usedFraction: 0, resetsAt, left: null });
+  // Paused for everyone (or off for this account): the app says so instead of a meter alone.
+  const paused = !!(await currentPause(env, now)) || (await isBlocked(env, user.id));
+  if (!row || row.monthly <= 0) return json({ plan: null, trial: false, usedFraction: 0, resetsAt, left: null, paused });
   const allowance = row.cap + row.topup;
   const spent = await spentThisCycle(env, row);
   const remaining = Math.max(0, allowance - spent);
@@ -414,6 +456,7 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
     left,
     // What one top-up adds, in the same counts.
     topupAdds: counts(AI_TOPUP_CREDIT),
+    paused,
   });
 }
 

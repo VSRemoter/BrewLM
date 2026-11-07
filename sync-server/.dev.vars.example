@@ -12,10 +12,17 @@ POLAR_ACCESS_TOKEN=
 POLAR_WEBHOOK_SECRET=
 # Optional. Takes reported shared links down (POST /v1/admin/shares/:id). Any long random string.
 ADMIN_TOKEN=
-# Optional. Where reports of shared links are emailed (needs RESEND_API_KEY); without it they're printed here.
+# Optional. Where admin emails go (needs RESEND_API_KEY): reported shared links, BrewLM AI spending
+# alerts and the daily BrewLM AI summary. Without it they're printed here.
 REPORT_EMAIL=
 # Optional, for BrewLM AI (src/ai.ts). A management key from openrouter.ai/settings/management-keys
 # (give it an expiry date) and any long random string that encrypts the per-user keys stored in D1.
 # Never change AI_KEY_SECRET once keys exist: stored keys couldn't be read (users would get new ones next month).
 OPENROUTER_MANAGEMENT_KEY=
 AI_KEY_SECRET=
+# Emergency stop for BrewLM AI, without a deploy: `wrangler secret put AI_PAUSED` with 1 pauses it for
+# everyone, `wrangler secret delete AI_PAUSED` resumes. (POST /v1/admin/ai/pause does the same, and is
+# the usual way.)
+AI_PAUSED=
+# Optional. Cloudflare Turnstile's secret for the sign-in confirm page (with TURNSTILE_SITE_KEY in wrangler.jsonc).
+TURNSTILE_SECRET=

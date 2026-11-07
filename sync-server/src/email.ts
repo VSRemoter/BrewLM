@@ -21,18 +21,23 @@ export async function sendSignInEmail(env: Env, to: string, link: string, code: 
   if (!res.ok) throw new Error(`email: Resend HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
 }
 
-/** A shared link was reported: tell the admin (REPORT_EMAIL), or print it locally. */
-export async function sendReportEmail(env: Env, shareId: string, reason: string, count: number): Promise<void> {
-  const takeDown = `curl -X POST ${env.PUBLIC_URL.replace(/\/$/, "")}/v1/admin/shares/${shareId} -H "authorization: Bearer $ADMIN_TOKEN" -d '{"disabled":true}'`;
-  const text = `Shared link ${shareId} was reported (${count} report${count === 1 ? "" : "s"} so far).\n\nReason given:\n${reason}\n\nThe server can't read the link. To take it down:\n${takeDown}\n\nTo bring it back, send "disabled":false instead.`;
+/** A plain-text email to the admin (REPORT_EMAIL), or printed locally without one. */
+export async function sendAdminEmail(env: Env, subject: string, text: string): Promise<void> {
   if (!env.RESEND_API_KEY || !env.REPORT_EMAIL) {
-    console.log(`[dev] share report: ${text}`);
+    console.log(`[dev] admin email "${subject}":\n${text}`);
     return;
   }
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({ from: env.EMAIL_FROM, to: env.REPORT_EMAIL, subject: `BrewLM: shared link reported (${shareId.slice(0, 8)})`, text }),
+    body: JSON.stringify({ from: env.EMAIL_FROM, to: env.REPORT_EMAIL, subject, text }),
   });
   if (!res.ok) throw new Error(`email: Resend HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+}
+
+/** A shared link was reported: tell the admin. */
+export async function sendReportEmail(env: Env, shareId: string, reason: string, count: number): Promise<void> {
+  const takeDown = `curl -X POST ${env.PUBLIC_URL.replace(/\/$/, "")}/v1/admin/shares/${shareId} -H "authorization: Bearer $ADMIN_TOKEN" -d '{"disabled":true}'`;
+  const text = `Shared link ${shareId} was reported (${count} report${count === 1 ? "" : "s"} so far).\n\nReason given:\n${reason}\n\nThe server can't read the link. To take it down:\n${takeDown}\n\nTo bring it back, send "disabled":false instead.`;
+  await sendAdminEmail(env, `BrewLM: shared link reported (${shareId.slice(0, 8)})`, text);
 }

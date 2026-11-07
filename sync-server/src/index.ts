@@ -14,7 +14,8 @@
  *   POST   /v1/webhooks/polar        subscription updates from Polar
  *   POST   /v1/fetch                 { url, method?, headers?, body? } → the page   (fetch.ts; web app)
  *   /v1/shares…                      shared notebook links (shares.ts)
- *   /v1/ai/…                         BrewLM AI: model config, the account's OpenRouter key, usage (ai.ts)
+ *   /v1/ai/…                         BrewLM AI: model config, the proxy to OpenRouter, usage (ai.ts)
+ *   /v1/admin/ai…                    BrewLM AI pause switch and account blocks (aiGuard.ts; ADMIN_TOKEN)
  *
  * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
@@ -42,6 +43,7 @@
  * `Env` is generated from wrangler.jsonc by `npm run types`.
  */
 import { aiRoutes, reconcileAll } from "./ai";
+import { aiAdminRoutes, dailySummary, spendWatch } from "./aiGuard";
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
 import { billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
@@ -201,10 +203,20 @@ export default {
     out.headers.append("vary", "Origin");
     return out;
   },
-  /** Hourly (wrangler.jsonc triggers): expired and abandoned shared links; AI allowances and keys. */
-  async scheduled(_event, env, ctx) {
+  /**
+   * wrangler.jsonc triggers. Hourly: expired and abandoned shared links, AI
+   * allowances and keys, and (once a day) the BrewLM AI summary. Every 10
+   * minutes: BrewLM AI's spend against the daily alert and ceiling.
+   */
+  async scheduled(event, env, ctx) {
+    const log = (what: string) => (e: unknown) => console.error(`${what}: ${e instanceof Error ? e.message : String(e)}`);
+    if (event.cron === "*/10 * * * *") {
+      ctx.waitUntil(spendWatch(env).catch(log("ai spend watch")).then(() => {}));
+      return;
+    }
     ctx.waitUntil(sweepShares(env).then((r) => r.removed && console.log(`shares: removed ${r.removed}`)));
     ctx.waitUntil(reconcileAll(env).then((r) => r.checked && console.log(`ai: checked ${r.checked}, failed ${r.failed}`)));
+    ctx.waitUntil(dailySummary(env).catch(log("ai daily summary")).then(() => {}));
   },
 } satisfies ExportedHandler<Env>;
 
@@ -214,6 +226,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (account) return account;
   const shared = await shareRoutes(req, env, url.pathname);
   if (shared) return shared;
+  const aiAdmin = await aiAdminRoutes(req, env, url.pathname);
+  if (aiAdmin) return aiAdmin;
   const ai = await aiRoutes(req, env, url.pathname);
   if (ai) return ai;
   if (url.pathname === "/v1/fetch") {

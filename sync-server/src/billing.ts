@@ -15,7 +15,7 @@
  * - Without an active plan or trial, sync is read-only: devices can still
  *   download their library but not upload.
  */
-import { applyTopup, monthlyAllowance, reconcile, refundTopup } from "./ai";
+import { applyTopup, monthlyAllowance, reconcile, refundPlanOrder, refundTopup } from "./ai";
 import { AI_TOPUP_CREDIT } from "./aiConfig";
 import { page, type User } from "./auth";
 
@@ -372,6 +372,19 @@ async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Resp
  */
 async function orderEvent(env: Env, order: PolarOrder): Promise<Response> {
   const topupProduct = envString(env, "POLAR_PRODUCT_AI_TOPUP");
+  const planned = order.product_id ? planForProduct(env, order.product_id) : null;
+  if (planned && (planned.plan === "pro" || planned.plan === "max") && order.refunded_amount > 0) {
+    // A refunded Pro/Max payment takes back that share of this month's AI.
+    const userId = userIdOf(order);
+    if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
+    try {
+      await refundPlanOrder(env, userId, order.id, order.net_amount, order.refunded_amount);
+    } catch (e) {
+      console.error(`ai plan refund ${order.id}: ${e instanceof Error ? e.message : String(e)}`);
+      return json({ error: "try again" }, 503);
+    }
+    return json({ ok: true });
+  }
   if (!topupProduct || order.product_id !== topupProduct) return json({ ok: true, ignored: "not an AI top-up" });
   const userId = userIdOf(order);
   if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });

@@ -202,6 +202,8 @@ export interface AiUsage {
   left: AiCounts | null;
   /** What one top-up adds, in the same counts. */
   topupAdds?: AiCounts;
+  /** BrewLM AI is paused for everyone, or turned off for this account. */
+  paused?: boolean;
 }
 
 export interface AiCounts {

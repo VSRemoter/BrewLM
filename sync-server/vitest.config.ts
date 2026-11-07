@@ -32,7 +32,8 @@ async function fakeSite(req: Request, url: URL): Promise<Response> {
  * key-management API, and inference endpoints that answer on a provisioned
  * key. Test-only routes: POST /__usage { hash, usage } sets what a key has
  * spent, GET /__keys lists the keys that exist, GET /__last is the last
- * inference request, POST /__broke { on } makes the whole account run out of credit.
+ * inference request, POST /__broke { on } makes the whole account run out of
+ * credit, POST /__credits { total, used } sets what GET /credits reports.
  */
 /** Polar calls that change something (plan changes), for tests to inspect via GET https://polar.test/__calls. */
 const polarCalls: { path: string; body: unknown }[] = [];
@@ -40,12 +41,17 @@ const polarCalls: { path: string; body: unknown }[] = [];
 const orKeys = new Map<string, { key: string; name: string; limit: number | null; usage: number; disabled: boolean; expires_at: string }>();
 let orLast: { path: string; auth: string | null; referer: string | null; body: unknown } | null = null;
 let orBroke = false;
+let orCredits = { total: 100, used: 0 };
 const INFERENCE = ["/chat/completions", "/audio/speech", "/embeddings", "/images"];
 async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
   if (path === "/__last") return Response.json(orLast);
   if (path === "/__broke") {
     orBroke = ((await req.json()) as { on: boolean }).on;
+    return Response.json({ ok: true });
+  }
+  if (path === "/__credits") {
+    orCredits = (await req.json()) as { total: number; used: number };
     return Response.json({ ok: true });
   }
   if (INFERENCE.includes(path)) {
@@ -73,6 +79,12 @@ async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
     const k = orKeys.get(hash)!;
     return { hash, name: k.name, label: `${k.key.slice(0, 12)}...`, limit: k.limit, usage: k.usage, disabled: k.disabled, limit_reset: null };
   };
+  if (path === "/credits" && req.method === "GET")
+    return Response.json({ data: { total_credits: orCredits.total, total_usage: orCredits.used } });
+  if (path === "/keys" && req.method === "GET") {
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    return Response.json({ data: [...orKeys.keys()].slice(offset, offset + 100).map(info) });
+  }
   if (path === "/keys" && req.method === "POST") {
     const body = (await req.json()) as { name: string; limit: number; expires_at: string };
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(body.expires_at)) return Response.json({ error: "bad expires_at" }, { status: 400 });
@@ -93,6 +105,22 @@ async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
     return Response.json({ deleted: true });
   }
   return Response.json({ error: "method" }, { status: 405 });
+}
+
+/**
+ * Cloudflare Turnstile's siteverify: the token "pass" passes for the sign-in
+ * page on the test server, "wrong-action" and "wrong-host" pass for the wrong
+ * page, anything else fails.
+ */
+async function fakeTurnstile(req: Request): Promise<Response> {
+  const form = new URLSearchParams(await req.text());
+  if (form.get("secret") !== "turnstile-test-secret") return Response.json({ success: false, "error-codes": ["invalid-input-secret"] });
+  const token = form.get("response");
+  const ok = { success: true, action: "signin", hostname: "127.0.0.1" };
+  if (token === "pass") return Response.json(ok);
+  if (token === "wrong-action") return Response.json({ ...ok, action: "login" });
+  if (token === "wrong-host") return Response.json({ ...ok, hostname: "evil.example" });
+  return Response.json({ success: false, "error-codes": ["invalid-input-response"] });
 }
 
 export default defineConfig(async () => ({
@@ -126,12 +154,17 @@ export default defineConfig(async () => ({
           OPENROUTER_API_URL: "https://openrouter.test/api/v1",
           OPENROUTER_MANAGEMENT_KEY: "or-mgmt-test",
           AI_KEY_SECRET: "ai-test-secret",
+          // Off unless a test turns them on (whatever .dev.vars says).
+          AI_PAUSED: "",
+          TURNSTILE_SITE_KEY: "",
+          TURNSTILE_SECRET: "",
         },
         // A stand-in for Polar's API: echoes what was asked for into the URL it returns.
         outboundService: async (req: Request) => {
           const url = new URL(req.url);
           if (url.host === "page.test") return fakeSite(req, url);
           if (url.host === "openrouter.test") return fakeOpenRouter(req, url);
+          if (url.host === "challenges.cloudflare.com") return fakeTurnstile(req);
           if (url.host !== "polar.test") return new Response("no network in tests", { status: 503 });
           if (url.pathname === "/__calls") return Response.json(polarCalls);
           const body = (await req.json()) as Record<string, unknown>;

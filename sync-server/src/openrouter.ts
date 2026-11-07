@@ -96,6 +96,27 @@ export async function deleteKey(env: Env, hash: string): Promise<void> {
   }
 }
 
+/** BrewLM's whole OpenRouter account: credit bought and spent so far, in US dollars. */
+export async function getCredits(env: Env): Promise<{ total: number; used: number }> {
+  const res = await call<{ data: { total_credits: unknown; total_usage: unknown } }>(env, "GET", "/credits");
+  const total = Number(res.data?.total_credits);
+  const used = Number(res.data?.total_usage);
+  if (!Number.isFinite(total) || !Number.isFinite(used)) throw new OpenRouterError(502, "OpenRouter returned no credit totals");
+  return { total, used };
+}
+
+/** Every key's lifetime usage by hash (OpenRouter lists 100 a page). */
+export async function listKeyUsage(env: Env, maxPages = 100): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (let page = 0; page < maxPages; page++) {
+    const res = await call<{ data: Record<string, unknown>[] }>(env, "GET", `/keys?offset=${page * 100}`);
+    const keys = Array.isArray(res.data) ? res.data : [];
+    for (const k of keys) out.set(String(k.hash), Number(k.usage) || 0);
+    if (keys.length < 100) break;
+  }
+  return out;
+}
+
 /* --------------------------- the key at rest (D1) -------------------------- */
 
 async function aesKey(secret: string): Promise<CryptoKey> {

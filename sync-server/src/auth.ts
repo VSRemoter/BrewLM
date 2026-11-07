@@ -12,7 +12,13 @@
  *      once, after the button was pressed.
  *
  * Only SHA-256 hashes of the pending id, link token and session are stored.
+ *
+ * Abuse: new accounts can't use throwaway inboxes (disposable.ts), sign-in
+ * emails are limited per address and per network, and with TURNSTILE_SITE_KEY
+ * and TURNSTILE_SECRET set the confirm page asks for a Cloudflare Turnstile
+ * check, verified here before the sign-in is approved.
  */
+import { isDisposableEmail } from "./disposable";
 import { sendSignInEmail } from "./email";
 
 export const SIGN_IN_TTL_MS = 15 * 60 * 1000;
@@ -32,6 +38,13 @@ export interface User {
 }
 
 const enc = new TextEncoder();
+
+/** Does the request carry ADMIN_TOKEN (compared in constant time)? Never true when it isn't set. */
+export function isAdmin(req: Request, env: Env): boolean {
+  const token = env.ADMIN_TOKEN;
+  const given = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+  return !!token && given.length === token.length && crypto.subtle.timingSafeEqual(enc.encode(given), enc.encode(token));
+}
 
 export async function sha256(s: string): Promise<string> {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s)));
@@ -74,6 +87,9 @@ export async function startSignIn(req: Request, env: Env): Promise<Response> {
   const body = await req.json<{ email?: unknown }>().catch(() => ({}) as { email?: unknown });
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   if (!EMAIL_RE.test(email)) return json({ error: "That doesn't look like an email address." }, 400);
+  // Throwaway inboxes can't start new accounts (each would be a fresh trial); existing ones still sign in.
+  if (isDisposableEmail(email) && !(await env.DB.prepare("SELECT 1 AS x FROM users WHERE email = ?").bind(email).first()))
+    return json({ error: "Please use a permanent email address. Temporary inboxes can't be used for BrewLM accounts." }, 400);
 
   const now = Date.now();
   const hourAgo = now - 60 * 60 * 1000;
@@ -109,26 +125,73 @@ async function pendingByToken(env: Env, token: string) {
     .first<{ email: string; code: string; expires_at: number; approved_at: number | null; consumed_at: number | null }>();
 }
 
+const TURNSTILE_ACTION = "signin";
+
+/** Turnstile on the confirm page: on only with both its keys set. */
+function turnstileOn(env: Env): boolean {
+  return !!env.TURNSTILE_SITE_KEY && !!env.TURNSTILE_SECRET;
+}
+
+/**
+ * Cloudflare's verdict on the confirm page's Turnstile token: it must pass,
+ * for this page's action, on this server's own hostname. Fails closed when
+ * Cloudflare can't be reached. Tokens are single-use; the form posts once.
+ */
+export async function passesTurnstile(env: Env, token: string, ip: string): Promise<boolean> {
+  if (!token || token.length > 2048) return false;
+  const hostname = new URL(env.PUBLIC_URL).hostname;
+  try {
+    const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(10_000),
+      body: new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token, ...(ip ? { remoteip: ip } : {}) }),
+    });
+    if (!r.ok) throw new Error(`siteverify ${r.status}`);
+    const result = await r.json<{ success?: boolean; action?: string; hostname?: string }>();
+    return result.success === true && result.action === TURNSTILE_ACTION && result.hostname === hostname;
+  } catch (e) {
+    console.error(`turnstile: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+function confirmPage(env: Env, row: { email: string; code: string }, token: string, note = ""): Response {
+  const turnstile = turnstileOn(env);
+  return page(
+    "Sign in",
+    `${turnstile ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : ""}
+     <h1>Sign in to BrewLM?</h1>
+     <p>as <b>${escapeHtml(row.email)}</b></p>
+     <p>Check that BrewLM is showing this code:</p>
+     <div class="code">${escapeHtml(row.code)}</div>
+     ${note ? `<p style="color:#c2410c">${escapeHtml(note)}</p>` : ""}
+     <form method="post"><input type="hidden" name="token" value="${escapeHtml(token)}">${
+       turnstile
+         ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(env.TURNSTILE_SITE_KEY)}" data-action="${TURNSTILE_ACTION}" style="margin-top:14px"></div>`
+         : ""
+     }<button type="submit">Yes, sign in</button></form>
+     <p style="font-size:13px;margin-top:18px">Didn't try to sign in? Close this page; nothing happens.</p>`
+  );
+}
+
 /** GET shows the confirm page; POST (the button) approves. */
 export async function verifySignIn(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
-  const token = req.method === "POST" ? String((await req.formData()).get("token") ?? "") : (url.searchParams.get("token") ?? "");
+  const form = req.method === "POST" ? await req.formData() : null;
+  const token = form ? String(form.get("token") ?? "") : (url.searchParams.get("token") ?? "");
   const row = token ? await pendingByToken(env, token) : null;
   if (!row || row.expires_at <= Date.now() || row.consumed_at)
     return page("Link expired", `<h1>This link has expired</h1><p>Start signing in again from BrewLM.</p>`);
   if (row.approved_at)
     return page("Signed in", `<h1>You're signed in</h1><p>You can close this page and return to BrewLM.</p>`);
 
-  if (req.method !== "POST")
-    return page(
-      "Sign in",
-      `<h1>Sign in to BrewLM?</h1>
-       <p>as <b>${escapeHtml(row.email)}</b></p>
-       <p>Check that BrewLM is showing this code:</p>
-       <div class="code">${escapeHtml(row.code)}</div>
-       <form method="post"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Yes, sign in</button></form>
-       <p style="font-size:13px;margin-top:18px">Didn't try to sign in? Close this page; nothing happens.</p>`
-    );
+  if (!form) return confirmPage(env, row, token);
+  if (turnstileOn(env)) {
+    const answer = String(form.get("cf-turnstile-response") ?? "");
+    if (!(await passesTurnstile(env, answer, req.headers.get("cf-connecting-ip") ?? "")))
+      return confirmPage(env, row, token, "The check above didn't go through. Wait for it to finish, then press the button again.");
+  }
 
   await env.DB.prepare("UPDATE sign_ins SET approved_at = ? WHERE token_hash = ? AND approved_at IS NULL")
     .bind(Date.now(), await sha256(token))

@@ -175,6 +175,38 @@ describe("changing plans", () => {
   });
 });
 
+describe("refunded plan payments", () => {
+  const planOrder = (type: string, userId: string, orderId: string, refunded: number) =>
+    send(type, {
+      id: orderId,
+      status: refunded >= 1200 ? "refunded" : "partially_refunded",
+      paid: true,
+      product_id: "prod-pro-m",
+      net_amount: 1200,
+      refunded_amount: refunded,
+      customer: { external_id: userId },
+    });
+
+  it("take back the refunded share of what's left of the month's allowance, once", async () => {
+    const a = await account("refund-plan@example.com");
+    await subscription(a.id, "prod-pro-m");
+    await call("/v1/ai/openrouter/embeddings", { method: "POST", session: a.session, body: JSON.stringify({ model: AI_CONFIG.roles.embedding.model, input: "x" }) });
+    const before = (await row(a.id))!;
+    await setUsage(before.key_hash!, 1); // $1 of the allowance spent
+
+    expect((await planOrder("order.refunded", a.id, "order-p1", 600)).status).toBe(200); // half refunded
+    const half = (await row(a.id))!;
+    expect(half.cap).toBeCloseTo(before.cap - (before.cap - 1) / 2, 3);
+    await planOrder("order.refunded", a.id, "order-p1", 600); // the same refund again
+    expect((await row(a.id))!.cap).toBeCloseTo(half.cap, 4);
+
+    await planOrder("order.refunded", a.id, "order-p1", 1200); // now all of it
+    const all = (await row(a.id))!;
+    expect(all.cap).toBeCloseTo(1, 3); // what was spent, no more
+    expect(await orLimit(all.key_hash!)).toBeCloseTo(1, 3);
+  });
+});
+
 describe("AI top-ups", () => {
   it("adds a paid top-up once, and a refund takes its share back", async () => {
     const a = await account("topup@example.com");

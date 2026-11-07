@@ -27,7 +27,8 @@
   ],
   // Public settings. Secrets (RESEND_API_KEY, POLAR_ACCESS_TOKEN,
   // POLAR_WEBHOOK_SECRET, SYNC_DEV_TOKEN, OPENROUTER_MANAGEMENT_KEY,
-  // AI_KEY_SECRET) go in .dev.vars locally and `wrangler secret put` in production.
+  // AI_KEY_SECRET, TURNSTILE_SECRET, and AI_PAUSED for emergencies) go in
+  // .dev.vars locally and `wrangler secret put` in production.
   "vars": {
     // PUBLIC_URL and POLAR_API_URL are overridden in .dev.vars for local development.
     "PUBLIC_URL": "https://sync.brewlm.com",
@@ -48,10 +49,21 @@
     "POLAR_PRODUCT_PRO_YEARLY": "",
     "POLAR_PRODUCT_MAX_MONTHLY": "",
     "POLAR_PRODUCT_MAX_YEARLY": "",
-    "POLAR_PRODUCT_AI_TOPUP": ""
+    "POLAR_PRODUCT_AI_TOPUP": "",
+    // BrewLM AI's whole OpenRouter spend per UTC day (src/aiGuard.ts): an email
+    // at the alert, BrewLM AI paused until the next day at the ceiling, and an
+    // email when the OpenRouter credit left drops below the low balance. US dollars.
+    "AI_DAILY_ALERT_USD": "20",
+    "AI_DAILY_CEILING_USD": "60",
+    "AI_LOW_BALANCE_USD": "25",
+    // Cloudflare Turnstile on the sign-in confirm page (empty = off). The secret
+    // is TURNSTILE_SECRET.
+    "TURNSTILE_SITE_KEY": ""
   },
   // Hourly: delete expired and abandoned shared links (src/shares.ts sweepShares);
-  // grant, revoke and roll over BrewLM AI allowances (src/ai.ts reconcileAll).
-  "triggers": { "crons": ["23 * * * *"] },
+  // grant, revoke and roll over BrewLM AI allowances (src/ai.ts reconcileAll);
+  // once a day, the BrewLM AI summary email (src/aiGuard.ts).
+  // Every 10 minutes: BrewLM AI's spend against the daily alert and ceiling.
+  "triggers": { "crons": ["23 * * * *", "*/10 * * * *"] },
   "observability": { "enabled": true }
 }

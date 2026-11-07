@@ -121,6 +121,7 @@ export function BrewLmAiStatusRow({ model }: { model?: string }) {
   else if (access === "signed-out") desc = "Sign in under Settings → Sync to use it. It's included with the Pro and Max plans.";
   else if (access === "no-plan")
     desc = `Included with the Pro and Max plans; you're on ${status.account?.plan === "trial" ? "the free trial" : "a plan without it"}. Choose Pro or Max in Settings → Sync, or pick another provider with your own key.`;
+  else if (usage?.paused) desc = "BrewLM AI is paused for a little while. Try again later, or use your own API key meanwhile.";
   else if (!usage?.left) desc = `Included with your ${status.account?.plan === "max" ? "Max" : "Pro"} plan. No API key needed.`;
   else
     desc = `${usage.trial ? "Left in your trial" : "Left this month"}: ${countsLine(usage.left, ratio)}${
