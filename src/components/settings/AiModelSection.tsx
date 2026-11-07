@@ -24,7 +24,7 @@ import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
 import ProviderRoutingCard from "./ProviderRoutingCard";
-import { BrewLmAiStatusRow, BrewLmTierRow } from "./BrewLmAi";
+import { BrewLmAiStatusRow, BrewLmTierRow, useAiOffered } from "./BrewLmAi";
 import { platform } from "../../platform";
 
 const KEY_FIELD: Record<Provider, keyof Settings> = {
@@ -295,6 +295,12 @@ export default function AiModelSection({
   const provider = settings.provider;
   const isLocal = provider === "local";
   const isBrewlm = provider === "brewlm";
+  // BrewLM AI is listed once the server offers it to this account (or it's already picked).
+  const aiOffered = useAiOffered();
+  const providers = (Object.keys(PROVIDER_LABELS) as Provider[])
+    // Local models run on the computer: the web app can't reach them.
+    .filter((p) => p !== "local" || platform.kind === "desktop")
+    .filter((p) => p !== "brewlm" || aiOffered || isBrewlm);
   const [modelList, setModelList] = useState<string[]>([]);
   /** Everything the local server reports, embedding models included. */
   const [served, setServed] = useState<string[]>([]);
@@ -399,14 +405,10 @@ export default function AiModelSection({
       <Card>
         <Row label="Provider">
           <div
-            className={`grid gap-1 rounded-lg border border-edge bg-canvas p-1 ${
-              platform.kind === "desktop" ? "grid-cols-5" : "grid-cols-4"
-            }`}
+            className="grid gap-1 rounded-lg border border-edge bg-canvas p-1"
+            style={{ gridTemplateColumns: `repeat(${providers.length}, minmax(0, 1fr))` }}
           >
-            {(Object.keys(PROVIDER_LABELS) as Provider[])
-              // Local models run on the computer: the web app can't reach them.
-              .filter((p) => p !== "local" || platform.kind === "desktop")
-              .map((p) => (
+            {providers.map((p) => (
                 <button
                   key={p}
                   onClick={() =>

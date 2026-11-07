@@ -15,9 +15,9 @@ export const AI_CONFIG = {
   version: AI_CONFIG_VERSION,
   /** What users pick between (model names stay hidden in the app). */
   tiers: {
-    fast: { label: "Fast", model: "anthropic/claude-haiku-5.5" },
-    smart: { label: "Smart", model: "anthropic/claude-sonnet-5.5" },
-    best: { label: "Best", model: "anthropic/claude-opus-5.5" },
+    fast: { label: "Fast", model: "z-ai/glm-5.3-flash" },
+    smart: { label: "Smart", model: "deepseek/deepseek-v4.1-flash-1017" },
+    best: { label: "Best", model: "openai/gpt-6.1-sol" },
   },
   /** The tier new subscribers start on. */
   defaultTier: "fast",
@@ -29,7 +29,6 @@ export const AI_CONFIG = {
   more: [
     { label: "GPT-6 Luna", model: "openai/gpt-6-luna" },
     { label: "Qwen3.8 Flash", model: "qwen/qwen3.8-flash" },
-    { label: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash-1017" },
     { label: "Mistral Large 4", model: "mistralai/mistral-large-4-0" },
     { label: "Gemini 3.8 Flash", model: "google/gemini-3.8-flash" },
     { label: "GPT-6.1 Terra", model: "openai/gpt-6.1-terra" },
@@ -40,27 +39,29 @@ export const AI_CONFIG = {
   /** Fixed jobs; users don't choose these. */
   roles: {
     /** Titles, chunk summaries, condensing: always cheap, whatever tier is picked. */
-    background: "anthropic/claude-haiku-5.5",
-    research: { planner: "anthropic/claude-sonnet-5.5", reader: "anthropic/claude-haiku-5.5" },
-    // Pending the listening test (Gemini 3.8 Flash TTS vs Voxtral Mini TTS vs Fish Drama-3).
-    tts: { model: "google/gemini-3.8-flash-tts", voices: { host: "Puck", cohost: "Kore" } },
+    background: "z-ai/glm-5.3-flash",
+    research: { planner: "deepseek/deepseek-v4.1-flash-1017", reader: "z-ai/glm-5.3-flash" },
+    // HeyGen voices: nadine, tabitha, noelle, meredith, sabrina, bram, gareth, lucian, weston, vincent.
+    tts: { model: "heygen/heygen-voice-1-turbo", voices: { host: "nadine", cohost: "gareth" } },
     transcribe: "google/gemini-3.5-flash-lite",
-    image: "google/gemini-3.1-flash-lite-image",
+    // Recraft takes no reference picture, so BrewLM AI can't /edit or /remix pictures.
+    image: "recraft/recraft-v4.1-flash",
     embedding: { model: "openai/text-embedding-3-small", dims: 512, version: 1 },
   },
 } as const;
 
 /**
  * Rough cost of one of each thing, in US dollars of OpenRouter credit, for the
- * "≈ N left" estimates (prices checked 2026-11-04). Never sent to the app: it
- * shows counts and a percentage, not dollars.
+ * "≈ N left" estimates (prices checked 2026-11-07, cheapest providers first,
+ * rounded up to stay on the safe side). Never sent to the app: it shows
+ * counts and a percentage, not dollars.
  */
 export const AI_ESTIMATES = {
-  chats: 0.0025, // a Fast reply with ~20k tokens of sources
-  audioOverviews: 0.2, // ~10 minutes, script included
-  researchRuns: 0.45,
-  transcriptionHours: 0.06,
-  images: 0.04,
+  chats: 0.001, // a Fast (GLM 5.3 Flash) reply with ~20k tokens of sources
+  audioOverviews: 0.05, // ~10 minutes: ~9,000 characters of HeyGen voice ($4/M) plus the script
+  researchRuns: 0.08, // mostly web-search fees
+  transcriptionHours: 0.07,
+  images: 0.01, // Recraft V4.1 Flash, $0.007
 } as const;
 
 /** Monthly AI allowance per plan, in dollars of OpenRouter credit. */

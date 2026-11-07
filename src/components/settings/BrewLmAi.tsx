@@ -18,7 +18,7 @@ import {
 import { buyAiTopup, changePlan, getSyncStatus, onSyncStatus, type SyncStatus } from "../../lib/sync";
 import type { Settings } from "../../lib/types";
 import { Row } from "./controls";
-import { openSettingsAt } from "../../lib/settingsNav";
+import { goToSettingsSection, openSettingsAt, requestPlanPicker } from "../../lib/settingsNav";
 import { confirmAction } from "../ConfirmDialog";
 
 type Access = "off" | "signed-out" | "no-plan" | "ok";
@@ -37,6 +37,22 @@ export function useAiAccess(): { status: SyncStatus; access: Access } {
           ? "ok"
           : "no-plan";
   return { status, access };
+}
+
+/** Whether to show BrewLM AI and the Pro and Max plans (the server's for-sale switch), kept current. */
+export function useAiOffered(): boolean {
+  const { status } = useAiAccess();
+  const [forSale, setForSale] = useState(aiConfigNow().forSale === true);
+  useEffect(() => {
+    let live = true;
+    void loadAiConfig().then((c) => live && setForSale(c.forSale === true));
+    return () => {
+      live = false;
+    };
+  }, []);
+  // Same rule as brewlmAi.ts aiOffered(): the account's answer once signed in, the public one otherwise.
+  const account = status.account;
+  return account ? account.aiForSale === true || account.plan === "pro" || account.plan === "max" : forSale;
 }
 
 /** This month's allowance, refetched when the window regains focus (e.g. back from a top-up checkout). */
@@ -86,6 +102,9 @@ function countsLine(c: AiCounts, ratio = 1): string {
   ];
   return `about ${parts[0]}, ${parts[1]} or ${parts[2]}`;
 }
+
+const smallButton =
+  "rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover disabled:opacity-50";
 
 function TopupButton({ onError }: { onError: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
@@ -147,9 +166,26 @@ export function BrewLmAiStatusRow({ model }: { model?: string }) {
                 </div>
               )}
             </>
+          ) : access === "signed-out" ? (
+            <button onClick={() => goToSettingsSection("sync")} className={smallButton}>
+              Sign in…
+            </button>
+          ) : access === "no-plan" ? (
+            <>
+              <div className="text-[12px] font-medium text-warn">Needs Pro or Max</div>
+              <button
+                onClick={() => {
+                  requestPlanPicker();
+                  goToSettingsSection("sync");
+                }}
+                className={`mt-2 ${smallButton}`}
+              >
+                See plans…
+              </button>
+            </>
           ) : (
             <span className={`text-[12px] font-medium ${access === "ok" ? "text-ink-2" : "text-warn"}`}>
-              {access === "ok" ? "Ready" : access === "signed-out" ? "Not signed in" : access === "no-plan" ? "Needs Pro or Max" : "Unavailable"}
+              {access === "ok" ? "Ready" : "Unavailable"}
             </span>
           )}
         </div>
@@ -268,6 +304,7 @@ export function AiBlockedNotice({ message, onOpenSettings }: { message: string; 
   const plan = status.account?.plan;
   const interval = status.account?.interval ?? "year";
   const settingsAt = (id: "ai" | "sync") => {
+    if (id === "sync" && block === "plan") requestPlanPicker();
     openSettingsAt(id);
     onOpenSettings();
   };

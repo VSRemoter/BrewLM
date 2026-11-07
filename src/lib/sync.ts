@@ -103,6 +103,8 @@ export interface AccountInfo {
   cancelAtPeriodEnd: boolean;
   /** Paid plans: how it's billed (null when the server can't tell). */
   interval?: "month" | "year" | null;
+  /** Whether BrewLM AI and the Pro and Max plans are offered to this account (the server's for-sale switch). */
+  aiForSale?: boolean;
 }
 
 export type PaidPlan = "sync" | "plus" | "pro" | "max";

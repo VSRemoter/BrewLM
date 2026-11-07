@@ -13,7 +13,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { takeSettingsSection } from "../../lib/settingsNav";
+import { onSettingsSection, takeSettingsSection } from "../../lib/settingsNav";
 import { loadSettings, patchSettings } from "../../lib/settings";
 import type { Settings } from "../../lib/types";
 import type { UpdateInfo } from "../../lib/updates";
@@ -73,6 +73,17 @@ export default function SettingsPage({
   useEffect(() => {
     loadSettings().then(setSettings);
   }, []);
+
+  // A button elsewhere in Settings (e.g. "See plans") moving to another section.
+  useEffect(
+    () =>
+      onSettingsSection((id) => {
+        if (!SECTIONS.some((s) => s.id === id)) return;
+        setSection(id as SectionId);
+        setListOpen(false);
+      }),
+    []
+  );
 
   /** Instant-apply: update local state immediately, persist only the changed keys. */
   const patch = (p: Partial<Settings>) => {

@@ -40,6 +40,7 @@ import { Card, Footnote, Row, SectionTitle, Toggle } from "./controls";
 import { platform } from "../../platform";
 import { confirmAction } from "../ConfirmDialog";
 import { BrewLmAiStatusRow } from "./BrewLmAi";
+import { takePlanPicker } from "../../lib/settingsNav";
 
 /** What to call the device this runs on ("this computer" / "this device"). */
 const HERE = platform.kind === "desktop" ? "computer" : "device";
@@ -363,6 +364,9 @@ function PlanModal({ account, onClose }: { account: AccountInfo; onClose: () => 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Pro and Max are listed once the server's for-sale switch offers them to this account.
+  const aiOffered = account.aiForSale === true || account.plan === "pro" || account.plan === "max";
+  const plans = PLANS.filter((p) => !p.ai || aiOffered);
   const choose = async (plan: PaidPlan) => {
     setError(null);
     // Already paying: switch the subscription instead of starting a second one.
@@ -410,7 +414,7 @@ function PlanModal({ account, onClose }: { account: AccountInfo; onClose: () => 
             </button>
           ))}
         </div>
-        {PLANS.map((p) => {
+        {plans.map((p) => {
           const isCurrent = current === p.id && (account.interval ?? interval) === interval;
           return (
             <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-edge px-4 py-3">
@@ -433,10 +437,12 @@ function PlanModal({ account, onClose }: { account: AccountInfo; onClose: () => 
             </div>
           );
         })}
-        <p className="text-[11.5px] leading-relaxed text-ink-3">
-          BrewLM AI means AI that works without an API key: chat, Studio, audio overviews, research and
-          transcription, with a monthly allowance (Max's is 2.5× Pro's) and top-ups if you need more.
-        </p>
+        {aiOffered && (
+          <p className="text-[11.5px] leading-relaxed text-ink-3">
+            BrewLM AI means AI that works without an API key: chat, Studio, audio overviews, research and
+            transcription, with a monthly allowance (Max's is 2.5× Pro's) and top-ups if you need more.
+          </p>
+        )}
         {done && <p className="text-[12.5px] font-medium text-ink">{done}</p>}
         <p className="text-[11.5px] leading-relaxed text-ink-3">
           Checkout opens in your browser (payments by Polar, our reseller, who handles tax). Your plan updates here
@@ -449,7 +455,8 @@ function PlanModal({ account, onClose }: { account: AccountInfo; onClose: () => 
 }
 
 function AccountCard({ account }: { account: AccountInfo }) {
-  const [choosing, setChoosing] = useState(false);
+  // Opens straight away when a "See plans" button sent us here.
+  const [choosing, setChoosing] = useState(() => takePlanPicker());
   const [error, setError] = useState<string | null>(null);
   const used = Math.min(1, account.usedBytes / Math.max(1, account.limitBytes));
   const paid = account.plan === "sync" || account.plan === "plus" || account.plan === "pro" || account.plan === "max";

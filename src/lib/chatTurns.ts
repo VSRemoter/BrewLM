@@ -125,6 +125,8 @@ export async function imageTurn(opts: {
   }
   const canReference = (await maxInputReferences(model)) > 0;
   if ((mode === "edit" || mode === "remix") && !canReference) {
+    if (brewlm)
+      return "BrewLM AI's picture model draws new pictures but can't edit existing ones. Describe the whole picture with `/image <prompt>`, or use your own OpenRouter key to pick an image model that edits.";
     const alts = (await editCapableModels()).map((m) => `\`${m}\``).join(", ");
     return `**${model}** can't edit pictures — it doesn't accept a reference image. ${
       alts ? `Models that can: ${alts}. ` : ""

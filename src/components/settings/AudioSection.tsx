@@ -17,7 +17,7 @@ import {
   type VoiceProvider,
   voicesNeedIds,
 } from "../../lib/settings";
-import { BrewLmAiStatusRow } from "./BrewLmAi";
+import { BrewLmAiStatusRow, useAiOffered } from "./BrewLmAi";
 import type { Settings, TtsProvider } from "../../lib/types";
 import { Card, ModelIdInput, SavedModelList, SectionTitle } from "./controls";
 
@@ -302,14 +302,22 @@ export default function AudioSection({
   settings: Settings;
   patch: (p: Partial<Settings>) => void;
 }) {
+  // BrewLM AI voices are listed once the server offers BrewLM AI to this account (or they're already picked).
+  const aiOffered = useAiOffered();
+  const ttsProviders = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).filter(
+    (p) => p !== "brewlm" || aiOffered || settings.ttsProvider === "brewlm"
+  );
   return (
     <div>
       <SectionTitle title="Audio Voices" />
 
       <Card>
         <div className="py-3">
-          <div className="grid grid-cols-5 gap-1 rounded-lg border border-edge bg-canvas p-1">
-            {(Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).map((p) => (
+          <div
+            className="grid gap-1 rounded-lg border border-edge bg-canvas p-1"
+            style={{ gridTemplateColumns: `repeat(${ttsProviders.length}, minmax(0, 1fr))` }}
+          >
+            {ttsProviders.map((p) => (
               <button
                 key={p}
                 onClick={() => patch({ ttsProvider: p })}

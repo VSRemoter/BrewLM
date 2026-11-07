@@ -26,3 +26,8 @@ AI_KEY_SECRET=
 AI_PAUSED=
 # Optional. Cloudflare Turnstile's secret for the sign-in confirm page (with TURNSTILE_SITE_KEY in wrangler.jsonc).
 TURNSTILE_SECRET=
+# BrewLM AI's "for sale" switch: 1 offers BrewLM AI and the Pro and Max plans to everyone; empty hides
+# them (launch: `wrangler secret put AI_FOR_SALE` with 1). AI_EARLY_ACCESS: comma-separated emails that
+# see and can buy them before that (you, testers). Accounts already on Pro or Max always keep theirs.
+AI_FOR_SALE=
+AI_EARLY_ACCESS=

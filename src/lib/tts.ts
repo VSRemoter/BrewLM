@@ -57,10 +57,16 @@ function pcm16BytesToFloat32(bytes: Uint8Array): Float32Array {
 
 /**
  * What OpenRouter's /audio/speech can return for this model: Gemini's TTS
- * models only give raw 24 kHz mono pcm (they refuse "mp3"); others give mp3.
+ * and HeyGen's voices only give raw mono pcm (they refuse "mp3"); others give mp3.
  */
 function speechFormat(model: string): "pcm" | "mp3" {
-  return /gemini.*tts/i.test(model) ? "pcm" : "mp3";
+  return /gemini.*tts|heygen/i.test(model) ? "pcm" : "mp3";
+}
+
+/** The sample rate a pcm response says it has (`audio/pcm;rate=44100`), else 24 kHz. */
+function pcmRate(contentType: string | null): number {
+  const rate = Number(/rate=(\d+)/i.exec(contentType ?? "")?.[1]);
+  return rate >= 8000 && rate <= 96000 ? rate : PCM16_RATE;
 }
 
 /**
@@ -221,7 +227,7 @@ async function openRouterSpeech(
   voice: string,
   text: string,
   signal?: AbortSignal
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; rate: number }> {
   throwIfAborted(signal);
   const resp = await fetch(`${api.base}/audio/speech`, {
     method: "POST",
@@ -251,7 +257,8 @@ async function openRouterSpeech(
       );
     throw new Error(`OpenRouter TTS HTTP ${resp.status}: ${detail}`);
   }
-  return new Uint8Array(await resp.arrayBuffer());
+  // pcm comes at the model's own rate (Gemini 24 kHz, HeyGen 44.1 kHz).
+  return { bytes: new Uint8Array(await resp.arrayBuffer()), rate: pcmRate(resp.headers.get("content-type")) };
 }
 
 /** Encode mono float samples as a 16-bit PCM wav file. */
@@ -402,6 +409,8 @@ export async function synthesizeScript(
         ? { Alex: tts.voices.host, Sam: tts.voices.cohost }
         : { Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") };
       const clips: Float32Array[] = [];
+      // One model, one rate: gpt-audio's 24 kHz, or what the speech model reported.
+      let rate = PCM16_RATE;
       if (!isOpenRouterChatAudio(model)) {
         // hostVoice falls back to nova/onyx (gpt-audio voices); when a host has
         // no usable voice of its own, leave it out so the model uses its default.
@@ -416,8 +425,10 @@ export async function synthesizeScript(
         for (let i = 0; i < turns.length; i++) {
           onProgress?.(i, turns.length);
           const clip = await openRouterSpeech(api, model, speech[turns[i].speaker], turns[i].text, signal);
-          if (pcm) clips.push(pcm16BytesToFloat32(clip));
-          else parts.push(clip);
+          if (pcm) {
+            clips.push(pcm16BytesToFloat32(clip.bytes));
+            rate = clip.rate;
+          } else parts.push(clip.bytes);
         }
         // mp3 clips join as they are; pcm ones are merged and encoded below.
         if (!pcm) return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
@@ -436,9 +447,9 @@ export async function synthesizeScript(
         off += c.length;
       }
       // AAC where the platform can encode it (~6× smaller than WAV); WAV otherwise.
-      const m4a = await encodeM4a(merged, PCM16_RATE).catch(() => null);
+      const m4a = await encodeM4a(merged, rate).catch(() => null);
       if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
-      return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, PCM16_RATE)])}` };
+      return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, rate)])}` };
     }
     case "elevenlabs": {
       const key = settings.elevenlabsKey.trim();

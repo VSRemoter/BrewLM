@@ -185,6 +185,9 @@ export default defineConfig(async () => ({
           AI_KEY_SECRET: "ai-test-secret",
           // Off unless a test turns them on (whatever .dev.vars says).
           AI_PAUSED: "",
+          // On for the tests; billingAi.test.ts checks it off with its own env.
+          AI_FOR_SALE: "1",
+          AI_EARLY_ACCESS: "",
           TURNSTILE_SITE_KEY: "",
           TURNSTILE_SECRET: "",
         },

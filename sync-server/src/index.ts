@@ -6,7 +6,7 @@
  *   GET    /v1/auth/verify?token=    confirm page;  POST (its button) approves
  *   POST   /v1/auth/poll             { pendingId } → { status, session?, email?, vault? }
  *   DELETE /v1/auth/session          sign this device out
- *   GET    /v1/me                    → { email, vault, plan, canSync, limitBytes, usedBytes, … }
+ *   GET    /v1/me                    → { email, vault, plan, canSync, limitBytes, usedBytes, aiForSale, … }
  *   POST   /v1/billing/checkout      { plan, interval } or { plan: "topup" } → { url }   (Polar-hosted)
  *   POST   /v1/billing/change        { plan, interval } → { ok, when }   (switch plans; upgrades now, downgrades at renewal)
  *   POST   /v1/billing/portal        → { url }
@@ -45,7 +45,7 @@
 import { aiRoutes, reconcileAll } from "./ai";
 import { aiAdminRoutes, dailySummary, spendWatch } from "./aiGuard";
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
-import { billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
+import { aiForSale, billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
 import { sharedBytes, shareRoutes, sweepShares } from "./shares";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
@@ -169,7 +169,9 @@ async function me(env: Env, user: User): Promise<Response> {
   const ent = await entitlement(env, user);
   const usage = await env.VAULT.get(env.VAULT.idFromName(user.id)).usage();
   const shared = await sharedBytes(env, user.id);
-  return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total + shared, sharedBytes: shared });
+  // Whether the app shows BrewLM AI and the Pro and Max plans to this account (billing.ts aiForSale).
+  const aiOffered = aiForSale(env, user) || ent.plan === "pro" || ent.plan === "max";
+  return json({ email: user.email, vault: user.id, ...ent, usedBytes: usage.total + shared, sharedBytes: shared, aiForSale: aiOffered });
 }
 
 /** The request's origin if CORS_ORIGINS allows it. */

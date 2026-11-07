@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { cycleOf, reconcile, reconcileAll, restOfMonth, type AiAccount } from "../src/ai";
-import { AI_CONFIG, AI_MONTHLY, AI_TRIAL } from "../src/aiConfig";
+import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "../src/aiConfig";
 import { sha256 } from "../src/auth";
 
 const call = (path: string, init?: RequestInit & { session?: string }) =>
@@ -279,9 +279,9 @@ describe("BrewLM AI usage", () => {
     const body = (await res.json()) as { plan: string; usedFraction: number; left: Record<string, number>; resetsAt: number };
     expect(body.plan).toBe("pro");
     expect(body.usedFraction).toBeCloseTo(0.5, 2);
-    expect(body.left.audioOverviews).toBe(Math.floor(r.cap / 2 / 0.2));
+    expect(body.left.audioOverviews).toBe(Math.floor(r.cap / 2 / AI_ESTIMATES.audioOverviews));
     expect(body.resetsAt).toBe(nextMonth() - 3_600_000);
-    expect((body as unknown as { topupAdds: Record<string, number> }).topupAdds.audioOverviews).toBe(25);
+    expect((body as unknown as { topupAdds: Record<string, number> }).topupAdds.audioOverviews).toBe(Math.floor(AI_TOPUP_CREDIT / AI_ESTIMATES.audioOverviews));
     expect(JSON.stringify(body)).not.toMatch(/cap|carried|usd/i);
 
     const none = await account("usage-none@example.com");

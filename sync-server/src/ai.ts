@@ -440,6 +440,9 @@ async function proxy(req: Request, env: Env, user: User, endpoint: string, now =
   if (await isBlocked(env, user.id)) return orFail(403, BLOCKED_MESSAGE);
   // OpenRouter's per-user id, for its abuse checks; the account id is opaque.
   if (endpoint === "chat/completions") body.user = user.id;
+  // The cheapest provider that's up serves each request (the config's prices
+  // assume it); OpenRouter falls back to the next one if it fails.
+  if (endpoint === "chat/completions" && body.provider === undefined) body.provider = { sort: "price" };
   const payload = JSON.stringify(body);
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -501,7 +504,8 @@ export async function aiRoutes(req: Request, env: Env, path: string): Promise<Re
   if (!path.startsWith("/v1/ai/")) return null;
   if (path === "/v1/ai/config") {
     if (req.method !== "GET") return fail(405, "method not allowed");
-    return json(AI_CONFIG, 200, "public, max-age=300");
+    // forSale: the AI plans are open to everyone (signed-in accounts get their own answer from /v1/me).
+    return json({ ...AI_CONFIG, forSale: env.AI_FOR_SALE === "1" }, 200, "public, max-age=300");
   }
   const proxied = path.startsWith("/v1/ai/openrouter/") ? path.slice("/v1/ai/openrouter/".length) : null;
   const route = proxied !== null ? "POST" : path === "/v1/ai/usage" ? "GET" : null;

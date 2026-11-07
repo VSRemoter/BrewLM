@@ -21,6 +21,8 @@ export interface AiConfig {
   version: number;
   tiers: Record<AiTier, { label: string; model: string }>;
   defaultTier: AiTier;
+  /** The AI plans are on sale to everyone (signed-in accounts hear it from /v1/me instead). */
+  forSale?: boolean;
   /** Other chat models subscribers may pick (Settings → AI Model → More models). */
   more?: { label: string; model: string }[];
   roles: {
@@ -37,15 +39,14 @@ export interface AiConfig {
 const BUILT_IN: AiConfig = {
   version: 1,
   tiers: {
-    fast: { label: "Fast", model: "anthropic/claude-haiku-5.5" },
-    smart: { label: "Smart", model: "anthropic/claude-sonnet-5.5" },
-    best: { label: "Best", model: "anthropic/claude-opus-5.5" },
+    fast: { label: "Fast", model: "z-ai/glm-5.3-flash" },
+    smart: { label: "Smart", model: "deepseek/deepseek-v4.1-flash-1017" },
+    best: { label: "Best", model: "openai/gpt-6.1-sol" },
   },
   defaultTier: "fast",
   more: [
     { label: "GPT-6 Luna", model: "openai/gpt-6-luna" },
     { label: "Qwen3.8 Flash", model: "qwen/qwen3.8-flash" },
-    { label: "DeepSeek V4.1 Flash", model: "deepseek/deepseek-v4.1-flash-1017" },
     { label: "Mistral Large 4", model: "mistralai/mistral-large-4-0" },
     { label: "Gemini 3.8 Flash", model: "google/gemini-3.8-flash" },
     { label: "GPT-6.1 Terra", model: "openai/gpt-6.1-terra" },
@@ -54,11 +55,11 @@ const BUILT_IN: AiConfig = {
     { label: "Kimi K3.1 Pro", model: "moonshotai/kimi-k3.1-pro" },
   ],
   roles: {
-    background: "anthropic/claude-haiku-5.5",
-    research: { planner: "anthropic/claude-sonnet-5.5", reader: "anthropic/claude-haiku-5.5" },
-    tts: { model: "google/gemini-3.8-flash-tts", voices: { host: "Puck", cohost: "Kore" } },
+    background: "z-ai/glm-5.3-flash",
+    research: { planner: "deepseek/deepseek-v4.1-flash-1017", reader: "z-ai/glm-5.3-flash" },
+    tts: { model: "heygen/heygen-voice-1-turbo", voices: { host: "nadine", cohost: "gareth" } },
     transcribe: "google/gemini-3.5-flash-lite",
-    image: "google/gemini-3.1-flash-lite-image",
+    image: "recraft/recraft-v4.1-flash",
     embedding: { model: "openai/text-embedding-3-small", dims: 512, version: 1 },
   },
 };
@@ -171,6 +172,17 @@ export function brewlmSession(): string {
 export function planHasAi(): boolean {
   const plan = getSyncStatus().account?.plan;
   return plan === undefined || plan === "pro" || plan === "max";
+}
+
+/**
+ * Should the app show BrewLM AI and the Pro and Max plans? The server's
+ * for-sale switch decides: per account once signed in (early access, or
+ * already subscribed), from the public config otherwise. Off until launch.
+ */
+export function aiOffered(): boolean {
+  const account = getSyncStatus().account;
+  if (account) return account.aiForSale === true || account.plan === "pro" || account.plan === "max";
+  return config.forSale === true;
 }
 
 export const SIGN_IN_FOR_AI = "BrewLM AI needs your BrewLM account. Sign in under Settings → Sync, or pick another provider in Settings → AI Model.";

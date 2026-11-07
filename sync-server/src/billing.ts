@@ -144,6 +144,26 @@ async function liveSubscription(env: Env, userId: string) {
  *   { plan: "sync"|"plus"|"pro"|"max", interval: "month"|"year" }   a new subscription
  *   { plan: "topup" }                                                more AI this month (Pro/Max only)
  */
+/**
+ * Are the AI plans (Pro, Max) offered to this account? Off until launch:
+ * AI_FOR_SALE=1 opens them to everyone; AI_EARLY_ACCESS (comma-separated
+ * emails) lets those accounts see and buy them first. Both are secrets, so
+ * `wrangler secret put AI_FOR_SALE` flips the switch without a deploy.
+ * Accounts already on Pro or Max always keep theirs (checked by callers).
+ */
+export function aiForSale(env: Env, user: Pick<User, "email"> | null): boolean {
+  if (env.AI_FOR_SALE === "1") return true;
+  if (!user) return false;
+  return (env.AI_EARLY_ACCESS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(user.email.toLowerCase());
+}
+
+const NOT_FOR_SALE = "BrewLM AI plans aren't available yet.";
+const isAiPlan = (p: string) => p === "pro" || p === "max";
+
 export async function checkout(req: Request, env: Env, user: User): Promise<Response> {
   const body = await req.json<{ plan?: unknown; interval?: unknown }>().catch(() => ({}) as Record<string, unknown>);
   const plan = String(body.plan ?? "");
@@ -157,6 +177,7 @@ export async function checkout(req: Request, env: Env, user: User): Promise<Resp
     kind = "ai_topup";
   } else {
     if (!isPaidPlan(plan) || !isInterval(interval)) return json({ error: "bad plan" }, 400);
+    if (isAiPlan(plan) && !aiForSale(env, user)) return json({ error: NOT_FOR_SALE }, 403);
     if (await liveSubscription(env, user.id))
       return json({ error: "You already have a plan. Change it instead of buying a second one.", change: true }, 409);
     product = productFor(env, plan, interval);
@@ -195,6 +216,8 @@ export async function changePlan(req: Request, env: Env, user: User): Promise<Re
   if (!product) return json({ error: "That plan isn't set up on this server yet." }, 503);
   const sub = await liveSubscription(env, user.id);
   if (!sub) return json({ error: "You don't have a plan to change. Choose one instead." }, 409);
+  // Before launch, only early access (or someone already on an AI plan) may move to one.
+  if (isAiPlan(plan) && !isAiPlan(sub.plan) && !aiForSale(env, user)) return json({ error: NOT_FOR_SALE }, 403);
   // Unknown for subscriptions last updated before product ids were stored.
   const current = await currentInterval(env, sub.polar_subscription_id);
   if (sub.plan === plan && current === interval) return json({ error: "You're already on that plan." }, 400);

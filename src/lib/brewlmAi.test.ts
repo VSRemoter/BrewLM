@@ -2,22 +2,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let server: { url: string; session: string } | null = null;
 let plan: string | undefined;
+let aiForSale: boolean | undefined;
 vi.mock("./modelLimits", () => ({
   loadOpenRouterCatalog: async () => [
-    { id: "anthropic/claude-haiku-5.5", pricing: { prompt: "0.0000001", completion: "0.0000005" } },
-    { id: "anthropic/claude-sonnet-5.5", pricing: { prompt: "0.000002", completion: "0.00001" } },
+    { id: "z-ai/glm-5.3-flash", pricing: { prompt: "0.0000001", completion: "0.0000005" } },
+    { id: "openai/gpt-6.1-sol", pricing: { prompt: "0.000002", completion: "0.00001" } },
   ],
 }));
 vi.mock("./sync", () => ({
   shareServer: () => server,
-  getSyncStatus: () => ({ state: "on", syncApiKeys: true, account: plan ? { plan } : undefined }),
+  getSyncStatus: () => ({ state: "on", syncApiKeys: true, account: plan ? { plan, aiForSale } : undefined }),
 }));
 
-const { aiBlock, brewlmChatModels, costLabel, costVsFast, brewlmModelLabel, openRouterApi, OPENROUTER_API, planHasAi, SIGN_IN_FOR_AI, speaksOpenRouter, tierOf, aiConfigNow } = await import("./brewlmAi");
+const { aiOffered, aiBlock, brewlmChatModels, costLabel, costVsFast, brewlmModelLabel, openRouterApi, OPENROUTER_API, planHasAi, SIGN_IN_FOR_AI, speaksOpenRouter, tierOf, aiConfigNow } = await import("./brewlmAi");
 
 beforeEach(() => {
   server = null;
   plan = undefined;
+  aiForSale = undefined;
 });
 
 describe("BrewLM AI requests", () => {
@@ -71,7 +73,7 @@ describe("BrewLM AI allowance", () => {
   });
 
   it("compares a model's chat cost with Fast's", async () => {
-    expect(await costVsFast("anthropic/claude-sonnet-5.5")).toBeCloseTo(20, 5);
+    expect(await costVsFast("openai/gpt-6.1-sol")).toBeCloseTo(20, 5);
     expect(await costVsFast("nobody/unknown")).toBeNull();
     expect(costLabel(20)).toBe("about 20× Fast");
     expect(costLabel(3.4)).toBe("about 3× Fast");
@@ -82,8 +84,21 @@ describe("BrewLM AI allowance", () => {
 
   it("lists the tiers before More models", () => {
     const all = brewlmChatModels();
-    expect(all.slice(0, 3)).toEqual(["anthropic/claude-haiku-5.5", "anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5"]);
+    expect(all.slice(0, 3)).toEqual(["z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash-1017", "openai/gpt-6.1-sol"]);
     expect(all.length).toBeGreaterThan(3);
     expect(brewlmModelLabel("x-ai/grok-4.7")).toBe("Grok 4.7");
+  });
+});
+
+describe("the for-sale switch", () => {
+  it("hides BrewLM AI until the server offers it, but never from a subscriber", () => {
+    expect(aiOffered()).toBe(false); // signed out, config not open
+    plan = "trial";
+    expect(aiOffered()).toBe(false);
+    aiForSale = true; // early access, or launched
+    expect(aiOffered()).toBe(true);
+    aiForSale = false;
+    plan = "pro"; // bought before the switch went off again
+    expect(aiOffered()).toBe(true);
   });
 });

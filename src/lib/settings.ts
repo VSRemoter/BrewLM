@@ -21,9 +21,10 @@ import type {
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { parseRouting, serializeRouting } from "./routing";
 import { aiConfigNow, brewlmChatModels, brewlmSession } from "./brewlmAi";
+import { getSyncStatus } from "./sync";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
-  brewlm: "anthropic/claude-haiku-5.5",
+  brewlm: "z-ai/glm-5.3-flash",
   openrouter: "openai/gpt-4o-mini",
   openai: "gpt-4o-mini",
   anthropic: "claude-haiku-4-5-20251001",
@@ -122,7 +123,7 @@ export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
 };
 
 export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> = {
-  brewlm: "google/gemini-3.8-flash-tts",
+  brewlm: "heygen/heygen-voice-1-turbo",
   openai: "gpt-4o-mini-tts",
   openrouter: "openai/gpt-audio-mini",
   elevenlabs: "eleven_multilingual_v2",
@@ -403,7 +404,10 @@ export async function loadSettings(): Promise<Settings> {
  */
 function cloudProviderOnWeb(s: Settings): Settings {
   if (platform.kind !== "web" || s.provider !== "local") return s;
-  const provider = (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => activeKey({ ...s, provider: p })) ?? "openrouter";
+  const aiPlan = ["pro", "max"].includes(getSyncStatus().account?.plan ?? "");
+  const provider =
+    (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => (p !== "brewlm" || aiPlan) && activeKey({ ...s, provider: p })) ??
+    "openrouter";
   return { ...s, provider, model: defaultModelFor(provider) };
 }
 

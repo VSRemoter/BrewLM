@@ -3,7 +3,8 @@ import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { cycleOf, reconcile, restOfMonth, type AiAccount } from "../src/ai";
 import { AI_CONFIG, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "../src/aiConfig";
-import { sha256 } from "../src/auth";
+import { sha256, type User } from "../src/auth";
+import { changePlan as changePlanRoute, checkout as checkoutRoute } from "../src/billing";
 
 const call = (path: string, init?: RequestInit & { session?: string }) =>
   exports.default.fetch(`https://sync.test${path}`, {
@@ -172,6 +173,33 @@ describe("changing plans", () => {
     const res = await change(d.session, { plan: "max", interval: "month" });
     expect(res.status).toBe(402);
     expect(res.body.error).toMatch(/payment/i);
+  });
+});
+
+describe("the AI for-sale switch", () => {
+  const off = (early = "") => ({ ...env, AI_FOR_SALE: "", AI_EARLY_ACCESS: early }) as unknown as Env;
+  const user = (email: string) => env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<User>();
+  const post = (body: unknown) => new Request("https://sync.test/x", { method: "POST", body: JSON.stringify(body) });
+
+  it("hides and refuses Pro and Max until it's on, except for early access and AI subscribers", async () => {
+    const a = await account("switch-off@example.com");
+    const u = (await user("switch-off@example.com"))!;
+    expect((await checkoutRoute(post({ plan: "pro", interval: "year" }), off(), u)).status).toBe(403);
+    expect((await checkoutRoute(post({ plan: "max", interval: "month" }), off(), u)).status).toBe(403);
+    expect((await checkoutRoute(post({ plan: "sync", interval: "year" }), off(), u)).status).toBe(200); // Sync is always sold
+    expect((await checkoutRoute(post({ plan: "pro", interval: "year" }), off(" Switch-Off@example.com , x@y.z"), u)).status).toBe(200);
+
+    // Already paying for Sync: moving to Pro waits for the switch too.
+    await subscription(a.id, "prod-sync-m");
+    expect((await changePlanRoute(post({ plan: "pro", interval: "month" }), off(), u)).status).toBe(403);
+    // On Pro already (bought in early access): Max stays open, and so do top-ups.
+    await subscription(a.id, "prod-pro-m");
+    expect((await changePlanRoute(post({ plan: "max", interval: "month" }), off(), u)).status).toBe(200);
+
+    // The app hears it from /v1/me (on here) and the public config.
+    const me = (await (await call("/v1/me", { session: a.session })).json()) as { aiForSale: boolean };
+    expect(me.aiForSale).toBe(true);
+    expect(((await (await call("/v1/ai/config")).json()) as { forSale: boolean }).forSale).toBe(true);
   });
 });
 
