@@ -30,6 +30,7 @@ import { complete } from "./llm";
 import { ensureMediaText } from "./media";
 import { contextBudget, loadLocalServer, localHeaders } from "./local";
 import { activeKey, loadSettings } from "./settings";
+import { aiConfigNow, brewlmSession, openRouterApi, planHasAi } from "./brewlmAi";
 import type { ChunkRow } from "./db";
 import type { Settings, Source, SourceChunk } from "./types";
 import { addUsage, newUsageAccumulator, recordAccumulated } from "./usage";
@@ -137,6 +138,15 @@ function embedTargets(s: Settings): EmbedTarget[] {
       : [];
   }
   const targets: EmbedTarget[] = [];
+  // BrewLM AI embeds with the same model and size as an OpenRouter or OpenAI
+  // key (EMBED_MODEL_OR), so chunks stay comparable whichever one made them.
+  const brewlm = planHasAi() && brewlmSession() && aiConfigNow().roles.embedding.model === EMBED_MODEL_OR
+    ? (() => {
+        const api = openRouterApi("brewlm", "");
+        return { url: `${api.base}/embeddings`, key: api.key, model: EMBED_MODEL_OR };
+      })()
+    : null;
+  if (s.provider === "brewlm" && brewlm) targets.push(brewlm);
   if (s.provider === "openai" && s.openaiKey)
     targets.push({
       url: "https://api.openai.com/v1/embeddings",
@@ -155,6 +165,7 @@ function embedTargets(s: Settings): EmbedTarget[] {
       key: s.openaiKey,
       model: EMBED_MODEL_OAI,
     });
+  if (s.provider !== "brewlm" && brewlm) targets.push(brewlm);
   return targets;
 }
 

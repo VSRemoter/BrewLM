@@ -85,11 +85,13 @@ const cache = new Map<string, Promise<ModelLimits | null>>();
  * context window set in Settings instead.
  */
 export function modelLimits(provider: Provider, apiKey: string, model: string): Promise<ModelLimits | null> {
-  if (provider !== "openrouter" && provider !== "anthropic") return Promise.resolve(null);
-  const key = `${provider}:${model}`;
+  // BrewLM AI runs OpenRouter models: the same public catalog describes them.
+  const or = provider === "openrouter" || provider === "brewlm";
+  if (!or && provider !== "anthropic") return Promise.resolve(null);
+  const key = `${or ? "openrouter" : provider}:${model}`;
   let hit = cache.get(key);
   if (!hit) {
-    hit = (provider === "openrouter" ? openRouterLimits(model) : anthropicLimits(apiKey, model)).catch(() => null);
+    hit = (or ? openRouterLimits(model) : anthropicLimits(apiKey, model)).catch(() => null);
     // A failed lookup is retried on the next request instead of being remembered.
     hit.then((v) => v ?? cache.delete(key));
     cache.set(key, hit);

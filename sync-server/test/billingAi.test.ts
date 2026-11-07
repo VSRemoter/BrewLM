@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { cycleOf, reconcile, restOfMonth, type AiAccount } from "../src/ai";
-import { AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "../src/aiConfig";
+import { AI_CONFIG, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "../src/aiConfig";
 import { sha256 } from "../src/auth";
 
 const call = (path: string, init?: RequestInit & { session?: string }) =>
@@ -120,7 +120,7 @@ describe("subscription webhooks and the AI allowance", () => {
     await subscription(a.id, "prod-pro-m", "active");
     expect((await row(a.id))?.cap).toBeCloseTo(AI_TRIAL + (AI_MONTHLY.pro - AI_TRIAL) * restOfMonth(Date.now()), 2);
 
-    await call("/v1/ai/key", { method: "POST", session: a.session });
+    await call("/v1/ai/openrouter/embeddings", { method: "POST", session: a.session, body: JSON.stringify({ model: AI_CONFIG.roles.embedding.model, input: "x" }) });
     const hash = (await row(a.id))!.key_hash!;
     expect(await orLimit(hash)).toBeGreaterThan(0);
     await subscription(a.id, "prod-pro-m", "canceled");
@@ -177,7 +177,7 @@ describe("AI top-ups", () => {
   it("adds a paid top-up once, and a refund takes its share back", async () => {
     const a = await account("topup@example.com");
     await subscription(a.id, "prod-pro-m");
-    await call("/v1/ai/key", { method: "POST", session: a.session });
+    await call("/v1/ai/openrouter/embeddings", { method: "POST", session: a.session, body: JSON.stringify({ model: AI_CONFIG.roles.embedding.model, input: "x" }) });
     const before = (await row(a.id))!;
 
     expect((await topupOrder("order.paid", a.id, "order-t1")).status).toBe(200);
@@ -195,7 +195,7 @@ describe("AI top-ups", () => {
   it("never takes back more than is left unspent", async () => {
     const a = await account("topup-spent@example.com");
     await subscription(a.id, "prod-max-m");
-    await call("/v1/ai/key", { method: "POST", session: a.session });
+    await call("/v1/ai/openrouter/embeddings", { method: "POST", session: a.session, body: JSON.stringify({ model: AI_CONFIG.roles.embedding.model, input: "x" }) });
     await topupOrder("order.paid", a.id, "order-t2");
     const r = (await row(a.id))!;
     await setUsage(r.key_hash!, r.cap + 4); // 1 of the 5 unspent
@@ -206,7 +206,7 @@ describe("AI top-ups", () => {
   it("carries unused top-up credit into next month", async () => {
     const a = await account("topup-carry@example.com");
     await subscription(a.id, "prod-pro-m");
-    await call("/v1/ai/key", { method: "POST", session: a.session });
+    await call("/v1/ai/openrouter/embeddings", { method: "POST", session: a.session, body: JSON.stringify({ model: AI_CONFIG.roles.embedding.model, input: "x" }) });
     await topupOrder("order.paid", a.id, "order-t3");
     const r = (await row(a.id))!;
     await setUsage(r.key_hash!, r.cap + 1); // the allowance and 1 of the top-up spent

@@ -93,7 +93,7 @@ interface Account {
 /** From GET /v1/me. */
 export interface AccountInfo {
   email: string;
-  plan: "trial" | "sync" | "plus" | "none";
+  plan: "trial" | "sync" | "plus" | "pro" | "max" | "none";
   /** False when the trial ended without a plan: download only. */
   canSync: boolean;
   limitBytes: number;

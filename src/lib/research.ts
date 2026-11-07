@@ -1,6 +1,7 @@
 import { complete, extractJson, type StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
-import { activeKey, researchModelFor } from "./settings";
+import { aiConfigNow, openRouterApi } from "./brewlmAi";
+import { activeKey, noKeyMessage, researchModelFor } from "./settings";
 import { buildFetchItems, FETCH_MAX, type FetchItem } from "./fetchList";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
@@ -73,22 +74,26 @@ async function openRouterSearchError(res: Response, model: string): Promise<Erro
   return new Error((await routingError(detail, model)) || `web search failed (HTTP ${res.status})`);
 }
 
+/** The OpenRouter-format providers: the user's own OpenRouter key, or BrewLM AI. */
+type OrProvider = "openrouter" | "brewlm";
+
 /** OpenRouter "web" plugin: annotations on the assistant message. */
 async function searchOpenRouter(
   query: string,
+  via: OrProvider,
   apiKey: string,
   model: string,
   signal?: AbortSignal,
   onUsage?: UsageSink
 ): Promise<WebHit[]> {
-  const provider = await openRouterPrefs(model);
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const provider = via === "openrouter" ? await openRouterPrefs(model) : null;
+  const api = openRouterApi(via, apiKey);
+  const res = await fetch(`${api.base}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://brewlm.app",
-      "X-Title": "BrewLM",
+      Authorization: `Bearer ${api.key}`,
+      ...api.headers,
     },
     body: JSON.stringify({
       model,
@@ -105,7 +110,7 @@ async function searchOpenRouter(
   });
   if (!res.ok) throw await openRouterSearchError(res, model);
   const json = await res.json();
-  noteUsage("openrouter", model, usageFromJson("openrouter", json), onUsage);
+  noteUsage(via, model, usageFromJson(via, json), onUsage);
   return collectCitations(json.choices?.[0]?.message?.annotations);
 }
 
@@ -209,7 +214,9 @@ async function searchWeb(
   if (settings.provider === "openai" && settings.openaiKey)
     return searchOpenAI(query, settings.openaiKey, signal, onUsage);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return searchOpenRouter(query, settings.openrouterKey, researchModelFor(settings), signal, onUsage);
+    return searchOpenRouter(query, "openrouter", settings.openrouterKey, researchModelFor(settings), signal, onUsage);
+  // BrewLM AI searches on its cheap reader model; planning and writing use the stronger one.
+  if (settings.provider === "brewlm") return searchOpenRouter(query, "brewlm", "", aiConfigNow().roles.research.reader, signal, onUsage);
   return [];
 }
 
@@ -332,20 +339,21 @@ async function answerOpenAI(
 /** OpenRouter: current model + the "web" plugin; citations from annotations. */
 async function answerOpenRouter(
   query: string,
+  via: OrProvider,
   apiKey: string,
   model: string,
   system: string | undefined,
   signal?: AbortSignal,
   opts: AnswerOpts = {}
 ): Promise<WebAnswerOutcome> {
-  const provider = await openRouterPrefs(model);
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const provider = via === "openrouter" ? await openRouterPrefs(model) : null;
+  const api = openRouterApi(via, apiKey);
+  const res = await fetch(`${api.base}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://brewlm.app",
-      "X-Title": "BrewLM",
+      Authorization: `Bearer ${api.key}`,
+      ...api.headers,
     },
     body: JSON.stringify({
       model,
@@ -360,7 +368,7 @@ async function answerOpenRouter(
   });
   if (!res.ok) throw await openRouterSearchError(res, model);
   const json = await res.json();
-  void recordUsage("research", "openrouter", model, usageFromJson("openrouter", json));
+  void recordUsage("research", via, model, usageFromJson(via, json));
   const msg = json.choices?.[0]?.message;
   return {
     text: String(msg?.content ?? "").trim(),
@@ -387,7 +395,8 @@ export async function webAnswer(opts: {
   if (settings.provider === "openai" && settings.openaiKey)
     return answerOpenAI(q, settings.openaiKey, system, signal);
   if (settings.provider === "openrouter" && settings.openrouterKey)
-    return answerOpenRouter(q, settings.openrouterKey, researchModelFor(settings), system, signal);
+    return answerOpenRouter(q, "openrouter", settings.openrouterKey, researchModelFor(settings), system, signal);
+  if (settings.provider === "brewlm") return answerOpenRouter(q, "brewlm", "", researchModelFor(settings), system, signal);
   if (settings.provider === "local")
     throw new Error("Web search isn't available with a local model. It runs through a cloud provider's search, so switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use /search.");
   throw new Error("Add an API key in Settings first — web search runs through your provider.");
@@ -420,7 +429,9 @@ Use only URLs that appeared in your search results, exactly as they appeared.`;
   else if (settings.provider === "openai" && settings.openaiKey)
     out = await answerOpenAI(prompt, settings.openaiKey, undefined, signal, knobs);
   else if (settings.provider === "openrouter" && settings.openrouterKey)
-    out = await answerOpenRouter(prompt, settings.openrouterKey, researchModelFor(settings), undefined, signal, knobs);
+    out = await answerOpenRouter(prompt, "openrouter", settings.openrouterKey, researchModelFor(settings), undefined, signal, knobs);
+  else if (settings.provider === "brewlm")
+    out = await answerOpenRouter(prompt, "brewlm", "", researchModelFor(settings), undefined, signal, knobs);
   else if (settings.provider === "local")
     throw new Error("/fetch searches the web, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use it.");
   else throw new Error("Add an API key in Settings first — /fetch searches the web through your provider.");
@@ -460,7 +471,7 @@ export async function deepResearch(opts: {
   const key = activeKey(settings);
   if (settings.provider === "local")
     throw new Error("Deep research needs web search, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to run it.");
-  if (!key) throw new Error("Add an API key first.");
+  if (!key) throw new Error(noKeyMessage(settings));
   const model = researchModelFor(settings);
 
   const ask = (prompt: string, system?: string): Promise<string> =>

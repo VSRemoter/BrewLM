@@ -17,6 +17,7 @@ import {
   type VoiceProvider,
   voicesNeedIds,
 } from "../../lib/settings";
+import { BrewLmAiStatusRow } from "./BrewLmAi";
 import type { Settings, TtsProvider } from "../../lib/types";
 import { Card, ModelIdInput, SavedModelList, SectionTitle } from "./controls";
 
@@ -307,7 +308,7 @@ export default function AudioSection({
 
       <Card>
         <div className="py-3">
-          <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
+          <div className="grid grid-cols-5 gap-1 rounded-lg border border-edge bg-canvas p-1">
             {(Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).map((p) => (
               <button
                 key={p}
@@ -328,6 +329,16 @@ export default function AudioSection({
               Free and offline — the audio overview plays with your device's built-in voices, no
               file is produced. Choose OpenAI or ElevenLabs to generate a downloadable mp3.
             </p>
+          )}
+
+          {settings.ttsProvider === "brewlm" && (
+            <div className="mt-2">
+              <BrewLmAiStatusRow />
+              <p className="pb-1 text-[12px] leading-relaxed text-ink-3">
+                Two natural voices for the Host and Co-Host, chosen for audio overviews. No API key
+                needed; each overview uses part of your monthly BrewLM AI allowance.
+              </p>
+            </div>
           )}
 
           {settings.ttsProvider === "openai" && (

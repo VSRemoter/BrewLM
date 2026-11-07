@@ -31,7 +31,7 @@ import {
 import { cancelStudioJob, startStudioJob, throwIfCancelled, useStudioJobs } from "../lib/studioJobs";
 import { reviseOutput } from "../lib/revise";
 import { deepResearch } from "../lib/research";
-import { activeKey } from "../lib/settings";
+import { activeKey, noKeyMessage } from "../lib/settings";
 import { contextBudget } from "../lib/local";
 import {
   addOutputUsage,
@@ -294,7 +294,7 @@ const StudioPanel = forwardRef<
     setError(null);
     if (!activeKey(settings)) {
       onOpenSettings();
-      return "Add an API key in Settings first — I opened it for you.";
+      return noKeyMessage(settings, true);
     }
     const usedSources = scopedSources(opts?.sourceIds);
     if (!usedSources.some(isTextSource)) {
@@ -382,7 +382,7 @@ const StudioPanel = forwardRef<
     const blocked = canGenerate();
     if (blocked) {
       const msg = blocked === "no-key"
-        ? "Add an API key in Settings first — I opened it for you."
+        ? noKeyMessage(settings, true)
         : blocked;
       if (blocked !== "no-key") setError(msg);
       return msg;
@@ -447,7 +447,7 @@ const StudioPanel = forwardRef<
     const blocked = canGenerate();
     if (blocked) {
       const msg = blocked === "no-key"
-        ? "Add an API key in Settings first — I opened it for you."
+        ? noKeyMessage(settings, true)
         : blocked;
       if (blocked !== "no-key") setError(msg);
       return msg;
@@ -506,7 +506,7 @@ const StudioPanel = forwardRef<
     if (!page) return "This page's data looks malformed.";
     if (!activeKey(settings)) {
       onOpenSettings();
-      return "Add an API key in Settings first.";
+      return noKeyMessage(settings);
     }
     const job = startStudioJob(notebookId, "interactive", a.title, "Fixing the page…");
     const meter = newUsageMeter();
@@ -546,7 +546,7 @@ const StudioPanel = forwardRef<
     const blocked = canGenerate();
     if (blocked) {
       const msg = blocked === "no-key"
-        ? "Add an API key in Settings first — I opened it for you."
+        ? noKeyMessage(settings, true)
         : blocked;
       if (blocked !== "no-key") setError(msg);
       return msg;
@@ -616,7 +616,7 @@ const StudioPanel = forwardRef<
     setError(null);
     if (!activeKey(settings)) {
       onOpenSettings();
-      return "Add an API key in Settings first — I opened it for you.";
+      return noKeyMessage(settings, true);
     }
     const job = startStudioJob(notebookId, "research", title, "Planning searches…");
     const meter = newUsageMeter();

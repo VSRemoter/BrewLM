@@ -83,7 +83,7 @@ import { ensureMediaText } from "./media";
 import { fetchLinkContent, fileToCoverDataUrl } from "./source";
 import { deepResearch } from "./research";
 import { contextBudget } from "./local";
-import { activeKey, loadSettings } from "./settings";
+import { activeKey, loadSettings, noKeyMessage } from "./settings";
 import {
   buildFlashcardsPrompt,
   buildMindmapPrompt,
@@ -733,7 +733,7 @@ async function runChatJob(p: {
     await addMessage(chatId, p.notebook_id, "assistant", answer);
   } else {
     const key = activeKey(settings);
-    if (!key) throw new Error("Add an API key in Settings on the desktop first.");
+    if (!key) throw new Error(noKeyMessage(settings));
     const isSummarize = SUMMARIZE_RE.test(text);
     // Mentions from recent user turns keep their priority across follow-ups.
     const mentioned = resolveMentions(
@@ -867,7 +867,7 @@ async function runReviseJob(
 ): Promise<string> {
   const settings = await loadSettings();
   const key = activeKey(settings);
-  if (!key) throw new Error("Add an API key in Settings on the desktop first.");
+  if (!key) throw new Error(noKeyMessage(settings));
   const a = await getArtifact(p.artifact_id);
   if (!a || a.notebook_id !== p.notebook_id) throw new Error("That output is gone.");
   if (a.kind === "drawing") throw new Error("Drawings aren't revised by the AI.");
@@ -938,7 +938,7 @@ async function runGenerateJob(p: {
 }, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
   const key = activeKey(settings);
-  if (!key) throw new Error("Add an API key in Settings on the desktop first.");
+  if (!key) throw new Error(noKeyMessage(settings));
 
   const o = p.options;
   // Studio ignores the constitution — its tools carry their own settings.

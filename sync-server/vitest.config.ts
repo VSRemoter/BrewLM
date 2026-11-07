@@ -28,16 +28,39 @@ async function fakeSite(req: Request, url: URL): Promise<Response> {
 }
 
 /**
- * A stand-in for OpenRouter's key-management API (src/openrouter.ts), with
- * two test-only routes: POST /__usage { hash, usage } sets what a key has
- * spent, GET /__keys lists the keys that exist.
+ * A stand-in for OpenRouter (src/openrouter.ts, the proxy in src/ai.ts): the
+ * key-management API, and inference endpoints that answer on a provisioned
+ * key. Test-only routes: POST /__usage { hash, usage } sets what a key has
+ * spent, GET /__keys lists the keys that exist, GET /__last is the last
+ * inference request, POST /__broke { on } makes the whole account run out of credit.
  */
 /** Polar calls that change something (plan changes), for tests to inspect via GET https://polar.test/__calls. */
 const polarCalls: { path: string; body: unknown }[] = [];
 
 const orKeys = new Map<string, { key: string; name: string; limit: number | null; usage: number; disabled: boolean; expires_at: string }>();
+let orLast: { path: string; auth: string | null; referer: string | null; body: unknown } | null = null;
+let orBroke = false;
+const INFERENCE = ["/chat/completions", "/audio/speech", "/embeddings", "/images"];
 async function fakeOpenRouter(req: Request, url: URL): Promise<Response> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
+  if (path === "/__last") return Response.json(orLast);
+  if (path === "/__broke") {
+    orBroke = ((await req.json()) as { on: boolean }).on;
+    return Response.json({ ok: true });
+  }
+  if (INFERENCE.includes(path)) {
+    const body = (await req.json()) as { model: string; stream?: boolean };
+    orLast = { path, auth: req.headers.get("authorization"), referer: req.headers.get("http-referer"), body };
+    const k = [...orKeys.values()].find((x) => `Bearer ${x.key}` === req.headers.get("authorization"));
+    if (!k || k.disabled) return Response.json({ error: { message: "User not found.", code: 401 } }, { status: 401 });
+    if (orBroke || (k.limit !== null && k.usage >= k.limit))
+      return Response.json({ error: { message: "Insufficient credits", code: 402 } }, { status: 402 });
+    if (body.stream)
+      return new Response(`data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n`, {
+        headers: { "content-type": "text/event-stream", "x-secret-upstream": "1" },
+      });
+    return Response.json({ model: body.model, data: [{ embedding: [0.1, 0.2] }] });
+  }
   if (path === "/__usage") {
     const { hash, usage } = (await req.json()) as { hash: string; usage: number };
     const k = orKeys.get(hash);

@@ -61,10 +61,16 @@ async function subscribe(id: string, plan: string, status = "active") {
     .run();
 }
 
-async function getKey(session: string) {
-  const res = await call("/v1/ai/key", { method: "POST", session });
-  return { status: res.status, body: (await res.json()) as { key?: string; error?: string; resetsAt?: number } };
+const EMBED = { model: AI_CONFIG.roles.embedding.model, input: "hello", dimensions: 512 };
+/** One AI request through the proxy (an embedding by default). */
+async function ask(session: string | undefined, body: unknown = EMBED, endpoint = "embeddings") {
+  const res = await call(`/v1/ai/openrouter/${endpoint}`, { method: "POST", session, body: JSON.stringify(body) });
+  const text = await res.text();
+  return { status: res.status, text, error: res.headers.get("content-type")?.includes("json") ? (JSON.parse(text) as { error?: { message: string } }).error?.message : undefined, headers: res.headers };
 }
+/** The last request the fake OpenRouter received. */
+const last = async () => (await (await fetch("https://openrouter.test/api/v1/__last")).json()) as { path: string; auth: string; referer: string; body: Record<string, unknown> };
+const getKey = (session: string) => ask(session);
 
 const nextMonth = (now = Date.now()) => {
   const d = new Date(now);
@@ -85,24 +91,30 @@ describe("BrewLM AI config", () => {
 
 describe("BrewLM AI keys", () => {
   it("needs a session and an AI plan", async () => {
-    expect((await call("/v1/ai/key", { method: "POST" })).status).toBe(401);
+    expect((await ask(undefined)).status).toBe(401);
     const trialOnly = await account("trial-only@example.com");
-    expect((await getKey(trialOnly.session)).status).toBe(402);
+    const none = await ask(trialOnly.session);
+    expect(none.status).toBe(402);
+    expect(none.error).toMatch(/Pro and Max/);
     const syncOnly = await account("sync-only@example.com", "sync");
     expect((await getKey(syncOnly.session)).status).toBe(402);
-    expect((await call("/v1/ai/key", { session: syncOnly.session })).status).toBe(405);
+    expect((await call("/v1/ai/openrouter/embeddings", { session: syncOnly.session })).status).toBe(405);
+    expect((await call("/v1/ai/key", { method: "POST", session: syncOnly.session })).status).toBe(404);
   });
 
-  it("creates one prorated, capped key and hands every device the same one", async () => {
+  it("creates one prorated, capped key that stays on the server", async () => {
     const before = Date.now();
     const pro = await account("pro@example.com", "pro");
     const first = await getKey(pro.session);
     expect(first.status).toBe(200);
-    expect(first.body.key).toMatch(/^sk-or-v1-/);
-    expect((await getKey(pro.session)).body.key).toBe(first.body.key);
-
+    expect(first.text).not.toMatch(/sk-or/);
+    expect(first.headers.get("x-secret-upstream")).toBeNull();
     const mine = (await orKeys()).filter((k) => k.name === `brewlm:${pro.id}`);
     expect(mine).toHaveLength(1);
+    expect((await last()).auth).toBe(`Bearer ${mine[0].key}`);
+    await getKey(pro.session);
+    expect((await orKeys()).filter((k) => k.name === `brewlm:${pro.id}`)).toHaveLength(1);
+
     const expected = Math.max(AI_MONTHLY.pro * restOfMonth(Date.now()), AI_TRIAL);
     expect(mine[0].limit).toBeCloseTo(expected, 2);
     expect(mine[0].limit).toBeLessThanOrEqual(AI_MONTHLY.pro * restOfMonth(before) + 0.001);
@@ -111,13 +123,13 @@ describe("BrewLM AI keys", () => {
 
     const stored = await row(pro.id);
     expect(stored?.key_hash).toBe(mine[0].hash);
-    expect(stored?.key_enc).not.toContain(first.body.key!.slice(9));
+    expect(stored?.key_enc).not.toContain(mine[0].key.slice(9));
   });
 
-  it("gives two devices asking at once the same key, leaving one on OpenRouter", async () => {
+  it("makes one key when two requests arrive at once", async () => {
     const pro = await account("race@example.com", "pro");
     const [a, b] = await Promise.all([getKey(pro.session), getKey(pro.session)]);
-    expect(a.body.key).toBe(b.body.key);
+    expect([a.status, b.status]).toEqual([200, 200]);
     expect((await orKeys()).filter((k) => k.name === `brewlm:${pro.id}`)).toHaveLength(1);
   });
 
@@ -181,6 +193,64 @@ describe("BrewLM AI keys", () => {
     expect(rolled.carried).toBe(0);
     expect(rolled.key_hash).toBeNull();
     expect((await orKeys()).some((k) => k.hash === old.key_hash)).toBe(false);
+  });
+});
+
+describe("BrewLM AI proxy", () => {
+  it("runs only the config's models and endpoints", async () => {
+    const p = await account("proxy-models@example.com", "pro");
+    const chat = { model: AI_CONFIG.tiers.smart.model, messages: [{ role: "user", content: "hi" }], stream: true };
+    const ok = await ask(p.session, chat, "chat/completions");
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toBe("text/event-stream");
+    expect(ok.text).toContain("[DONE]");
+    const sent = await last();
+    expect(sent.body.user).toBe(p.id);
+    expect(sent.referer).toBe("https://brewlm.app");
+
+    expect((await ask(p.session, { ...chat, model: `${AI_CONFIG.tiers.smart.model}:online` }, "chat/completions")).status).toBe(200);
+    const other = await ask(p.session, { ...chat, model: "openai/gpt-9-ultra" }, "chat/completions");
+    expect(other.status).toBe(403);
+    expect(other.error).toMatch(/doesn't run openai\/gpt-9-ultra/);
+    expect((await ask(p.session, { ...chat, models: [AI_CONFIG.tiers.fast.model, "openai/gpt-9-ultra"] }, "chat/completions")).status).toBe(403);
+    expect((await ask(p.session, { model: AI_CONFIG.roles.tts.model, input: "hi", voice: "Puck" }, "audio/speech")).status).toBe(200);
+    expect((await ask(p.session, EMBED, "keys")).status).toBe(404);
+    expect((await ask(p.session, EMBED, "../keys")).status).toBe(404);
+    expect((await call("/v1/ai/openrouter/embeddings", { method: "POST", session: p.session, body: "not json" })).status).toBe(400);
+  });
+
+  it("says when the month's allowance is used up, and blames nobody when BrewLM's credit is", async () => {
+    const p = await account("proxy-spent@example.com", "pro");
+    await getKey(p.session);
+    const r = (await row(p.id))!;
+    await setUsage(r.key_hash!, r.cap);
+    const spent = await getKey(p.session);
+    expect(spent.status).toBe(402);
+    expect(spent.error).toMatch(/used this month's BrewLM AI/);
+
+    await setUsage(r.key_hash!, 0);
+    await fetch("https://openrouter.test/api/v1/__broke", { method: "POST", body: JSON.stringify({ on: true }) });
+    try {
+      expect((await getKey(p.session)).status).toBe(503);
+    } finally {
+      await fetch("https://openrouter.test/api/v1/__broke", { method: "POST", body: JSON.stringify({ on: false }) });
+    }
+  });
+
+  it("replaces a key OpenRouter no longer knows, keeping what it spent", async () => {
+    const p = await account("proxy-lost@example.com", "max");
+    await getKey(p.session);
+    const old = (await row(p.id))!;
+    await setUsage(old.key_hash!, 2);
+    // Deleted on OpenRouter's side, behind the server's back.
+    const k = (await orKeys()).find((x) => x.hash === old.key_hash)!;
+    await fetch(`https://openrouter.test/api/v1/keys/${k.hash}`, { method: "PATCH", headers: { authorization: "Bearer or-mgmt-test" }, body: JSON.stringify({ disabled: true }) });
+
+    expect((await getKey(p.session)).status).toBe(200);
+    const now = (await row(p.id))!;
+    expect(now.key_hash).not.toBe(old.key_hash);
+    expect(now.carried).toBeCloseTo(2, 4);
+    expect((await orKeys()).find((x) => x.hash === now.key_hash)?.limit).toBeCloseTo(now.cap + now.topup - 2, 4);
   });
 });
 

@@ -7,6 +7,7 @@
  * just the image, and keeps it out of the chat model's context entirely.
  */
 import type { StreamUsage } from "./llm";
+import { openRouterApi } from "./brewlmAi";
 
 const BASE = "https://openrouter.ai/api/v1";
 
@@ -35,6 +36,8 @@ function loadModelSpecs(): Promise<Map<string, Record<string, ParamSpec>>> {
 }
 
 export interface ImageGenOptions {
+  /** BrewLM AI (the plan's image model, through the sync server) or the user's own OpenRouter key. */
+  via?: "openrouter" | "brewlm";
   apiKey: string;
   model: string;
   prompt: string;
@@ -135,9 +138,10 @@ export async function generateImages(opts: ImageGenOptions): Promise<ImageGenRes
     body.aspect_ratio = aspectRatio;
   }
 
-  const r = await fetch(`${BASE}/images`, {
+  const api = openRouterApi(opts.via ?? "openrouter", opts.apiKey);
+  const r = await fetch(`${api.base}/images`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${api.key}`, ...api.headers },
     body: JSON.stringify(body),
     signal: opts.signal,
   });

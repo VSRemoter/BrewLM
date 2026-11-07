@@ -16,6 +16,7 @@ import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceContent, setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
+import { aiConfigNow, brewlmSession, openRouterApi, planHasAi, speaksOpenRouter } from "./brewlmAi";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { loadSettings } from "./settings";
 import type { Provider, Settings, Source } from "./types";
@@ -23,12 +24,17 @@ import { recordUsage } from "./usage";
 import { fetchYouTubeTranscript, isYouTubeUrl, YOUTUBE_PENDING } from "./youtube";
 
 const VISION_MODELS: Record<Provider, string> = {
+  brewlm: "", // the config's transcription model (visionModel), which reads images too
   openai: "gpt-4o-mini",
   openrouter: "google/gemini-2.5-flash",
   anthropic: "claude-haiku-4-5-20251001",
   local: "", // media reading only uses the cloud providers listed in `allowed`
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
+
+function visionModel(p: Provider): string {
+  return p === "brewlm" ? aiConfigNow().roles.transcribe : VISION_MODELS[p];
+}
 const OPENAI_TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
 /** What "Automatic" means in Settings → Transcription model, per provider. */
 export const AUTO_TRANSCRIBE_MODEL: Partial<Record<Provider, string>> = {
@@ -62,6 +68,8 @@ export interface MediaResult {
 /* ---------------------------------- keys ---------------------------------- */
 
 function keyFor(s: Settings, p: Provider): string {
+  // BrewLM AI reads media for anyone whose plan includes it, whatever chat runs on.
+  if (p === "brewlm") return planHasAi() ? brewlmSession() : "";
   if (p === "openai") return s.openaiKey || s.openaiTtsKey;
   if (p === "openrouter") return s.openrouterKey || s.openrouterTtsKey;
   return s.anthropicKey;
@@ -128,7 +136,7 @@ function toVisionJpeg(src: Blob | string, maxSide = 1600): Promise<string> {
 
 async function visionCall(s: Settings, p: Provider, jpeg: string): Promise<string> {
   const key = keyFor(s, p);
-  const model = VISION_MODELS[p];
+  const model = visionModel(p);
   let usage: StreamUsage = {};
   let text = "";
   if (p === "anthropic") {
@@ -184,18 +192,15 @@ async function chatCompletion(
   model: string,
   content: unknown[]
 ): Promise<{ text: string; usage: StreamUsage }> {
-  const url =
-    p === "openrouter"
-      ? "https://openrouter.ai/api/v1/chat/completions"
-      : "https://api.openai.com/v1/chat/completions";
+  const or = speaksOpenRouter(p) ? openRouterApi(p, key) : null;
+  const url = or ? `${or.base}/chat/completions` : "https://api.openai.com/v1/chat/completions";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${key}`,
+    Authorization: `Bearer ${or?.key ?? key}`,
+    ...or?.headers,
   };
   const body: Record<string, unknown> = { model, max_tokens: 8192, messages: [{ role: "user", content }] };
   if (p === "openrouter") {
-    headers["HTTP-Referer"] = "https://brewlm.app";
-    headers["X-Title"] = "BrewLM";
     const prefs = await openRouterPrefs(model);
     if (prefs) body.provider = prefs;
   }
@@ -227,7 +232,7 @@ async function chatCompletion(
 /** Image (File or data URL) → description + OCR text. Never throws. */
 export async function describeImage(src: Blob | string, settings?: Settings): Promise<MediaResult> {
   const s = settings ?? (await loadSettings());
-  const providers = providersWithKeys(s, ["openai", "openrouter", "anthropic"]);
+  const providers = providersWithKeys(s, ["openai", "openrouter", "anthropic", "brewlm"]);
   if (providers.length === 0)
     return {
       text: "",
@@ -244,7 +249,7 @@ export async function describeImage(src: Blob | string, settings?: Settings): Pr
   for (const p of providers) {
     try {
       const text = cap(await visionCall(s, p, jpeg));
-      if (text) return { text: `[Image contents, as read by ${VISION_MODELS[p]}]\n\n${text}` };
+      if (text) return { text: `[Image contents, as read by ${visionModel(p)}]\n\n${text}` };
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
     }
@@ -311,7 +316,8 @@ async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: st
   if (p === "openai") return openAiTranscribe(keyFor(s, p), blob, filename, pick);
   const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
   let lastErr: unknown = null;
-  for (const model of withPick(pick, [OPENROUTER_AUDIO_MODEL])) {
+  const models = p === "brewlm" ? [aiConfigNow().roles.transcribe] : withPick(pick, [OPENROUTER_AUDIO_MODEL]);
+  for (const model of models) {
     try {
       const out = await chatCompletion(p, keyFor(s, p), model, [
         { type: "text", text: TRANSCRIBE_PROMPT },
@@ -328,7 +334,7 @@ async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: st
 
 /** Providers that can transcribe with the configured keys, in the order they're tried. */
 export function transcribeProviders(s: Settings): Provider[] {
-  return providersWithKeys(s, ["openai", "openrouter"]);
+  return providersWithKeys(s, ["openai", "openrouter", "brewlm"]);
 }
 
 /**

@@ -5,6 +5,7 @@ import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../
 import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
 import {
   DEFAULT_IMAGE_MODEL,
+  defaultModelFor,
   LOCAL_CONTEXT_OPTIONS,
   LOCAL_PRESETS,
   MAX_OUTPUT_OPTIONS,
@@ -23,9 +24,11 @@ import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
 import ProviderRoutingCard from "./ProviderRoutingCard";
+import { BrewLmAiStatusRow, BrewLmTierRow } from "./BrewLmAi";
 import { platform } from "../../platform";
 
 const KEY_FIELD: Record<Provider, keyof Settings> = {
+  brewlm: "openrouterKey", // unused: BrewLM AI needs no key
   openrouter: "openrouterKey",
   openai: "openaiKey",
   anthropic: "anthropicKey",
@@ -33,6 +36,7 @@ const KEY_FIELD: Record<Provider, keyof Settings> = {
 };
 
 const KEY_LINKS: Record<Provider, string> = {
+  brewlm: "",
   openrouter: "https://openrouter.ai/keys",
   openai: "https://platform.openai.com/api-keys",
   anthropic: "https://console.anthropic.com/settings/keys",
@@ -259,7 +263,9 @@ function TranscriptionModelCard({
   settings: Settings;
   patch: (p: Partial<Settings>) => void;
 }) {
-  const providers = transcribeProviders(settings);
+  // BrewLM AI transcribes with its own model: nothing to pick.
+  const providers = transcribeProviders(settings).filter((p) => p !== "brewlm");
+  if (settings.provider === "brewlm") return null;
   return (
     <Card>
       <div className="pt-3">
@@ -288,6 +294,7 @@ export default function AiModelSection({
 }) {
   const provider = settings.provider;
   const isLocal = provider === "local";
+  const isBrewlm = provider === "brewlm";
   const [modelList, setModelList] = useState<string[]>([]);
   /** Everything the local server reports, embedding models included. */
   const [served, setServed] = useState<string[]>([]);
@@ -393,7 +400,7 @@ export default function AiModelSection({
         <Row label="Provider">
           <div
             className={`grid gap-1 rounded-lg border border-edge bg-canvas p-1 ${
-              platform.kind === "desktop" ? "grid-cols-4" : "grid-cols-3"
+              platform.kind === "desktop" ? "grid-cols-5" : "grid-cols-4"
             }`}
           >
             {(Object.keys(PROVIDER_LABELS) as Provider[])
@@ -408,7 +415,9 @@ export default function AiModelSection({
                     patch(
                       p === "local"
                         ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
-                        : { provider: p, model: "" }
+                        : p === "brewlm"
+                          ? { provider: p, model: defaultModelFor(p) }
+                          : { provider: p, model: "" }
                     )
                   }
                   className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
@@ -420,7 +429,9 @@ export default function AiModelSection({
               ))}
           </div>
         </Row>
-        {isLocal ? (
+        {isBrewlm ? (
+          <BrewLmAiStatusRow />
+        ) : isLocal ? (
           <LocalServerRows
             key="local"
             settings={settings}
@@ -507,7 +518,19 @@ export default function AiModelSection({
         </>
       )}
 
-      {/* Model: type any id to use it instantly; save favorites to the list. */}
+      {/* Model: type any id to use it instantly; save favorites to the list. BrewLM AI: a tier. */}
+      {isBrewlm ? (
+        <>
+          <Card>
+            <BrewLmTierRow settings={settings} patch={patch} />
+          </Card>
+          <Footnote>
+            BrewLM AI also handles research, audio overview voices, transcription, pictures and
+            search for you, each on a model picked for the job. Your sources and chats go to the AI
+            model only to answer you; they aren't stored by BrewLM.
+          </Footnote>
+        </>
+      ) : (
       <Card>
         <Row
           label="Model"
@@ -549,6 +572,7 @@ export default function AiModelSection({
           onRemove={removeModel}
         />
       </Card>
+      )}
 
       {provider === "openrouter" && <ProviderRoutingCard settings={settings} patch={patch} models={modelList} />}
 
@@ -641,7 +665,8 @@ export default function AiModelSection({
         )}
       </Card>
 
-      {/* Image generation (/image) */}
+      {/* Image generation (/image); BrewLM AI uses its own image model. */}
+      {!isBrewlm && (
       <Card>
         <div className="py-3">
           <div className="text-[13px] font-medium text-ink">Image model</div>
@@ -675,9 +700,10 @@ export default function AiModelSection({
           onRemove={removeImageModel}
         />
       </Card>
+      )}
 
       {/* Research model (/research, /search) — web search needs a cloud provider. */}
-      {!isLocal && (
+      {!isLocal && !isBrewlm && (
         <Card>
           <div className="py-3">
             <div className="text-[13px] font-medium text-ink">Research model</div>

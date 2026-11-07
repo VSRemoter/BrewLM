@@ -19,7 +19,9 @@ POST   /v1/billing/portal              → { url }
 POST   /v1/webhooks/polar              Standard Webhooks-signed subscription and order events
 
 GET    /v1/ai/config                   public: which model does each job (src/aiConfig.ts)
-POST   /v1/ai/key                      the account's capped OpenRouter key (Pro/Max)
+POST   /v1/ai/openrouter/<endpoint>    Pro/Max: chat/completions, audio/speech, embeddings or images,
+                                       forwarded to OpenRouter on the account's capped key (which
+                                       never leaves the server); config models only
 GET    /v1/ai/usage                    → { usedFraction, resetsAt, left: { chats, audioOverviews, … } }
 
 POST /v1/vaults/:vault/push            { device, changes: [{ key, hlc, payload }] }

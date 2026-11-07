@@ -69,6 +69,7 @@ import {
   type MentionItem,
 } from "../lib/mentions";
 import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { AI_TIERS, brewlmModelLabel, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
 import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
@@ -1494,6 +1495,7 @@ export default function ChatPanel({
       onSettingsChanged();
       const shared = {
         local: "",
+        brewlm: "Claude shares a summary of its thinking, not the full reasoning.",
         anthropic: "Claude shares a summary of its thinking, not the full reasoning.",
         openrouter: "On OpenRouter, models that share their reasoning show it; some, like OpenAI's, send only a summary or nothing.",
         openai: "OpenAI's API doesn't share its models' reasoning, so replies from it won't have any.",
@@ -1512,6 +1514,7 @@ export default function ChatPanel({
 
   /** Execute /model locally (no LLM) — swap the model and persist it. */
   const runModelCommand = async (text: string): Promise<void> => {
+    if (settings.provider === "brewlm") return say(await brewlmModelCommand(text));
     const sub = /^\/model\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
     if (sub) return say(await runModelListCommand("chat", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
     const m = /^\/model(?:\s+("?)([^\n"]+)\1?)?$/i.exec(text);
@@ -1527,8 +1530,26 @@ export default function ChatPanel({
     await say(`Model set to \`${raw}\`.`);
   };
 
+  /** BrewLM AI's /model: its three tiers, by name. */
+  const brewlmModelCommand = async (text: string): Promise<string> => {
+    const c = await loadAiConfig();
+    const arg = text.replace(/^\/model\s*/i, "").trim().toLowerCase();
+    const tiers = AI_TIERS.map((t) => `\`${t}\``).join(", ");
+    if (!arg) return `BrewLM AI is on **${brewlmModelLabel(model)}**. Switch with \`/model fast\`, \`/model smart\` or \`/model best\`.`;
+    const tier = AI_TIERS.find((t) => t === arg || c.tiers[t].label.toLowerCase() === arg || c.tiers[t].model === arg);
+    if (!tier)
+      return `BrewLM AI runs three models: ${tiers}. To use any other model, pick OpenRouter, OpenAI or Anthropic with your own key in **Settings → AI Model**.`;
+    const id = c.tiers[tier].model;
+    await setSetting("model", id);
+    setModel(id);
+    onSettingsChanged();
+    return `BrewLM AI switched to **${c.tiers[tier].label}**. ${TIER_DESCRIPTIONS[tier]}`;
+  };
+
   /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
   const runImageModelCommand = async (text: string): Promise<void> => {
+    if (settings.provider === "brewlm")
+      return say("BrewLM AI draws pictures with its own image model. To pick one yourself, use your own OpenRouter key in **Settings → AI Model**.");
     const sub = /^\/imagemodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
     if (sub) return say(await runModelListCommand("image", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
     const raw = normalizeModelId(text.replace(/^\/imagemodel\s*/i, ""));
@@ -1550,6 +1571,8 @@ export default function ChatPanel({
   /** /researchmodel — show, switch or edit the model /research and /search run on. */
   const runResearchModelCommand = async (text: string): Promise<void> => {
     const provider = settings.provider;
+    if (provider === "brewlm")
+      return say("BrewLM AI runs research on its own research model, whatever chat uses. To pick one yourself, use your own key in **Settings → AI Model**.");
     if (provider === "local")
       return say("Research and `/search` need web search, which local models can't do — switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to pick a research model.");
     const sub = /^\/researchmodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
@@ -2807,7 +2830,7 @@ export default function ChatPanel({
               onClick={onOpenSettings}
               className="mr-1 flex items-center gap-1.5 rounded-full border border-warn-edge bg-warn-bg px-2.5 py-1 text-[11.5px] font-medium text-warn transition-colors hover:opacity-80"
             >
-              <Settings2 size={11} /> {settings.provider === "local" ? "Set up local server" : "Add API key"}
+              <Settings2 size={11} /> {settings.provider === "local" ? "Set up local server" : settings.provider === "brewlm" ? "Sign in for BrewLM AI" : "Add API key"}
             </button>
           )}
           {/* chat background */}
@@ -3548,7 +3571,9 @@ export default function ChatPanel({
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
-            {model || "no model picked"} · {settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}
+            {settings.provider === "brewlm"
+              ? `BrewLM AI · ${brewlmModelLabel(model)}`
+              : `${model || "no model picked"} · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}

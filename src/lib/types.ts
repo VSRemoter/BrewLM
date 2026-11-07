@@ -120,14 +120,17 @@ export interface Artifact {
   created_at: number;
 }
 
-/** "local" = any OpenAI-compatible server the user runs (Ollama, LM Studio, llama.cpp…). */
-export type Provider = "openrouter" | "openai" | "anthropic" | "local";
+/**
+ * "brewlm" = BrewLM AI, included with the Pro and Max plans (brewlmAi.ts).
+ * "local" = any OpenAI-compatible server the user runs (Ollama, LM Studio, llama.cpp…).
+ */
+export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local";
 
 /** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
 export type Thinking = "auto" | "low" | "medium" | "high";
 
 /** Where Audio overviews get their voices from. */
-export type TtsProvider = "system" | "openai" | "openrouter" | "elevenlabs";
+export type TtsProvider = "system" | "brewlm" | "openai" | "openrouter" | "elevenlabs";
 
 /* Studio tool option vocabularies (canonical home; studio.ts re-exports them). */
 export type Amount = "compact" | "default" | "more";

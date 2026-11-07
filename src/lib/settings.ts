@@ -20,8 +20,10 @@ import type {
 } from "./types";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { parseRouting, serializeRouting } from "./routing";
+import { aiConfigNow, AI_TIERS, brewlmSession } from "./brewlmAi";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
+  brewlm: "anthropic/claude-haiku-5.5",
   openrouter: "openai/gpt-4o-mini",
   openai: "gpt-4o-mini",
   anthropic: "claude-haiku-4-5-20251001",
@@ -30,6 +32,8 @@ const DEFAULT_MODELS: Record<Provider, string> = {
 };
 
 export const MODEL_PRESETS: Record<Provider, string[]> = {
+  // BrewLM AI's tiers come from its config (brewlmModels), not a saved list.
+  brewlm: [],
   openrouter: [
     "openai/gpt-4o-mini",
     "openai/gpt-4o",
@@ -50,6 +54,7 @@ export const MODEL_PRESETS: Record<Provider, string[]> = {
 
 /** Suggestions for Settings → Research model, per provider (any chat model id works). */
 export const RESEARCH_MODEL_PRESETS: Record<Provider, string[]> = {
+  brewlm: [],
   openrouter: ["anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "openai/gpt-4o"],
   openai: ["gpt-4.1", "o4-mini"],
   anthropic: ["claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"],
@@ -58,6 +63,7 @@ export const RESEARCH_MODEL_PRESETS: Record<Provider, string[]> = {
 
 /** Suggestions for Settings → Transcription model (any audio-capable id works; Automatic is listed separately). */
 export const TRANSCRIBE_MODEL_PRESETS: Record<Provider, string[]> = {
+  brewlm: [],
   openrouter: ["google/gemini-2.5-flash-lite", "google/gemini-2.5-pro", "mistralai/voxtral-small-24b-2507"],
   openai: ["gpt-4o-transcribe", "whisper-1"],
   anthropic: [],
@@ -79,6 +85,7 @@ export const IMAGE_MODEL_PRESETS = [
 ];
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
+  brewlm: "BrewLM AI",
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
@@ -108,18 +115,21 @@ const DEFAULT_LOCAL_CONTEXT = 8192;
 
 export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   system: "System voices",
+  brewlm: "BrewLM AI",
   openai: "OpenAI",
   openrouter: "OpenRouter",
   elevenlabs: "ElevenLabs",
 };
 
 export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> = {
+  brewlm: "google/gemini-3.8-flash-tts",
   openai: "gpt-4o-mini-tts",
   openrouter: "openai/gpt-audio-mini",
   elevenlabs: "eleven_multilingual_v2",
 };
 
 export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]> = {
+  brewlm: [],
   openai: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
   // Any OpenRouter speech model works; gpt-audio models go through chat completions.
   openrouter: ["openai/gpt-audio-mini", "openai/gpt-audio", "mistralai/voxtral-mini-tts-3-0"],
@@ -305,7 +315,7 @@ export async function loadSettings(): Promise<Settings> {
   // A fresh install starts on the provider's default model; one the user left
   // empty (after switching providers) stays empty until they pick one. Also
   // repairs a key a broken build once saved as the model.
-  const safeModel = model.startsWith("sk-") || (!model && !(await hasSetting("model"))) ? DEFAULT_MODELS[provider] : model;
+  const safeModel = model.startsWith("sk-") || (!model && !(await hasSetting("model"))) ? defaultModelFor(provider) : model;
   const themeIds = new Set(THEMES.map((t) => t.id));
   const themeId = RETIRED_THEMES[theme] ?? theme;
   const safeTheme = themeId && themeIds.has(themeId) ? themeId : DEFAULT_THEME;
@@ -393,7 +403,7 @@ export async function loadSettings(): Promise<Settings> {
  */
 function cloudProviderOnWeb(s: Settings): Settings {
   if (platform.kind !== "web" || s.provider !== "local") return s;
-  const provider = (["openrouter", "openai", "anthropic"] as const).find((p) => activeKey({ ...s, provider: p })) ?? "openrouter";
+  const provider = (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => activeKey({ ...s, provider: p })) ?? "openrouter";
   return { ...s, provider, model: defaultModelFor(provider) };
 }
 
@@ -413,6 +423,8 @@ function parseProviderModels(raw: string): Partial<Record<Provider, string>> {
 
 /** The model /research and /search run on: the provider's research pick, else the main model. */
 export function researchModelFor(s: Settings): string {
+  // BrewLM AI: research plans and writes on its own model, whatever tier chat uses.
+  if (s.provider === "brewlm") return aiConfigNow().roles.research.planner;
   return s.researchModels?.[s.provider]?.trim() || s.model;
 }
 
@@ -439,8 +451,19 @@ export async function patchSettings(patch: Partial<Settings>): Promise<void> {
   await Promise.all(writes);
 }
 
+/** What to tell someone whose provider isn't set up: a key, or (BrewLM AI) a sign-in. */
+export function noKeyMessage(s: Settings, opened = false): string {
+  const tail = opened ? " — I opened it for you." : ".";
+  return s.provider === "brewlm"
+    ? `BrewLM AI needs your BrewLM account: sign in under Settings → Sync${tail}`
+    : `Add an API key in Settings first${tail}`;
+}
+
 export function activeKey(s: Settings): string {
   switch (s.provider) {
+    case "brewlm":
+      // The BrewLM session stands in for a key; the server checks the plan.
+      return brewlmSession();
     case "openrouter":
       return s.openrouterKey;
     case "openai":
@@ -455,7 +478,17 @@ export function activeKey(s: Settings): string {
 }
 
 export function defaultModelFor(p: Provider): string {
+  if (p === "brewlm") {
+    const c = aiConfigNow();
+    return c.tiers[c.defaultTier].model;
+  }
   return DEFAULT_MODELS[p];
+}
+
+/** BrewLM AI's chat models, one per tier (Fast, Smart, Best). */
+export function brewlmModels(): string[] {
+  const c = aiConfigNow();
+  return AI_TIERS.map((t) => c.tiers[t].model);
 }
 
 /* -------------------- User-editable per-provider model lists -------------------- */
@@ -465,6 +498,7 @@ const CUSTOM_MODELS_KEY = (p: Provider) => `customModels.${p}`;
 /** The provider's chip list: defaults unless the user has customized (added/removed).
  *  Local: whatever the server reports right now, plus any ids the user saved. */
 export async function loadModelList(p: Provider): Promise<string[]> {
+  if (p === "brewlm") return brewlmModels();
   if (p === "local") {
     const [saved, served] = await Promise.all([loadSavedModels(p), listLocalModels().catch(() => [])]);
     return [...new Set([...served.filter((m) => !isEmbeddingModel(m)), ...saved])];
@@ -519,6 +553,8 @@ export interface SavedVoice {
 }
 
 const VOICE_PRESETS: Record<VoiceProvider, SavedVoice[]> = {
+  // BrewLM AI's voices come from its config.
+  brewlm: [],
   openai: OPENAI_TTS_VOICES.map((v) => ({ name: v, id: v })),
   openrouter: OPENROUTER_TTS_VOICES.map((v) => ({ name: v, id: v })),
   elevenlabs: ELEVENLABS_VOICE_PRESETS,

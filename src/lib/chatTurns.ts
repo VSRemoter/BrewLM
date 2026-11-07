@@ -22,6 +22,7 @@ import type { MentionItem } from "./mentions";
 import { contextBudget } from "./local";
 import { ensureIndexed, rankChunks, type RetrievedChunk } from "./rag";
 import { recordUsage } from "./usage";
+import { aiConfigNow } from "./brewlmAi";
 import type { ChatMessage, Settings, Source } from "./types";
 
 function aborted(): DOMException {
@@ -66,6 +67,7 @@ export async function imageTurn(opts: {
   signal: AbortSignal;
 }): Promise<string> {
   const { text, history, settings, notebookId, chatId, signal } = opts;
+  const brewlm = settings.provider === "brewlm";
   const activeIsImageModel = settings.provider === "openrouter" && (await isImageApiModel(settings.model));
   const imgCmd = IMAGE_CMD.exec(text)?.[1].toLowerCase();
   let prompt = imgCmd ? text.replace(/^\/\w+\s*/, "").trim() : text;
@@ -77,7 +79,8 @@ export async function imageTurn(opts: {
   }
   // The selected model wins when it is an image model; otherwise the
   // dedicated Image model setting.
-  let model = activeIsImageModel ? settings.model : settings.imageModel;
+  // BrewLM AI draws with its plan's image model only.
+  let model = brewlm ? aiConfigNow().roles.image : activeIsImageModel ? settings.model : settings.imageModel;
   let mode: "new" | "edit" | "remix" | "more" =
     imgCmd === "edit" || imgCmd === "remix" || imgCmd === "more" ? imgCmd : "new";
   let targetId: string | undefined;
@@ -105,7 +108,7 @@ export async function imageTurn(opts: {
     followUp = false;
   }
 
-  if (!settings.openrouterKey)
+  if (!brewlm && !settings.openrouterKey)
     return "Pictures use OpenRouter's image models. Add an OpenRouter API key in **Settings → AI Model** (select OpenRouter to enter it — you can switch your chat provider back afterwards).";
   if (mode === "new" && !prompt)
     return "What should I draw? e.g. `/image a watercolor fox in snow`, or add a shape first: `/image 16:9 a misty mountain lake at dawn`.";
@@ -117,7 +120,7 @@ export async function imageTurn(opts: {
       : "What should the remix be? e.g. `/remix same style, but a city at night`.";
 
   // "More like this" stays on the model that drew the original.
-  if (mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
+  if (!brewlm && mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
     model = source.model;
   }
   const canReference = (await maxInputReferences(model)) > 0;
@@ -152,6 +155,7 @@ export async function imageTurn(opts: {
     if (best && best.diff < 0.05) ratio = best.r;
   }
   const result = await generateImages({
+    via: brewlm ? "brewlm" : "openrouter",
     apiKey: settings.openrouterKey,
     model,
     prompt: apiPrompt,
@@ -161,7 +165,7 @@ export async function imageTurn(opts: {
     signal,
   });
   if (signal.aborted) throw aborted();
-  void recordUsage("image", "openrouter", model, result.usage);
+  void recordUsage("image", brewlm ? "brewlm" : "openrouter", model, result.usage);
   // Alt text is the description later chat turns see.
   const alt =
     mode === "edit"

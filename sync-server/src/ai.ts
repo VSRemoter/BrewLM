@@ -3,7 +3,8 @@
  * an OpenRouter key this server creates for them (openrouter.ts).
  *
  *   GET  /v1/ai/config   → which model does each job (aiConfig.ts); public
- *   POST /v1/ai/key      → { key, resetsAt, configVersion }   (402 without an AI plan)
+ *   POST /v1/ai/openrouter/{chat/completions,audio/speech,embeddings,images}
+ *                        → OpenRouter's response, run on the account's key   (402 without an AI plan)
  *   GET  /v1/ai/usage    → { plan, trial, usedFraction, resetsAt, left: { chats, audioOverviews, … } }
  *
  * Rules (ai_accounts in D1, one row per account):
@@ -18,16 +19,18 @@
  *   The plan's allowance is spent first; unused top-up credit carries into
  *   the next month for as long as the plan lasts.
  * - A key lives for one cycle: the first request of a new month deletes it and
- *   the next POST /v1/ai/key creates a fresh one (a leaked key dies monthly).
+ *   the next AI request creates a fresh one.
  *   Keys also expire on OpenRouter two days into the next month, as a backstop.
  * - The hourly cron (reconcileAll) grants new subscribers their allowance,
  *   revokes keys of lapsed plans, and rolls finished months over.
  *
- * The key is stored encrypted (AI_KEY_SECRET) so every device of the account
- * gets the same one; it's never logged.
+ * The key never leaves this server (OpenRouter's terms forbid reselling API
+ * access): the app's requests come through the proxy, which allows only the
+ * config's models and endpoints. It's stored encrypted (AI_KEY_SECRET) and
+ * never logged.
  */
 import { userForSession, type User } from "./auth";
-import { AI_CONFIG, AI_CONFIG_VERSION, AI_ESTIMATES, AI_MONTHLY, AI_TRIAL } from "./aiConfig";
+import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TRIAL } from "./aiConfig";
 import { createKey, deleteKey, getKey, openKey, OpenRouterError, openRouterConfigured, sealKey, updateKey, usd } from "./openrouter";
 
 const DAY = 86_400_000;
@@ -253,16 +256,19 @@ async function flooding(env: Env, userId: string): Promise<boolean> {
   return !(await env.ACCOUNT_RATE.limit({ key: userId })).success;
 }
 
-/** POST /v1/ai/key: the account's key, created on first use each month. */
-async function issueKey(env: Env, user: User, now = Date.now()): Promise<Response> {
+/**
+ * The account's OpenRouter key, created on first use each month. It never
+ * leaves this server: OpenRouter's terms don't allow handing out API access,
+ * so the app sends its AI requests through proxy() instead.
+ */
+async function accountKey(env: Env, userId: string, now = Date.now()): Promise<{ key: string; row: AiAccount } | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const row = await reconcile(env, user.id, now);
-    if (!row || row.monthly <= 0) return fail(402, NO_AI);
-    const out = { resetsAt: monthStart(now, 1), configVersion: AI_CONFIG_VERSION };
-    if (row.key_enc) return json({ key: await openKey(env, row.key_enc), ...out });
+    const row = await reconcile(env, userId, now);
+    if (!row || row.monthly <= 0) return null;
+    if (row.key_enc) return { key: await openKey(env, row.key_enc), row };
 
     const created = await createKey(env, {
-      name: `brewlm:${user.id}`,
+      name: `brewlm:${userId}`,
       limit: keyLimit(row),
       expiresAt: new Date(monthStart(now, 1) + KEY_EXPIRY_SLACK_MS),
     });
@@ -271,13 +277,121 @@ async function issueKey(env: Env, user: User, now = Date.now()): Promise<Respons
       `UPDATE ai_accounts SET key_hash = ?, key_enc = ?, key_created_at = ?, rev = rev + 1, updated_at = ?
        WHERE user_id = ? AND rev = ? AND key_hash IS NULL`
     )
-      .bind(created.info.hash, sealed, now, now, user.id, row.rev)
+      .bind(created.info.hash, sealed, now, now, userId, row.rev)
       .run();
-    if (res.meta.changes === 1) return json({ key: created.key, ...out });
-    // Another device got there first (or the row changed): drop ours, use theirs.
+    if (res.meta.changes === 1) return { key: created.key, row: (await load(env, userId))! };
+    // Another request got there first (or the row changed): drop ours, use theirs.
     await deleteKey(env, created.info.hash);
   }
-  return fail(503, UNAVAILABLE);
+  throw new Error("ai account busy");
+}
+
+/** Drops a key OpenRouter no longer accepts (deleted or expired out of band), keeping what it spent. */
+async function forgetKey(env: Env, row: AiAccount, now = Date.now()): Promise<void> {
+  if (!row.key_hash) return;
+  const spent = (await getKey(env, row.key_hash))?.usage ?? 0;
+  await deleteKey(env, row.key_hash);
+  await save(env, row, { carried: usd(row.carried + spent), key_hash: null, key_enc: null, key_created_at: null }, now);
+}
+
+/* ---------------------------------- proxy --------------------------------- */
+
+/** The OpenRouter endpoints BrewLM's features use; nothing else is forwarded. */
+const PROXIED = new Set(["chat/completions", "audio/speech", "embeddings", "images"]);
+/** Transcription sends up to 25 MB of audio as base64 inside the JSON. */
+const MAX_PROXY_BODY = 40 * 1024 * 1024;
+/** Variants of an allowed model that OpenRouter serves the same way (web search). */
+const MODEL_SUFFIXES = [":online"];
+
+/** Every model the config uses (any id with a "/"; voices have none): subscribers can run these and only these. */
+export const ALLOWED_MODELS: ReadonlySet<string> = (() => {
+  const out = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") {
+      if (v.includes("/")) out.add(v);
+    } else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(AI_CONFIG.tiers);
+  walk(AI_CONFIG.roles);
+  return out;
+})();
+
+export function modelAllowed(model: unknown): boolean {
+  if (typeof model !== "string") return false;
+  const suffix = MODEL_SUFFIXES.find((s) => model.endsWith(s));
+  return ALLOWED_MODELS.has(suffix ? model.slice(0, -suffix.length) : model);
+}
+
+/** Errors in OpenRouter's shape ({ error: { message, code } }), which the app already reads. */
+const orFail = (status: number, message: string) =>
+  new Response(JSON.stringify({ error: { message, code: status } }), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+
+const resetDate = (now: number) =>
+  new Date(monthStart(now, 1)).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+
+/**
+ * POST /v1/ai/openrouter/<endpoint>: forwards one of BrewLM's AI requests to
+ * OpenRouter with the account's key, for a model the config allows. The
+ * request is OpenRouter's own format, so the app only swaps the base URL and
+ * sends its BrewLM session in place of a key. Streams pass straight through.
+ */
+async function proxy(req: Request, env: Env, user: User, endpoint: string, now = Date.now()): Promise<Response> {
+  if (!PROXIED.has(endpoint)) return orFail(404, "BrewLM AI doesn't offer that.");
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_PROXY_BODY) return orFail(413, "That request is too large.");
+  const raw = await req.text();
+  if (raw.length > MAX_PROXY_BODY) return orFail(413, "That request is too large.");
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(raw);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+  } catch {
+    return orFail(400, "The request isn't valid JSON.");
+  }
+  if (!modelAllowed(body.model)) return orFail(403, `BrewLM AI doesn't run ${typeof body.model === "string" ? body.model : "that model"}. Pick a model in Settings → AI Model, or use your own API key.`);
+  // Fallback lists would let a request reach other models.
+  if (Array.isArray(body.models) && !body.models.every(modelAllowed)) return orFail(403, "BrewLM AI doesn't run one of those models.");
+  // OpenRouter's per-user id, for its abuse checks; the account id is opaque.
+  if (endpoint === "chat/completions") body.user = user.id;
+  const payload = JSON.stringify(body);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const acct = await accountKey(env, user.id, now);
+    if (!acct) return orFail(402, NO_AI);
+    const res = await fetch(`${env.OPENROUTER_API_URL.replace(/\/$/, "")}/${endpoint}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${acct.key}`,
+        "content-type": "application/json",
+        "http-referer": "https://brewlm.app",
+        "x-title": "BrewLM",
+      },
+      body: payload,
+      signal: req.signal,
+    });
+    if (res.status === 401 && attempt === 0) {
+      // The key was deleted or expired on OpenRouter's side: replace it once.
+      await res.body?.cancel();
+      await forgetKey(env, acct.row, now);
+      continue;
+    }
+    if (res.status === 402) {
+      await res.body?.cancel();
+      // The account's own limit, or BrewLM's OpenRouter credit running out?
+      const info = acct.row.key_hash ? await getKey(env, acct.row.key_hash) : null;
+      if (info && info.limit !== null && info.usage >= info.limit - 0.0001)
+        return orFail(402, `You've used this month's BrewLM AI. It refills on ${resetDate(now)}, or add a top-up in Settings → Sync to keep going now.`);
+      console.error("ai proxy: OpenRouter refused for credit while the key has room; top up the OpenRouter account");
+      return orFail(503, UNAVAILABLE);
+    }
+    const headers = new Headers({ "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    const type = res.headers.get("content-type");
+    if (type) headers.set("content-type", type);
+    return new Response(res.body, { status: res.status, headers });
+  }
+  return orFail(503, UNAVAILABLE);
 }
 
 /** GET /v1/ai/usage: how much of this month's allowance is left, as counts (never dollars). */
@@ -306,19 +420,22 @@ export async function aiRoutes(req: Request, env: Env, path: string): Promise<Re
     if (req.method !== "GET") return fail(405, "method not allowed");
     return json(AI_CONFIG, 200, "public, max-age=300");
   }
-  const route = path === "/v1/ai/key" ? "POST" : path === "/v1/ai/usage" ? "GET" : null;
+  const proxied = path.startsWith("/v1/ai/openrouter/") ? path.slice("/v1/ai/openrouter/".length) : null;
+  const route = proxied !== null ? "POST" : path === "/v1/ai/usage" ? "GET" : null;
   if (!route) return fail(404, "not found");
   if (req.method !== route) return fail(405, "method not allowed");
+  const err = proxied !== null ? orFail : fail;
   const user = await userForSession(env, req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
-  if (!user) return fail(401, "unauthorized");
-  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
-  if (!openRouterConfigured(env)) return fail(503, UNAVAILABLE);
+  if (!user) return err(401, "Signed out of BrewLM. Sign in again in Settings → Sync.");
+  if (await flooding(env, user.id)) return err(429, SLOW_DOWN);
+  if (!openRouterConfigured(env)) return err(503, UNAVAILABLE);
   try {
-    return path === "/v1/ai/key" ? await issueKey(env, user) : await usage(env, user);
+    return proxied !== null ? await proxy(req, env, user, proxied) : await usage(env, user);
   } catch (e) {
+    if (req.signal.aborted) return err(499, "cancelled");
     // OpenRouter's own message, never the key.
     console.error(`ai ${path}: ${e instanceof OpenRouterError ? e.message : e instanceof Error ? e.message : String(e)}`);
-    return fail(503, UNAVAILABLE);
+    return err(503, UNAVAILABLE);
   }
 }
 

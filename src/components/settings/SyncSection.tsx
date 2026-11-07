@@ -321,6 +321,8 @@ const PLAN_LABEL: Record<AccountInfo["plan"], string> = {
   trial: "Free trial",
   sync: "Sync",
   plus: "Sync Plus",
+  pro: "Pro",
+  max: "Max",
   none: "No plan",
 };
 

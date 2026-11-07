@@ -2,6 +2,7 @@ import { platform } from "../platform";
 import { budgetForContext, loadLocalServer, localHeaders } from "./local";
 import { modelLimits, STANDARD_EFFORTS, type ModelLimits } from "./modelLimits";
 import { noteServedBy, openRouterPrefs, routingError } from "./routing";
+import { openRouterApi, speaksOpenRouter } from "./brewlmAi";
 import type { Provider, Thinking } from "./types";
 
 export interface LlmMessage {
@@ -198,7 +199,7 @@ function effortFor(opts: StreamOptions, limits: ModelLimits | null, level = opts
   // Unknown limits: OpenRouter drops parameters a model doesn't take; OpenAI only takes effort on reasoning models.
   const accepted =
     limits?.efforts ??
-    (opts.provider === "openrouter" || (opts.provider === "openai" && isReasoningModel(opts.model)) ? STANDARD_EFFORTS : []);
+    (speaksOpenRouter(opts.provider) || (opts.provider === "openai" && isReasoningModel(opts.model)) ? STANDARD_EFFORTS : []);
   return accepted.includes(level) ? level : undefined;
 }
 
@@ -338,9 +339,9 @@ export async function complete(opts: StreamOptions): Promise<string> {
   return out;
 }
 
-/** Anthropic-family models routed via OpenRouter take explicit cache breakpoints. */
+/** Anthropic-family models routed via OpenRouter (or BrewLM AI) take explicit cache breakpoints. */
 function openRouterClaude(opts: Pick<StreamOptions, "provider" | "model">): boolean {
-  return opts.provider === "openrouter" && /anthropic|claude/i.test(opts.model);
+  return speaksOpenRouter(opts.provider) && /anthropic|claude/i.test(opts.model);
 }
 
 /** Endpoint, headers and body of an OpenAI-compatible chat request (streamed). */
@@ -348,19 +349,16 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   const local = opts.provider === "local" ? await loadLocalServer() : null;
   if (local && !local.baseUrl) throw new Error("Set your local server address in Settings → AI Model.");
   if (local && !opts.model.trim()) throw new Error("Pick a local model in Settings → AI Model.");
+  const or = speaksOpenRouter(opts.provider) ? openRouterApi(opts.provider, opts.apiKey) : null;
   const base = local
     ? `${local.baseUrl}/chat/completions`
-    : opts.provider === "openrouter"
-      ? "https://openrouter.ai/api/v1/chat/completions"
+    : or
+      ? `${or.base}/chat/completions`
       : "https://api.openai.com/v1/chat/completions";
 
   const headers: Record<string, string> = local
     ? localHeaders(local.key)
-    : { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` };
-  if (opts.provider === "openrouter") {
-    headers["HTTP-Referer"] = "https://brewlm.app";
-    headers["X-Title"] = "BrewLM";
-  }
+    : { "Content-Type": "application/json", Authorization: `Bearer ${or?.key ?? opts.apiKey}`, ...or?.headers };
 
   // Anthropic-family models routed via OpenRouter support explicit prompt
   // caching: a breakpoint after the stable system prefix (so repeat turns and
@@ -384,7 +382,7 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   // Same key → same server → its cache. OpenRouter pins the provider from the
   // very first request (otherwise only after a cache hit, so turn 2 could land
   // on a provider whose cache is empty).
-  if (opts.cacheKey && opts.provider === "openrouter") body.session_id = opts.cacheKey;
+  if (opts.cacheKey && or) body.session_id = opts.cacheKey;
   if (opts.cacheKey && opts.provider === "openai") body.prompt_cache_key = opts.cacheKey;
   const limits = local ? null : await modelLimits(opts.provider, opts.apiKey, opts.model);
   // Local windows are small: the budget keeps room for the answer. OpenAI
@@ -396,7 +394,7 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   const capField = isReasoningModel(opts.model) ? "max_completion_tokens" : "max_tokens";
   if (maxTokens) body[capField] = maxTokens;
   const setEffort = (effort: string) => {
-    if (opts.provider === "openrouter") body.reasoning = { effort };
+    if (or) body.reasoning = { effort };
     else body.reasoning_effort = effort;
   };
   const effort = local ? undefined : effortFor(opts, limits);
@@ -406,14 +404,14 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   }
   // Ask for token usage in the final stream chunk (cost visibility).
   if (opts.provider === "openai") body.stream_options = { include_usage: true };
+  if (or) body.usage = { include: true };
   if (opts.provider === "openrouter") {
-    body.usage = { include: true };
     // Settings → AI Model → Provider routing: who may serve this model, in what order.
     const prefs = await openRouterPrefs(opts.model);
     if (prefs) body.provider = prefs;
   }
   // Image-generation models (e.g. gemini-*-image) need both modalities requested.
-  if (opts.provider === "openrouter" && /image/i.test(opts.model)) {
+  if (or && /image/i.test(opts.model)) {
     body.modalities = ["image", "text"];
   }
   const temperature = temperatureFor(opts, limits, effort);
@@ -541,7 +539,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       if (payload === "[DONE]") break;
       try {
         const json = JSON.parse(payload);
-        if (opts.provider === "openrouter" && typeof json.provider === "string") servedBy = json.provider;
+        if (speaksOpenRouter(opts.provider) && typeof json.provider === "string") servedBy = json.provider;
         const choice = json.choices?.[0];
         if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
         addReasoning(reasoningOf(choice?.delta ?? choice?.message));

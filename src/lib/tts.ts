@@ -4,6 +4,7 @@ import { platform } from "../platform";
 import { encodeM4a } from "./audioEncode";
 import { sseLines } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
+import { aiConfigNow, OPENROUTER_API, openRouterApi } from "./brewlmAi";
 import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
 import type { Settings } from "./types";
 
@@ -93,8 +94,11 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 }
 
+/** Where an OpenRouter-format TTS request goes: OpenRouter with the user's key, or BrewLM AI. */
+type OrApi = ReturnType<typeof openRouterApi>;
+
 async function requestOpenRouterAudio(
-  key: string,
+  api: OrApi,
   model: string,
   voice: string,
   text: string,
@@ -102,14 +106,14 @@ async function requestOpenRouterAudio(
   signal?: AbortSignal
 ): Promise<OpenRouterAudio> {
   throwIfAborted(signal);
-  const provider = await openRouterPrefs(model);
-  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  // Provider routing is the user's own OpenRouter setting.
+  const provider = api.base === OPENROUTER_API ? await openRouterPrefs(model) : null;
+  const resp = await fetch(`${api.base}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${api.key}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://brewlm.app",
-      "X-Title": "BrewLM",
+      ...api.headers,
     },
     body: JSON.stringify({
       model,
@@ -163,7 +167,7 @@ async function requestOpenRouterAudio(
  * with stricter framing, then give up (mismatched audio is worse than none).
  */
 async function speakScriptLine(
-  key: string,
+  api: OrApi,
   model: string,
   voice: string,
   text: string,
@@ -172,7 +176,7 @@ async function speakScriptLine(
   let lastTranscript = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     throwIfAborted(signal);
-    const { pcm, transcript } = await requestOpenRouterAudio(key, model, voice, text, attempt === 1, signal);
+    const { pcm, transcript } = await requestOpenRouterAudio(api, model, voice, text, attempt === 1, signal);
     if (speechMatches(text, transcript)) return pcm;
     lastTranscript = transcript;
   }
@@ -193,20 +197,19 @@ function isOpenRouterChatAudio(model: string): boolean {
  * `voice` is left out so the model uses its own default.
  */
 async function openRouterSpeech(
-  key: string,
+  api: OrApi,
   model: string,
   voice: string,
   text: string,
   signal?: AbortSignal
 ): Promise<Uint8Array> {
   throwIfAborted(signal);
-  const resp = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+  const resp = await fetch(`${api.base}/audio/speech`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${api.key}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://brewlm.app",
-      "X-Title": "BrewLM",
+      ...api.headers,
     },
     body: JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: "mp3" }),
     signal,
@@ -361,19 +364,29 @@ export async function synthesizeScript(
      *   encoded once at the end (AAC .m4a, or WAV); a direct "read this" prompt
      *   makes the (conversational) model read verbatim.
      */
+    /** BrewLM AI: the config's voice model and host voices, through the same two routes. */
+    case "brewlm":
     case "openrouter": {
-      const key = settings.openrouterTtsKey.trim() || settings.openrouterKey;
-      if (!key)
+      const brewlm = settings.ttsProvider === "brewlm";
+      const key = brewlm ? "" : settings.openrouterTtsKey.trim() || settings.openrouterKey;
+      if (!brewlm && !key)
         return { audio: null, note: "Add an OpenRouter key in Settings → Audio voices to synthesize audio." };
-      const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.openrouter;
-      const voices = {
-        Alex: hostVoice(settings, "Alex"),
-        Sam: hostVoice(settings, "Sam"),
-      };
+      let api: OrApi;
+      try {
+        api = openRouterApi(settings.ttsProvider, key);
+      } catch (e) {
+        return { audio: null, note: e instanceof Error ? e.message : String(e) };
+      }
+      const tts = aiConfigNow().roles.tts;
+      const model = brewlm ? tts.model : settings.ttsModel.trim() || DEFAULT_TTS_MODELS.openrouter;
+      const voices = brewlm
+        ? { Alex: tts.voices.host, Sam: tts.voices.cohost }
+        : { Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") };
       if (!isOpenRouterChatAudio(model)) {
         // hostVoice falls back to nova/onyx (gpt-audio voices); when a host has
         // no usable voice of its own, leave it out so the model uses its default.
         const own = (host: Host) => {
+          if (brewlm) return voices[host];
           const raw = (host === "Alex" ? settings.ttsVoiceAlex : settings.ttsVoiceSam).trim();
           return raw && voices[host] === raw ? raw : "";
         };
@@ -381,7 +394,7 @@ export async function synthesizeScript(
         const parts: Uint8Array[] = [];
         for (let i = 0; i < turns.length; i++) {
           onProgress?.(i, turns.length);
-          parts.push(await openRouterSpeech(key, model, speech[turns[i].speaker], turns[i].text, signal));
+          parts.push(await openRouterSpeech(api, model, speech[turns[i].speaker], turns[i].text, signal));
         }
         return { audio: `data:audio/mpeg;base64,${chunksToBase64(parts)}` };
       }
@@ -389,7 +402,7 @@ export async function synthesizeScript(
       for (let i = 0; i < turns.length; i++) {
         throwIfAborted(signal);
         onProgress?.(i, turns.length);
-        clips.push(await speakScriptLine(key, model, voices[turns[i].speaker], turns[i].text, signal));
+        clips.push(await speakScriptLine(api, model, voices[turns[i].speaker], turns[i].text, signal));
       }
       const total = clips.reduce((n, c) => n + c.length, 0);
       const merged = new Float32Array(total);
