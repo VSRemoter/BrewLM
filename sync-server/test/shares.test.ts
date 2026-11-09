@@ -91,8 +91,17 @@ describe("shared links", () => {
     expect(list.shares[0].views).toBe(2);
 
     expect((await call(`/v1/shares/${id}`, { method: "DELETE", session })).status).toBe(204);
-    expect((await call(`/v1/shares/${id}/manifest`)).status).toBe(404);
+    // Stopped: no files left, but the link says it's gone rather than "not found".
+    expect((await call(`/v1/shares/${id}`)).status).toBe(410);
+    expect((await call(`/v1/shares/${id}/manifest`)).status).toBe(410);
     expect((await env.BLOBS.list({ prefix: `_shares/${id}/` })).objects).toHaveLength(0);
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM share_blobs WHERE share_id = ?").bind(id).first<{ n: number }>()).toEqual({ n: 0 });
+    // Gone from the owner's list and count, can't be revived, and stopping again is fine.
+    expect(((await (await call("/v1/shares", { session })).json()) as { shares: unknown[] }).shares).toHaveLength(0);
+    expect((await put(`/v1/shares/${id}/manifest?expect=2`, session, "back")).status).toBe(404);
+    expect((await call(`/v1/shares/${id}`, { method: "DELETE", session })).status).toBe(204);
+    const me = (await (await call("/v1/me", { session })).json()) as { sharedBytes: number };
+    expect(me.sharedBytes).toBe(0);
   });
 
   it("needs a paid plan to create or upload, and keeps owners apart", async () => {
@@ -221,8 +230,16 @@ describe("reports, take-downs and the lifecycle", () => {
     // Earlier tests left links behind too; a run takes a batch at a time.
     while ((await sweepShares(env)).removed > 0);
     const left = (await env.DB.prepare("SELECT id FROM shares WHERE id IN (?, ?, ?, ?)").bind(kept.id, expired.id, abandoned, fresh).all<{ id: string }>()).results.map((r) => r.id);
-    expect(left.sort()).toEqual([kept.id, fresh].sort());
+    // The abandoned one is gone; the expired one keeps a stopped record without its files.
+    expect(left.sort()).toEqual([kept.id, expired.id, fresh].sort());
+    expect((await env.DB.prepare("SELECT stopped_at FROM shares WHERE id = ?").bind(expired.id).first<{ stopped_at: number | null }>())?.stopped_at).not.toBeNull();
+    expect((await call(`/v1/shares/${expired.id}`)).status).toBe(410);
     expect((await env.BLOBS.list({ prefix: `_shares/${expired.id}/` })).objects).toHaveLength(0);
     expect(await env.DB.prepare("SELECT count(*) AS n FROM share_blobs WHERE share_id = ?").bind(expired.id).first<{ n: number }>()).toEqual({ n: 0 });
+
+    // A year later the record is forgotten.
+    await env.DB.prepare("UPDATE shares SET stopped_at = 1 WHERE id = ?").bind(expired.id).run();
+    await sweepShares(env);
+    expect(await env.DB.prepare("SELECT id FROM shares WHERE id = ?").bind(expired.id).first()).toBeNull();
   });
 });
