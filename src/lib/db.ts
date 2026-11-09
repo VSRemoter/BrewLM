@@ -283,6 +283,8 @@ export const SHARED_READ_ONLY = "This notebook was shared with you, so it's read
  * removes its row first, after which its leftovers aren't guarded.
  */
 export async function ensureShareGuards(db: SqlDb): Promise<void> {
+  // A crash while a link was being written would leave the guards switched off.
+  await db.execute("UPDATE sync_state SET value = '0' WHERE key = 'share_writing'");
   const open = `EXISTS (SELECT 1 FROM sync_state WHERE key IN ('share_writing', 'applying') AND value = '1')`;
   const shared = (ref: string) => `(SELECT share_id FROM notebooks WHERE id = ${ref}.notebook_id) != ''`;
   for (const [tbl, cols] of [
