@@ -132,6 +132,12 @@ export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local
  */
 export type RunsOn = "auto" | Provider;
 
+/**
+ * Where web search runs for research, /search and /fetch. "auto" = the cloud
+ * provider's own search; the others work with any chat provider, local too.
+ */
+export type SearchService = "auto" | "searxng" | "brave" | "tavily";
+
 /** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
 export type Thinking = "auto" | "low" | "medium" | "high";
 
@@ -207,6 +213,12 @@ export interface Settings {
   maxOutput: number | null;
   /** OpenRouter Image API model used by /image (separate from the chat model). */
   imageModel: string;
+  /** Web search service (Settings → AI Model → Web search). */
+  searchService: SearchService;
+  /** Self-hosted SearXNG address, e.g. http://localhost:8888 ("" = not set up). */
+  searxngUrl: string;
+  braveKey: string;
+  tavilyKey: string;
   /** Model for /research and /search, per chat provider; missing or "" = the main model. */
   researchModels: Partial<Record<Provider, string>>;
   /** Speech-to-text model for audio/video sources, per provider (OpenAI, OpenRouter); missing or "" = automatic. */

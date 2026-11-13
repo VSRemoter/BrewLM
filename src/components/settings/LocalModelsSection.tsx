@@ -20,6 +20,7 @@ import { LOCAL_STT_DEFAULT_MODEL, mediaProviders, testLocalTranscription, testLo
 import { DEFAULT_TTS_MODELS, LOCAL_PRESETS, LOCAL_STT_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
 import { goToSettingsSection, type SettingsSectionId } from "../../lib/settingsNav";
 import type { RunsOn, Settings } from "../../lib/types";
+import { SEARCH_SERVICE_LABELS } from "../../lib/webSearch";
 import { Spinner } from "../ui";
 import { Card, Footnote, Row, SectionTitle } from "./controls";
 
@@ -628,8 +629,15 @@ export default function LocalModelsSection({
         />
         <StatusRow
           label="Web search and deep research"
-          where={chatLocal ? "Not available with a local chat model" : chatLabel}
-          local={false}
+          where={
+            settings.searchService === "auto"
+              ? chatLocal
+                ? "Needs a search service"
+                : `${chatLabel}'s own search`
+              : `${SEARCH_SERVICE_LABELS[settings.searchService]} finds pages · ${chatLocal ? "this computer" : chatLabel} writes`
+          }
+          local={settings.searchService === "searxng" && chatLocal}
+          goTo={{ section: "ai", label: "Change in AI Model" }}
         />
       </Card>
       <Footnote>

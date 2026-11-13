@@ -15,6 +15,7 @@ import type {
   Provider,
   ReportType,
   RunsOn,
+  SearchService,
   Settings,
   Thinking,
   TtsProvider,
@@ -217,6 +218,7 @@ const AUDIO_MODES: AudioMode[] = ["conversation", "solo"];
 const AUDIO_FORMATS: AudioFormat[] = ["deep-dive", "brief", "debate", "critique"];
 const AUDIO_LENGTHS: AudioLength[] = ["short", "standard", "long"];
 const REPORT_TYPES: ReportType[] = ["study-guide", "briefing-doc", "analysis", "custom"];
+const SEARCH_SERVICES: SearchService[] = ["auto", "searxng", "brave", "tavily"];
 
 function pick<T extends string>(raw: string, vocab: T[], fallback: T): T {
   return (vocab as string[]).includes(raw) ? (raw as T) : fallback;
@@ -261,6 +263,10 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   thinking: (s) => s.thinking,
   maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
+  searchService: (s) => (s.searchService === "auto" ? "" : s.searchService),
+  searxngUrl: (s) => s.searxngUrl,
+  braveKey: (s) => s.braveKey,
+  tavilyKey: (s) => s.tavilyKey,
   researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
   transcribeModels: (s) => JSON.stringify(s.transcribeModels ?? {}),
   openrouterRouting: (s) => serializeRouting(s.openrouterRouting),
@@ -293,7 +299,7 @@ export async function loadSettings(): Promise<Settings> {
     openrouterRouting,
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
     localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
-    localSttBaseUrl, localSttKey, localSttModel,
+    localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -345,6 +351,10 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localSttBaseUrl"),
     getSetting("localSttKey"),
     getSetting("localSttModel"),
+    getSetting("searchService"),
+    getSetting("searxngUrl"),
+    getSetting("braveKey"),
+    getSetting("tavilyKey"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -424,6 +434,11 @@ export async function loadSettings(): Promise<Settings> {
     thinking: pick(thinking, Object.keys(THINKING_LABELS) as Thinking[], DEFAULT_BEHAVIOR.thinking),
     maxOutput: safeMaxOutput,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
+    // The web app can't reach a SearXNG on the computer, and Brave refuses browser requests.
+    searchService: platform.kind === "web" ? "auto" : pick(searchService, SEARCH_SERVICES, "auto"),
+    searxngUrl,
+    braveKey,
+    tavilyKey,
     researchModels: parseProviderModels(researchModels),
     transcribeModels: parseProviderModels(transcribeModels),
     openrouterRouting: parseRouting(openrouterRouting),

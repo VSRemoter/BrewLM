@@ -3,9 +3,11 @@ import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, openRouterApi } from "./brewlmAi";
 import { activeKey, noKeyMessage, researchModelFor } from "./settings";
 import { buildFetchItems, FETCH_MAX, type FetchItem } from "./fetchList";
+import { contextBudget } from "./local";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
 import { recordUsage, type UsageSink } from "./usage";
+import { configuredService, searchWithService, serviceSetupProblem } from "./webSearch";
 
 /** Parse token usage out of a non-streaming provider response, when present. */
 function usageFromJson(provider: Provider, json: unknown): StreamUsage {
@@ -41,6 +43,8 @@ function throwIfAborted(signal?: AbortSignal) {
 export interface WebHit {
   title: string;
   url: string;
+  /** The search service's excerpt, when there is one. */
+  snippet?: string;
 }
 
 export interface ReadPage {
@@ -223,12 +227,31 @@ async function searchAnthropic(
   return out;
 }
 
+/**
+ * Why web search can't run with these settings, as a message for the user;
+ * null when it can. A chosen search service works with any chat provider;
+ * Automatic needs a cloud provider's own search.
+ */
+export function searchUnavailable(settings: Settings): string | null {
+  const problem = serviceSetupProblem(settings);
+  if (problem) return `${problem}. Finish it in Settings → AI Model → Web search, or set it back to Automatic.`;
+  if (settings.searchService === "auto" && settings.provider === "local")
+    return "Web search with a local model needs a search service. Pick SearXNG (self-hosted), Brave Search or Tavily in Settings → AI Model → Web search.";
+  return null;
+}
+
+/** True when search goes through a chosen service rather than the provider's own search. */
+function usesService(settings: Settings): boolean {
+  return settings.searchService !== "auto";
+}
+
 async function searchWeb(
   query: string,
   settings: Settings,
   signal?: AbortSignal,
   onUsage?: UsageSink
 ): Promise<WebHit[]> {
+  if (usesService(settings)) return searchWithService(query, settings, { count: 8, signal });
   if (settings.provider === "anthropic" && settings.anthropicKey)
     return searchAnthropic(query, settings.anthropicKey, researchModelFor(settings), signal, onUsage);
   if (settings.provider === "openai" && settings.openaiKey)
@@ -396,6 +419,77 @@ async function answerOpenRouter(
   };
 }
 
+/** One call to the research model (the chat provider, local or cloud). */
+function askModel(
+  settings: Settings,
+  prompt: string,
+  opts: { system?: string; signal?: AbortSignal; onUsage?: UsageSink } = {}
+): Promise<string> {
+  const key = activeKey(settings);
+  if (!key) throw new Error(noKeyMessage(settings));
+  const model = researchModelFor(settings);
+  return complete({
+    provider: settings.provider,
+    apiKey: key,
+    model,
+    thinking: settings.thinking,
+    maxOutput: settings.maxOutput,
+    temperature: settings.temperature ?? undefined,
+    signal: opts.signal,
+    onUsage: (u) => noteUsage(settings.provider, model, u, opts.onUsage),
+    messages: [
+      ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
+      { role: "user" as const, content: prompt },
+    ],
+  });
+}
+
+/** Pages read for a /search answer: the top few results, the rest stay as snippets. */
+const ANSWER_PAGES = 3;
+
+/**
+ * /search through a search service: search, read the top pages, and answer
+ * with the chat model, citing results by number. Web material gets half the
+ * model's source budget; searchTurn gives the notebook the other half.
+ */
+async function answerWithService(
+  question: string,
+  settings: Settings,
+  system: string | undefined,
+  signal?: AbortSignal
+): Promise<WebAnswerOutcome> {
+  const results = await searchWithService(question, settings, { count: 6, signal });
+  if (results.length === 0) return { text: "", hits: [] };
+  const share = Math.floor(contextBudget(settings).sources / 2);
+  const read = await Promise.all(
+    results.slice(0, ANSWER_PAGES).map((r) =>
+      fetchLinkContent(r.url)
+        .then((p) => p.text)
+        .catch(() => "")
+    )
+  );
+  throwIfAborted(signal);
+  const perPage = Math.floor(share / ANSWER_PAGES);
+  const material = results
+    .map((r, i) => {
+      const body = (read[i] ?? "").trim().length > 200 ? read[i].slice(0, perPage) : r.snippet;
+      return `### [${i + 1}] ${r.title}\nURL: ${r.url}\n\n${body}`;
+    })
+    .join("\n\n---\n\n")
+    .slice(0, share);
+  const text = await askModel(
+    settings,
+    `${question.trim()}
+
+Answer using the web results below, which are current. Cite them inline as [1], [2] by their numbers. If they don't answer the question, say so.
+
+# Web results
+${material}`,
+    { system, signal }
+  );
+  return { text: text.trim(), hits: results.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })) };
+}
+
 /**
  * One web-grounded answer to a question (`/search`). Distinct from deepResearch:
  * single search round, inline answer for chat — no planning, no page reads,
@@ -409,6 +503,9 @@ export async function webAnswer(opts: {
   signal?: AbortSignal;
 }): Promise<WebAnswerOutcome> {
   const { query, settings, system, signal } = opts;
+  const blocked = searchUnavailable(settings);
+  if (blocked) throw new Error(blocked);
+  if (usesService(settings)) return answerWithService(query, settings, system, signal);
   const q = `${query.trim()}\n\n(Answer using current information from the web.)`;
   if (settings.provider === "anthropic" && settings.anthropicKey)
     return answerAnthropic(q, settings.anthropicKey, researchModelFor(settings), system, signal);
@@ -417,8 +514,6 @@ export async function webAnswer(opts: {
   if (settings.provider === "openrouter" && settings.openrouterKey)
     return answerOpenRouter(q, "openrouter", settings.openrouterKey, researchModelFor(settings), system, signal);
   if (settings.provider === "brewlm") return answerOpenRouter(q, "brewlm", "", researchModelFor(settings), system, signal);
-  if (settings.provider === "local")
-    throw new Error("Web search isn't available with a local model. It runs through a cloud provider's search, so switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use /search.");
   throw new Error("Add an API key in Settings first — web search runs through your provider.");
 }
 
@@ -442,9 +537,25 @@ Search the web and pick the ${FETCH_MAX - 4}–${FETCH_MAX} most useful sources 
 Reply with ONLY a JSON array, no other text:
 [{"title": "page title", "url": "https://...", "kind": "paper|article|tutorial|video|docs|course|reference|other", "why": "one short sentence on what this source gives the learner"}]
 Use only URLs that appeared in your search results, exactly as they appeared.`;
+  const blocked = searchUnavailable(settings);
+  if (blocked) throw new Error(blocked);
   const knobs: AnswerOpts = { cap: 40, searches: 4, webResults: 10, joinText: "" };
   let out: WebAnswerOutcome;
-  if (settings.provider === "anthropic" && settings.anthropicKey)
+  if (usesService(settings)) {
+    // The service searches; the chat model picks from what it found.
+    const results = await searchWithService(request, settings, { count: 15, signal });
+    if (results.length === 0) return [];
+    const list = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 300)}` : ""}`).join("\n");
+    const text = await askModel(
+      settings,
+      prompt.replace("Search the web and pick", "From the search results below, pick").replace(
+        "Use only URLs that appeared in your search results, exactly as they appeared.",
+        `Use only URLs from these results, exactly as written.\n\n# Search results\n${list}`
+      ),
+      { signal }
+    );
+    out = { text, hits: results.map((r) => ({ title: r.title, url: r.url })) };
+  } else if (settings.provider === "anthropic" && settings.anthropicKey)
     out = await answerAnthropic(prompt, settings.anthropicKey, researchModelFor(settings), undefined, signal, knobs);
   else if (settings.provider === "openai" && settings.openaiKey)
     out = await answerOpenAI(prompt, settings.openaiKey, undefined, signal, knobs);
@@ -452,8 +563,6 @@ Use only URLs that appeared in your search results, exactly as they appeared.`;
     out = await answerOpenRouter(prompt, "openrouter", settings.openrouterKey, researchModelFor(settings), undefined, signal, knobs);
   else if (settings.provider === "brewlm")
     out = await answerOpenRouter(prompt, "brewlm", "", researchModelFor(settings), undefined, signal, knobs);
-  else if (settings.provider === "local")
-    throw new Error("/fetch searches the web, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to use it.");
   else throw new Error("Add an API key in Settings first — /fetch searches the web through your provider.");
   let picked: unknown = null;
   try {
@@ -488,27 +597,12 @@ export async function deepResearch(opts: {
   onUsage?: UsageSink;
 }): Promise<ResearchOutcome> {
   const { settings, title, description, signal, onPhase = () => {}, onUsage } = opts;
-  const key = activeKey(settings);
-  if (settings.provider === "local")
-    throw new Error("Deep research needs web search, which local models can't do. Switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to run it.");
-  if (!key) throw new Error(noKeyMessage(settings));
-  const model = researchModelFor(settings);
+  const blocked = searchUnavailable(settings);
+  if (blocked) throw new Error(blocked);
+  if (!activeKey(settings)) throw new Error(noKeyMessage(settings));
+  const budget = contextBudget(settings);
 
-  const ask = (prompt: string, system?: string): Promise<string> =>
-    complete({
-      provider: settings.provider,
-      apiKey: key,
-      model,
-      thinking: settings.thinking,
-      maxOutput: settings.maxOutput,
-      temperature: settings.temperature ?? undefined,
-      signal,
-      onUsage: (u) => noteUsage(settings.provider, model, u, onUsage),
-      messages: [
-        ...(system ? [{ role: "system" as const, content: system }] : []),
-        { role: "user" as const, content: prompt },
-      ],
-    });
+  const ask = (prompt: string, system?: string): Promise<string> => askModel(settings, prompt, { system, signal, onUsage });
 
   // 1. plan searches
   onPhase("Planning searches…");
@@ -555,7 +649,9 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
   }
   if (hits.length === 0)
     throw new Error(
-      "Web search returned no results. This provider's search access may be unavailable — try rephrasing the topic or another provider."
+      configuredService(settings)
+        ? "Web search returned no results — try rephrasing the topic."
+        : "Web search returned no results. This provider's search access may be unavailable — try rephrasing the topic or another provider."
     );
 
   // 3. read top pages directly (no CORS via the Tauri HTTP plugin)
@@ -575,6 +671,29 @@ Return ONLY a JSON array of query strings, e.g. ["query one", "query two"].`
       }
     } catch {
       /* unreadable page — skip */
+    }
+  }
+
+  // 3b. small context windows (local models): notes on each page instead of the page.
+  const perPage = Math.max(1500, Math.floor(budget.sources / Math.max(1, pages.length)));
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    if (p.text.length <= perPage) continue;
+    throwIfAborted(signal);
+    onPhase(`Taking notes ${i + 1}/${pages.length}: ${p.title}`);
+    try {
+      const notes = await ask(
+        `Research topic: ${title}${description ? `\nDetails: ${description}` : ""}
+
+From the web page below, write notes on everything relevant to the topic: facts, figures, dates, names, claims and caveats. At most ${Math.round(perPage / 6)} words, as plain bullet points, no preface.
+
+# ${p.title}
+${p.text.slice(0, budget.condenseGroup)}`
+      );
+      p.text = (notes.trim() || p.text).slice(0, perPage);
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") throw e;
+      p.text = p.text.slice(0, perPage);
     }
   }
 

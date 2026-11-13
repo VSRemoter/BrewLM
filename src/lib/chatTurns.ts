@@ -208,7 +208,7 @@ export async function fetchTurn(opts: { request: string; settings: Settings; sig
   if (opts.signal.aborted) throw aborted();
   return items.length > 0
     ? encodeFetchMessage({ query: request, items })
-    : `I couldn't find sources for “${request}”. Your provider's web search may have come back empty — try rephrasing, or use \`/url <link>\` to add a page you already know.`;
+    : `I couldn't find sources for “${request}”. The web search may have come back empty — try rephrasing, or use \`/url <link>\` to add a page you already know.`;
 }
 
 /* --------------------------------- /search -------------------------------- */
@@ -231,10 +231,13 @@ export async function searchTurn(opts: {
   if (!query.trim())
     return "What should I look up? e.g. `/search best budget e-ink tablets 2026`. For a deep multi-source dossier saved to Studio, use `/research <topic>` instead.";
   let retrieved: RetrievedChunk[] | undefined;
+  // Through a search service the web pages share the model's window with the notebook: half each.
+  const full = contextBudget(settings);
+  const budget = settings.searchService !== "auto" ? { ...full, sources: Math.floor(full.sources / 2) } : full;
   if (opts.grounded) {
     try {
       await ensureIndexed(sources, settings);
-      const ranked = await rankChunks(sources, query, settings, contextBudget(settings).sources);
+      const ranked = await rankChunks(sources, query, settings, budget.sources);
       if (ranked.length > 0) retrieved = ranked;
     } catch {
       /* search proceeds without notebook context */
@@ -246,7 +249,7 @@ export async function searchTurn(opts: {
     system: buildSystemPrompt(sources, opts.mentioned, retrieved, {
       grounded: opts.grounded,
       constitution: opts.constitution,
-      budget: contextBudget(settings),
+      budget,
     }),
     signal,
   });

@@ -1582,8 +1582,6 @@ export default function ChatPanel({
     const provider = settings.provider;
     if (provider === "brewlm")
       return say("BrewLM AI runs research on its own research model, whatever chat uses. To pick one yourself, use your own key in **Settings → AI Model**.");
-    if (provider === "local")
-      return say("Research and `/search` need web search, which local models can't do — switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to pick a research model.");
     const sub = /^\/researchmodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
     if (sub) return say(await runModelListCommand("research", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
     const raw = normalizeModelId(text.replace(/^\/researchmodel\s*/i, ""));

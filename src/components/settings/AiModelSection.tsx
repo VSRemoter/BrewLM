@@ -26,6 +26,7 @@ import type { Provider, Settings, Thinking } from "../../lib/types";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
 import { LocalServerRows } from "./LocalModelsSection";
 import ProviderRoutingCard from "./ProviderRoutingCard";
+import WebSearchCard from "./WebSearchCard";
 import { BrewLmAiStatusRow, BrewLmTierRow, useAiOffered } from "./BrewLmAi";
 import { platform } from "../../platform";
 
@@ -598,8 +599,11 @@ export default function AiModelSection({
       </Card>
       )}
 
-      {/* Research model (/research, /search) — web search needs a cloud provider. */}
-      {!isLocal && !isBrewlm && (
+      {/* Where research, /search and /fetch find pages. Desktop only: see loadSettings. */}
+      {!isBrewlm && platform.kind === "desktop" && <WebSearchCard settings={settings} patch={patch} />}
+
+      {/* Research model (/research, /search). */}
+      {!isBrewlm && (
         <Card>
           <div className="py-3">
             <div className="text-[13px] font-medium text-ink">Research model</div>
@@ -607,7 +611,7 @@ export default function AiModelSection({
               Used by Deep Research and <code>/search</code>. A research run reads many pages and
               writes a long report, so you may want a stronger (or cheaper) model here than for chat.
               Leave it on “Same as main model” to use your main model.
-              {provider === "openai" && (
+              {provider === "openai" && settings.searchService === "auto" && (
                 <> On OpenAI the web search itself always runs on gpt-4o-mini-search-preview; this model plans and writes the report.</>
               )}
             </div>
