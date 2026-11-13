@@ -153,6 +153,16 @@ export const OPENAI_TTS_VOICES = [
  */
 export const OPENROUTER_TTS_VOICES = OPENAI_TTS_VOICES;
 
+/**
+ * One-click addresses for local transcription servers (both serve
+ * /v1/audio/transcriptions; whisper.cpp needs --inference-path for that).
+ * LocalAI also listens on 8080, so the whisper.cpp address covers it.
+ */
+export const LOCAL_STT_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "speaches", label: "Speaches", url: "http://localhost:8000/v1" },
+  { id: "whispercpp", label: "whisper.cpp / LocalAI", url: "http://localhost:8080/v1" },
+];
+
 /** One-click addresses for popular local speech servers (all serve /v1/audio/speech). */
 export const LOCAL_TTS_PRESETS: { id: string; label: string; url: string }[] = [
   { id: "kokoro", label: "Kokoro", url: "http://localhost:8880/v1" },
@@ -228,6 +238,9 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localVisionModel: (s) => s.localVisionModel,
   visionRunsOn: (s) => (s.visionRunsOn === "auto" ? "" : s.visionRunsOn),
   transcribeRunsOn: (s) => (s.transcribeRunsOn === "auto" ? "" : s.transcribeRunsOn),
+  localSttBaseUrl: (s) => s.localSttBaseUrl,
+  localSttKey: (s) => s.localSttKey,
+  localSttModel: (s) => s.localSttModel,
   model: (s) => s.model,
   theme: (s) => s.theme,
   font: (s) => s.font,
@@ -280,6 +293,7 @@ export async function loadSettings(): Promise<Settings> {
     openrouterRouting,
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
     localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
+    localSttBaseUrl, localSttKey, localSttModel,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -328,6 +342,9 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("transcribeRunsOn"),
     getSetting("localTtsBaseUrl"),
     getSetting("localTtsKey"),
+    getSetting("localSttBaseUrl"),
+    getSetting("localSttKey"),
+    getSetting("localSttModel"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -384,6 +401,9 @@ export async function loadSettings(): Promise<Settings> {
     localVisionModel: localVisionModel.trim(),
     visionRunsOn: parseRunsOn(visionRunsOn),
     transcribeRunsOn: parseRunsOn(transcribeRunsOn),
+    localSttBaseUrl,
+    localSttKey,
+    localSttModel: localSttModel.trim(),
     model: safeModel,
     theme: safeTheme,
     font: safeFont,

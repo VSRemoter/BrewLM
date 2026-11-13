@@ -10,6 +10,7 @@ const base: S = {
   transcribeRunsOn: "auto",
   localBaseUrl: "",
   localVisionModel: "",
+  localSttBaseUrl: "",
   ttsProvider: "system",
 };
 const s = (over: Partial<Settings>): S => ({ ...base, ...over }) as S;
@@ -43,6 +44,11 @@ describe("featureProviders", () => {
     expect(featureProviders(s({ provider: "anthropic" }), "transcribe", keys("anthropic", "openai"))).toEqual(["openai"]);
   });
 
+  it("Automatic with a local chat model transcribes locally once a server is set", () => {
+    const local = s({ provider: "local", localSttBaseUrl: "http://localhost:8000/v1" });
+    expect(featureProviders(local, "transcribe", keys("openai"))).toEqual(["local"]);
+  });
+
   it("Local works with a cloud chat provider", () => {
     const local = s({ visionRunsOn: "local", localBaseUrl: "http://localhost:1234/v1", localVisionModel: "gemma3" });
     expect(featureProviders(local, "vision", keys("openai"))).toEqual(["local"]);
@@ -51,11 +57,15 @@ describe("featureProviders", () => {
 });
 
 describe("localReady", () => {
-  it("needs an address and a vision model; transcription can't run locally yet", () => {
+  it("images need the chat server and a vision model", () => {
     const ready = s({ localBaseUrl: "http://localhost:11434/v1", localVisionModel: "llava" });
     expect(localReady(ready, "vision")).toBe(true);
     expect(localReady({ ...ready, localBaseUrl: " " }, "vision")).toBe(false);
-    expect(localReady(ready, "transcribe")).toBe(false);
+  });
+
+  it("transcription needs its own server, not the chat one", () => {
+    expect(localReady(s({ localBaseUrl: "http://localhost:11434/v1" }), "transcribe")).toBe(false);
+    expect(localReady(s({ localSttBaseUrl: "http://localhost:8000/v1" }), "transcribe")).toBe(true);
   });
 });
 

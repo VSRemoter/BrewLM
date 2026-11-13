@@ -11,12 +11,13 @@ import {
   detectLocalServers,
   type FoundServer,
   isEmbeddingModel,
+  isTranscribeModel,
   isVisionModel,
   listLocalModels,
   normalizeBaseUrl,
 } from "../../lib/local";
-import { mediaProviders, testLocalVision, type VisionTest } from "../../lib/media";
-import { DEFAULT_TTS_MODELS, LOCAL_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
+import { LOCAL_STT_DEFAULT_MODEL, mediaProviders, testLocalTranscription, testLocalVision, type VisionTest } from "../../lib/media";
+import { DEFAULT_TTS_MODELS, LOCAL_PRESETS, LOCAL_STT_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
 import { goToSettingsSection, type SettingsSectionId } from "../../lib/settingsNav";
 import type { RunsOn, Settings } from "../../lib/types";
 import { Spinner } from "../ui";
@@ -263,7 +264,10 @@ function RouteStatus({ feature, settings }: { feature: MediaFeature; settings: S
   let text: string;
   if (providers[0] === "local") {
     tone = "text-ok";
-    text = `Runs on this computer with ${settings.localVisionModel}.`;
+    text =
+      feature === "vision"
+        ? `Runs on this computer with ${settings.localVisionModel}.`
+        : `Runs on this computer with ${settings.localSttModel || LOCAL_STT_DEFAULT_MODEL}.`;
   } else if (providers.length) {
     text =
       providers.length === 1
@@ -274,7 +278,7 @@ function RouteStatus({ feature, settings }: { feature: MediaFeature; settings: S
     text =
       feature === "vision"
         ? "Pick a vision model below. Until then, images aren't read, and nothing is sent to the cloud."
-        : "Doesn't run on this computer yet. Audio and video sources stay unread until you pick a cloud provider here.";
+        : "Set the address of a transcription server below. Until then, recordings aren't transcribed, and nothing is sent to the cloud.";
   } else {
     tone = "text-warn";
     text =
@@ -362,6 +366,156 @@ function VisionModelRows({
   );
 }
 
+/**
+ * Local transcription server: its own address (chat servers like Ollama
+ * don't transcribe), optional key, model and a test.
+ */
+function TranscriptionServerRows({
+  settings,
+  patch,
+}: {
+  settings: Settings;
+  patch: (p: Partial<Settings>) => void;
+}) {
+  const [models, setModels] = useState<string[] | null>(null);
+  const [result, setResult] = useState<VisionTest | "testing" | { listError: string } | null>(null);
+  const activePreset = LOCAL_STT_PRESETS.find((p) => p.url === settings.localSttBaseUrl)?.id ?? "custom";
+
+  /** The server's speech-to-text models; picks one when none is set or the pick is gone. */
+  const load = async (baseUrl = settings.localSttBaseUrl, key = settings.localSttKey) => {
+    try {
+      const all = await listLocalModels({ baseUrl, key });
+      const stt = all.filter(isTranscribeModel);
+      setModels(stt);
+      if (stt.length && !stt.includes(settings.localSttModel)) patch({ localSttModel: stt[0] });
+    } catch (e) {
+      // Not every server lists models (whisper.cpp doesn't); the test still tells whether it works.
+      setModels([]);
+      if (!/answered 404/.test(e instanceof Error ? e.message : "")) setResult({ listError: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  useEffect(() => {
+    if (settings.localSttBaseUrl) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (result && result !== "testing" && !("listError" in result)) setResult(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.localSttModel, settings.localSttBaseUrl]);
+
+  const choose = (url: string) => {
+    patch({ localSttBaseUrl: url });
+    setResult(null);
+    void load(url);
+  };
+
+  return (
+    <>
+      <Row label="Transcription server" desc="Chat servers like Ollama can't transcribe, so this is its own app: Speaches, whisper.cpp's server or LocalAI." alignTop>
+        <div className="flex w-72 flex-col gap-2">
+          <div className="grid grid-cols-3 gap-1 rounded-lg border border-edge bg-canvas p-1">
+            {LOCAL_STT_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => choose(p.url)}
+                className={`rounded-md px-1.5 py-1.5 text-[12px] font-medium transition-colors ${
+                  activePreset === p.id ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+            <span
+              className={`rounded-md px-1.5 py-1.5 text-center text-[12px] font-medium ${
+                activePreset === "custom" ? "bg-panel text-ink shadow-sm" : "text-ink-3"
+              }`}
+            >
+              Custom
+            </span>
+          </div>
+          <input
+            value={settings.localSttBaseUrl}
+            onChange={(e) => patch({ localSttBaseUrl: e.target.value })}
+            onBlur={(e) => {
+              const url = normalizeBaseUrl(e.target.value);
+              if (url !== e.target.value) patch({ localSttBaseUrl: url });
+              if (url) void load(url);
+            }}
+            placeholder="http://localhost:8000/v1"
+            aria-label="Transcription server address"
+            className={inputClass}
+          />
+          <input
+            type="password"
+            value={settings.localSttKey}
+            onChange={(e) => patch({ localSttKey: e.target.value })}
+            placeholder="API key (optional)"
+            aria-label="Transcription server API key"
+            className={inputClass}
+          />
+          {activePreset === "whispercpp" && (
+            <p className="text-[12px] leading-relaxed text-ink-3">
+              Start whisper.cpp's server with <code>--inference-path /v1/audio/transcriptions</code>.
+            </p>
+          )}
+        </div>
+      </Row>
+      <Row label="Transcription model" desc="Leave on the server's default if it lists none." alignTop>
+        <div className="flex w-72 flex-col items-end gap-1.5">
+          {models && models.length > 0 ? (
+            <select
+              value={settings.localSttModel}
+              onChange={(e) => patch({ localSttModel: e.target.value })}
+              className={inputClass}
+              aria-label="Local transcription model"
+            >
+              {settings.localSttModel && !models.includes(settings.localSttModel) && (
+                <option value={settings.localSttModel}>{settings.localSttModel} (not on the server)</option>
+              )}
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={settings.localSttModel}
+              onChange={(e) => patch({ localSttModel: e.target.value.trim() })}
+              placeholder={`Server default (${LOCAL_STT_DEFAULT_MODEL})`}
+              aria-label="Local transcription model"
+              className={inputClass}
+            />
+          )}
+          <button
+            onClick={async () => {
+              setResult("testing");
+              setResult(await testLocalTranscription(settings));
+            }}
+            disabled={!settings.localSttBaseUrl.trim() || result === "testing"}
+            className={smallButton}
+          >
+            {result === "testing" ? <Spinner size={12} /> : <RefreshCw size={12} />}
+            {result === "testing" ? "Sending a test clip…" : "Test"}
+          </button>
+          {result && result !== "testing" && (
+            <p
+              className={`text-right text-[12px] leading-relaxed ${"listError" in result || !result.ok ? "text-danger" : "text-ok"}`}
+            >
+              {"listError" in result
+                ? result.listError
+                : result.ok
+                  ? `The server transcribed a test clip in ${result.seconds}s.`
+                  : result.message}
+            </p>
+          )}
+        </div>
+      </Row>
+    </>
+  );
+}
+
 /** A job that has no choice here: where it runs now, and where to change it. */
 function StatusRow({
   label,
@@ -428,6 +582,7 @@ export default function LocalModelsSection({
           settings={settings}
           patch={patch}
         />
+        {staysLocal(settings, "transcribe") && <TranscriptionServerRows settings={settings} patch={patch} />}
       </Card>
 
       <Card>

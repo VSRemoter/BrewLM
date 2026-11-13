@@ -14,13 +14,14 @@
  */
 
 import { platform } from "../platform";
-import { compressRecording, type Recording, splitRecording } from "./audioEncode";
+import { compressRecording, type Recording, splitRecording, toTranscribeWav } from "./audioEncode";
 import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceContent, setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, brewlmSession, openRouterApi, planHasAi, speaksOpenRouter } from "./brewlmAi";
 import { cloudJobsWhileLocal, featureProviders, type MediaFeature, staysLocal } from "./featureRoute";
+import { encodeWav } from "./audioClips";
 import { localHeaders, normalizeBaseUrl } from "./local";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { loadSettings } from "./settings";
@@ -33,7 +34,7 @@ const VISION_MODELS: Record<Provider, string> = {
   openai: "gpt-4o-mini",
   openrouter: "google/gemini-2.5-flash",
   anthropic: "claude-haiku-4-5-20251001",
-  local: "", // the user's pick: Settings → Local models → Image reading
+  local: "", // the user's pick: Settings → Local Models → Image reading
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
 
@@ -307,9 +308,9 @@ export async function describeImage(src: Blob | string, settings?: Settings): Pr
     return {
       text: "",
       warning: staysLocal(s, "vision")
-        ? "pick a vision model in Settings → Local models so it can be read on this computer — it will be described automatically before your next question. Nothing is sent to the cloud while you use a local model."
+        ? "pick a vision model in Settings → Local Models so it can be read on this computer — it will be described automatically before your next question. Nothing is sent to the cloud while you use a local model."
         : s.visionRunsOn !== "auto"
-          ? "the provider chosen for image reading in Settings → Local models has no key yet. Add one, or switch image reading back to Automatic."
+          ? "the provider chosen for image reading in Settings → Local Models has no key yet. Add one, or switch image reading back to Automatic."
           : "add an API key in Settings so the AI can read images — it will be described automatically before your next question.",
     };
   let jpeg: string;
@@ -350,7 +351,7 @@ function testCardJpeg(code: string): string {
 export type VisionTest = { ok: true; seconds: number } | { ok: false; message: string };
 
 /**
- * Settings → Local models → Test: shows the local vision model a picture of a
+ * Settings → Local Models → Test: shows the local vision model a picture of a
  * random number and checks it reads the number back.
  */
 export async function testLocalVision(s: Settings): Promise<VisionTest> {
@@ -428,9 +429,73 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** What a local transcription request names when no model is picked: most servers map it to their default. */
+export const LOCAL_STT_DEFAULT_MODEL = "whisper-1";
+
+/**
+ * One piece of audio to the local server's OpenAI-compatible
+ * /audio/transcriptions, as 16 kHz WAV when this platform can convert it.
+ */
+async function localTranscribe(s: Settings, blob: Blob, filename: string): Promise<string> {
+  const base = normalizeBaseUrl(s.localSttBaseUrl);
+  if (!base) throw new Error("no local transcription server is set");
+  const model = s.localSttModel.trim() || LOCAL_STT_DEFAULT_MODEL;
+  const wav = await toTranscribeWav(blob);
+  const form = new FormData();
+  if (wav) form.append("file", new Blob([wav], { type: "audio/wav" }), filename.replace(/\.[a-z0-9]+$/i, "") + ".wav");
+  else form.append("file", blob, filename);
+  form.append("model", model);
+  form.append("response_format", "json");
+  let res: Response;
+  try {
+    res = await platform.fetch(`${base}/audio/transcriptions`, {
+      method: "POST",
+      headers: s.localSttKey ? { Authorization: `Bearer ${s.localSttKey}` } : {},
+      body: form,
+      connectTimeout: 10000,
+    });
+  } catch {
+    throw new Error(`couldn't reach your local transcription server at ${base}. Is it running?`);
+  }
+  if (!res.ok) {
+    const err = await failure(res);
+    if (res.status === 404 && !/model/i.test(err.message))
+      throw new Error(`${base}/audio/transcriptions wasn't found. Check the address in Settings → Local Models (whisper.cpp needs --inference-path /v1/audio/transcriptions)`);
+    throw new Error(`${err.message}${/model/i.test(err.message) ? `. Check that “${model}” is on your transcription server` : ""}`);
+  }
+  // Most servers answer {"text": …}; whisper.cpp may send plain text.
+  const raw = await res.text();
+  let text = raw;
+  try {
+    const json = JSON.parse(raw);
+    text = typeof json?.text === "string" ? json.text : raw;
+  } catch {
+    /* plain text */
+  }
+  void recordUsage("sources", "local", model, {});
+  return text;
+}
+
+/**
+ * Settings → Local Models → Test: a second of silence to the transcription
+ * server, which proves the address, model and file format all work.
+ */
+export async function testLocalTranscription(s: Settings): Promise<VisionTest> {
+  const started = Date.now();
+  try {
+    const silence = encodeWav(new Float32Array(16_000), 16_000);
+    await localTranscribe(s, new Blob([silence], { type: "audio/wav" }), "test.wav");
+    return { ok: true, seconds: Math.round((Date.now() - started) / 1000) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: msg.charAt(0).toUpperCase() + msg.slice(1) + "." };
+  }
+}
+
 /** One transcription request: bytes in, transcript out (throws on failure). */
 async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: string, ext: string): Promise<string> {
   const pick = s.transcribeModels?.[p];
+  if (p === "local") return localTranscribe(s, blob, filename);
   if (p === "openai") return openAiTranscribe(keyFor(s, p), blob, filename, pick);
   const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
   let lastErr: unknown = null;
@@ -504,9 +569,9 @@ export async function transcribeAudio(
       text: "",
       recording,
       warning: staysLocal(s, "transcribe")
-        ? "transcription doesn't run on this computer yet, and nothing is sent to the cloud while you use a local model. To transcribe it, pick a cloud provider for Transcription in Settings → Local models."
+        ? "set up a transcription server in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
         : s.transcribeRunsOn !== "auto"
-          ? "the provider chosen for transcription in Settings → Local models has no key yet. Add one, or switch transcription back to Automatic."
+          ? "the provider chosen for transcription in Settings → Local Models has no key yet. Add one, or switch transcription back to Automatic."
           : "transcribing audio needs an OpenAI or OpenRouter key (Anthropic models can't hear audio). Add one in Settings and it will be transcribed automatically before your next question.",
     };
   let pieces: Blob[];

@@ -182,6 +182,9 @@ const LOCAL_SETTINGS = new Set([
   "localVisionModel",
   "localTtsBaseUrl",
   "localTtsKey",
+  "localSttBaseUrl",
+  "localSttKey",
+  "localSttModel",
   "customModels.local",
   // Where each job runs depends on what this computer has set up.
   "visionRunsOn",

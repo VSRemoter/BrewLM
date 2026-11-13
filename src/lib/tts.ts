@@ -1,7 +1,7 @@
 /** Text-to-speech for studio audio: OpenAI, OpenRouter, ElevenLabs, a local speech server, or in-app system voices. */
 
 import { platform } from "../platform";
-import { joinSamples, parseWav, sniffAudio } from "./audioClips";
+import { encodeWav, joinSamples, parseWav, sniffAudio } from "./audioClips";
 import { encodeM4a } from "./audioEncode";
 import { isAbortError, sseLines } from "./llm";
 import { listLocalVoices, localHeaders, localHostVoices, normalizeBaseUrl } from "./local";
@@ -339,7 +339,7 @@ async function synthesizeLocal(turns: ScriptTurn[], settings: Settings, opts: Sy
   const merged = joinSamples(pcm);
   const m4a = await encodeM4a(merged, rate).catch(() => null);
   if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
-  return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, rate)])}` };
+  return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWav(merged, rate)])}` };
 }
 
 /**
@@ -354,35 +354,6 @@ export async function speakLocalSample(settings: Settings, host: Host): Promise<
   );
   if (!audio) throw new Error(note ?? "No audio came back.");
   return audio;
-}
-
-/** Encode mono float samples as a 16-bit PCM wav file. */
-function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
-  const buf = new ArrayBuffer(44 + samples.length * 2);
-  const v = new DataView(buf);
-  const str = (o: number, s: string) => {
-    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
-  };
-  str(0, "RIFF");
-  v.setUint32(4, 36 + samples.length * 2, true);
-  str(8, "WAVE");
-  str(12, "fmt ");
-  v.setUint32(16, 16, true); // pcm chunk size
-  v.setUint16(20, 1, true); // pcm
-  v.setUint16(22, 1, true); // mono
-  v.setUint32(24, sampleRate, true);
-  v.setUint32(28, sampleRate * 2, true); // byte rate
-  v.setUint16(32, 2, true); // block align
-  v.setUint16(34, 16, true); // bits
-  str(36, "data");
-  v.setUint32(40, samples.length * 2, true);
-  let off = 44;
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    off += 2;
-  }
-  return new Uint8Array(buf);
 }
 
 /**
@@ -546,7 +517,7 @@ export async function synthesizeScript(
       // AAC where the platform can encode it (~6× smaller than WAV); WAV otherwise.
       const m4a = await encodeM4a(merged, rate).catch(() => null);
       if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
-      return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, rate)])}` };
+      return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWav(merged, rate)])}` };
     }
     case "elevenlabs": {
       const key = settings.elevenlabsKey.trim();

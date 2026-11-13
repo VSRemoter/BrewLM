@@ -23,6 +23,7 @@ import {
   Output,
   Quality,
 } from "mediabunny";
+import { encodeWav } from "./audioClips";
 
 const SPEECH_BITRATE = 64_000;
 /**
@@ -205,4 +206,37 @@ export async function splitRecording(rec: Recording, seconds: number): Promise<U
     pieces.push(piece);
   }
   return pieces;
+}
+
+/* --------------------------- for local transcription --------------------------- */
+
+/** What Whisper-family models listen at; sending more is wasted bytes. */
+export const TRANSCRIBE_SAMPLE_RATE = 16_000;
+
+/**
+ * Any audio the platform can decode → 16 kHz mono 16-bit WAV, the one format
+ * every local transcription server takes (whisper.cpp's server takes only
+ * WAV unless started with --convert). Null when it can't be decoded here;
+ * callers then send the original.
+ */
+export async function toTranscribeWav(audio: Blob): Promise<Uint8Array | null> {
+  const Ctx = globalThis.OfflineAudioContext;
+  if (!Ctx) return null;
+  try {
+    // decodeAudioData resamples to the context's rate; one channel downmixes.
+    const probe = new Ctx(1, 1, TRANSCRIBE_SAMPLE_RATE);
+    const decoded = await probe.decodeAudioData(await audio.arrayBuffer());
+    const frames = Math.ceil(decoded.duration * TRANSCRIBE_SAMPLE_RATE);
+    if (!frames) return null;
+    const ctx = new Ctx(1, frames, TRANSCRIBE_SAMPLE_RATE);
+    const src = ctx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(ctx.destination);
+    src.start();
+    const rendered = await ctx.startRendering();
+    return encodeWav(rendered.getChannelData(0), TRANSCRIBE_SAMPLE_RATE);
+  } catch (e) {
+    console.warn("audio: couldn't convert to WAV for local transcription", e);
+    return null;
+  }
 }

@@ -70,3 +70,32 @@ export function joinSamples(clips: Float32Array[]): Float32Array {
   }
   return out;
 }
+
+/** Mono float samples → a 16-bit PCM WAV file. */
+export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o: number, t: string) => {
+    for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i));
+  };
+  str(0, "RIFF");
+  v.setUint32(4, 36 + samples.length * 2, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  v.setUint32(16, 16, true); // pcm chunk size
+  v.setUint16(20, 1, true); // pcm
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); // byte rate
+  v.setUint16(32, 2, true); // block align
+  v.setUint16(34, 16, true); // bits
+  str(36, "data");
+  v.setUint32(40, samples.length * 2, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const x = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(off, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    off += 2;
+  }
+  return new Uint8Array(buf);
+}

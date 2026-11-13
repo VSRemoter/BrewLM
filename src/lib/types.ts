@@ -167,6 +167,12 @@ export interface Settings {
   visionRunsOn: RunsOn;
   /** Where audio and video sources are transcribed. */
   transcribeRunsOn: RunsOn;
+  /** Local transcription server base URL including /v1 ("" = not set up). */
+  localSttBaseUrl: string;
+  /** Optional bearer token for the local transcription server. */
+  localSttKey: string;
+  /** Speech-to-text model on that server ("" = whisper-1, which most servers map to their default). */
+  localSttModel: string;
   model: string;
   theme: string;
   /** UI font id from fonts.ts ("system" follows the theme's default stack). */

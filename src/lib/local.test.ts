@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../platform", () => ({ platform: {} }));
 vi.mock("./db", () => ({ getSetting: async () => "" }));
 
-import { isSpeechModel, isVisionModel, localHostVoices, parseVoiceList } from "./local";
+import { isSpeechModel, isTranscribeModel, isVisionModel, localHostVoices, parseVoiceList } from "./local";
 
 describe("isVisionModel", () => {
   it("spots common vision models by name", () => {
@@ -20,6 +20,15 @@ describe("isSpeechModel", () => {
       expect(isSpeechModel(id), id).toBe(true);
     for (const id of ["Systran/faster-whisper-small", "whisper-1", "nomic-embed-text", "llama3.1:8b"])
       expect(isSpeechModel(id), id).toBe(false);
+  });
+});
+
+describe("isTranscribeModel", () => {
+  it("keeps speech-to-text models and drops speech and chat ones", () => {
+    for (const id of ["Systran/faster-whisper-small", "deepdml/faster-whisper-large-v3-turbo-ct2", "whisper-1", "nvidia/parakeet-tdt-0.6b-v2"])
+      expect(isTranscribeModel(id), id).toBe(true);
+    for (const id of ["speaches-ai/Kokoro-82M-v1.0-ONNX", "kokoro", "llama3.1:8b", "nomic-embed-text"])
+      expect(isTranscribeModel(id), id).toBe(false);
   });
 });
 

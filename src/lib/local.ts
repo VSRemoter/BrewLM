@@ -126,6 +126,11 @@ export function isSpeechModel(id: string): boolean {
   return /kokoro|tts|piper|orpheus|xtts|chatterbox|melo|outetts|kitten|parler|bark|zonos|csm|dia-|f5|vits|sesame/i.test(id) && !isEmbeddingModel(id) && !/whisper|transcri|stt/i.test(id);
 }
 
+/** Speech-to-text models among a server's models (Speaches lists its TTS models too). */
+export function isTranscribeModel(id: string): boolean {
+  return /whisper|transcri|parakeet|canary|moonshine|sensevoice|stt|voxtral|distil/i.test(id) && !isEmbeddingModel(id);
+}
+
 /** Voice ids out of the shapes servers use: ["af_heart"], {voices: [...]}, {data: [{id}]}… */
 export function parseVoiceList(json: unknown): string[] {
   const obj = json as { voices?: unknown; data?: unknown } | null;
@@ -167,7 +172,7 @@ const DETECT_TARGETS: { label: string; port: number }[] = [
   { label: "LM Studio", port: 1234 },
   { label: "llama.cpp", port: 8080 },
   { label: "Jan", port: 1337 },
-  { label: "vLLM", port: 8000 },
+  { label: "vLLM or Speaches", port: 8000 },
 ];
 
 export interface FoundServer {

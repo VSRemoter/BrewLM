@@ -20,11 +20,11 @@ export const CLOUD_PROVIDERS: Record<MediaFeature, Provider[]> = {
 };
 
 /** Jobs a local server can do in this build. */
-export const LOCAL_CAPABLE: Record<MediaFeature, boolean> = { vision: true, transcribe: false };
+export const LOCAL_CAPABLE: Record<MediaFeature, boolean> = { vision: true, transcribe: true };
 
 type RouteSettings = Pick<
   Settings,
-  "provider" | "visionRunsOn" | "transcribeRunsOn" | "localBaseUrl" | "localVisionModel"
+  "provider" | "visionRunsOn" | "transcribeRunsOn" | "localBaseUrl" | "localVisionModel" | "localSttBaseUrl"
 >;
 
 export function runsOn(s: RouteSettings, f: MediaFeature): RunsOn {
@@ -37,10 +37,15 @@ export function staysLocal(s: RouteSettings, f: MediaFeature): boolean {
   return r === "local" || (r === "auto" && s.provider === "local");
 }
 
-/** True when this computer is set up to do the job. */
+/**
+ * True when this computer is set up to do the job: images need the chat
+ * server and a vision model on it; transcription needs its own server (the
+ * model is optional: servers fall back to their default).
+ */
 export function localReady(s: RouteSettings, f: MediaFeature): boolean {
-  if (!LOCAL_CAPABLE[f] || !s.localBaseUrl.trim()) return false;
-  return f === "vision" ? !!s.localVisionModel.trim() : false;
+  if (!LOCAL_CAPABLE[f]) return false;
+  if (f === "vision") return !!s.localBaseUrl.trim() && !!s.localVisionModel.trim();
+  return !!s.localSttBaseUrl.trim();
 }
 
 /** Providers to try for a job, in order; [] when nothing is set up for it. */
