@@ -75,6 +75,7 @@ export default function SharingSection() {
                 <div className="min-w-0">
                   <div className="truncate text-[13px] font-medium text-ink">
                     {titles.get(r.notebook_id) ?? "Deleted notebook"}
+                    {r.label && <span className="font-normal text-ink-3"> · {r.label}</span>}
                   </div>
                   <div className="mt-0.5 text-[11.5px] text-ink-3">
                     Updated {when(r.updated_at || r.created_at)}

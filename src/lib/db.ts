@@ -261,10 +261,15 @@ async function initDb(): Promise<SqlDb> {
       include_chats INTEGER NOT NULL DEFAULT 0,
       include_media INTEGER NOT NULL DEFAULT 1,
       shared_by TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '',
       expires_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )`);
+  // A notebook can have several links; the owner names them to tell them apart.
+  const shareCols = await db.select<{ name: string }[]>("PRAGMA table_info(shares)");
+  if (!shareCols.some((c) => c.name === "label"))
+    await db.execute("ALTER TABLE shares ADD COLUMN label TEXT NOT NULL DEFAULT ''");
   await ensureSyncTracking(db);
   await ensureShareGuards(db);
   return db;

@@ -76,7 +76,7 @@ import {
   type ShareManifest,
 } from "./shareLinks";
 
-const opts = { includeChats: false, includeMedia: true, sharedBy: " Sam ", expiresAt: null };
+const opts = { label: "", includeChats: false, includeMedia: true, sharedBy: " Sam ", expiresAt: null };
 
 beforeEach(() => {
   calls.length = 0;
