@@ -9,6 +9,10 @@
   <b>Your personal research copilot</b> — a local-first, NotebookLM-style desktop app for macOS, Windows, and Linux.
 </p>
 
+<p align="center">
+  <a href="https://brewlm.com/">Website</a> · <a href="https://discord.gg/RYRPU7pTkd">Discord</a>
+</p>
+
 BrewLM turns your own materials — PDFs, web pages, YouTube videos, notes, images, audio — into a grounded workspace: ask questions with inline source citations, then spin what you learn into flashcards, quizzes, mind maps, study guides, research reports, and two-host podcast episodes, all powered by the model of your choice (cloud or local). Sketch and work problems in the built-in Drawings pad while an episode plays. Everything (notebooks, chats, Studio outputs, settings) lives in a local SQLite database on your machine, and your API keys never leave it.
 
 ---
@@ -210,3 +214,5 @@ The BrewLM Sync server in `sync-server/` is the exception: from this commit on i
 ## Contributing
 
 Issues and PRs are welcome. The codebase is small and single-purpose: sources → chat → Studio. If you add a slash command, also add it to the palette registry and the `/help` guide in `src/components/ChatPanel.tsx`.
+
+Questions, ideas, or want to chat with other users? Join the [BrewLM Discord](https://discord.gg/RYRPU7pTkd).
