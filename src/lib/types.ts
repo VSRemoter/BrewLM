@@ -132,6 +132,12 @@ export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local
  */
 export type RunsOn = "auto" | Provider;
 
+/** How transcription runs on this computer: whisper.cpp built into the app, or a transcription server. */
+export type LocalSttEngine = "builtin" | "server";
+
+/** The built-in speech model: Whisper base, or large-v3 turbo. */
+export type BuiltinWhisperModel = "fast" | "accurate";
+
 /** Where /image draws: "auto" = BrewLM AI or OpenRouter as before, or this computer with a local chat model. */
 export type ImageRunsOn = "auto" | "local" | "openrouter";
 
@@ -179,6 +185,10 @@ export interface Settings {
   visionRunsOn: RunsOn;
   /** Where audio and video sources are transcribed. */
   transcribeRunsOn: RunsOn;
+  /** Built-in whisper.cpp or a transcription server, when transcription runs on this computer. */
+  localSttEngine: LocalSttEngine;
+  /** Which built-in speech model to use (downloaded in Settings → Local Models). */
+  builtinWhisperModel: BuiltinWhisperModel;
   /** Local transcription server base URL including /v1 ("" = not set up). */
   localSttBaseUrl: string;
   /** Optional bearer token for the local transcription server. */

@@ -22,6 +22,7 @@ import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, brewlmSession, openRouterApi, planHasAi, speaksOpenRouter } from "./brewlmAi";
 import { cloudJobsWhileLocal, featureProviders, type MediaFeature, staysLocal } from "./featureRoute";
 import { encodeWav } from "./audioClips";
+import { builtinModelReady, refreshWhisperStatus, transcribeBuiltin } from "./builtinWhisper";
 import { localHeaders, normalizeBaseUrl } from "./local";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { loadSettings } from "./settings";
@@ -99,7 +100,11 @@ const hasKeyIn = (s: Settings) => (p: Provider) => p !== "local" && !!keyFor(s, 
 
 /** Providers to try for a job, in order, per its "Runs on" choice ([] = nothing set up). */
 export function mediaProviders(s: Settings, f: MediaFeature): Provider[] {
-  return featureProviders(s, f, hasKeyIn(s));
+  const out = featureProviders(s, f, hasKeyIn(s));
+  // Built-in transcription waits until its model is downloaded (unknown until the first check: try it).
+  if (f === "transcribe" && out[0] === "local" && s.localSttEngine === "builtin" && builtinModelReady(s.builtinWhisperModel) === false)
+    return [];
+  return out;
 }
 
 /** With a local chat model: the jobs that would still reach a cloud service (chat footer). */
@@ -429,6 +434,16 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** Built-in whisper.cpp: the piece as 16 kHz WAV, the one format the bundled program reads here. */
+async function builtinTranscribe(s: Settings, blob: Blob): Promise<string> {
+  const wav = await toTranscribeWav(blob);
+  if (!wav) throw new Error("this recording couldn't be converted for built-in transcription on this computer");
+  const text = await transcribeBuiltin(wav, s.builtinWhisperModel);
+  void recordUsage("sources", "local", `whisper ${s.builtinWhisperModel}`, {});
+  // whisper marks silence and music in brackets; they aren't speech.
+  return text.replace(/\[(BLANK_AUDIO|MUSIC|NO SPEECH|SILENCE)\]/gi, "").trim();
+}
+
 /** What a local transcription request names when no model is picked: most servers map it to their default. */
 export const LOCAL_STT_DEFAULT_MODEL = "whisper-1";
 
@@ -495,7 +510,7 @@ export async function testLocalTranscription(s: Settings): Promise<VisionTest> {
 /** One transcription request: bytes in, transcript out (throws on failure). */
 async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: string, ext: string): Promise<string> {
   const pick = s.transcribeModels?.[p];
-  if (p === "local") return localTranscribe(s, blob, filename);
+  if (p === "local") return s.localSttEngine === "builtin" ? builtinTranscribe(s, blob) : localTranscribe(s, blob, filename);
   if (p === "openai") return openAiTranscribe(keyFor(s, p), blob, filename, pick);
   const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
   let lastErr: unknown = null;
@@ -563,13 +578,16 @@ export async function transcribeAudio(
       text: "",
       warning: `too large to transcribe (${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB) and its audio couldn't be extracted on this device — split or compress it, then re-add.`,
     };
+  if (s.localSttEngine === "builtin" && staysLocal(s, "transcribe")) await refreshWhisperStatus();
   const providers = transcribeProviders(s);
   if (providers.length === 0)
     return {
       text: "",
       recording,
       warning: staysLocal(s, "transcribe")
-        ? "set up a transcription server in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
+        ? s.localSttEngine === "builtin"
+          ? "download the built-in speech model in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
+          : "set up a transcription server in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
         : s.transcribeRunsOn !== "auto"
           ? "the provider chosen for transcription in Settings → Local Models has no key yet. Add one, or switch transcription back to Automatic."
           : "transcribing audio needs an OpenAI or OpenRouter key (Anthropic models can't hear audio). Add one in Settings and it will be transcribed automatically before your next question.",
@@ -635,6 +653,8 @@ export async function ensureMediaText(sources: Source[], settings?: Settings): P
   );
   if (pending.length === 0) return;
   const st = settings ?? (await loadSettings());
+  // Know whether the built-in model is on disk before deciding what can be read now.
+  if (st.localSttEngine === "builtin" && pending.some((p) => p.type === "audio")) await refreshWhisperStatus();
   for (const src of pending) {
     // Nothing set up to read it yet: try again once something is, without a restart.
     if (src.type !== "link" && mediaProviders(st, src.type === "image" ? "vision" : "transcribe").length === 0) continue;

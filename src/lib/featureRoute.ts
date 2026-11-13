@@ -24,7 +24,7 @@ export const LOCAL_CAPABLE: Record<MediaFeature, boolean> = { vision: true, tran
 
 type RouteSettings = Pick<
   Settings,
-  "provider" | "visionRunsOn" | "transcribeRunsOn" | "localBaseUrl" | "localVisionModel" | "localSttBaseUrl"
+  "provider" | "visionRunsOn" | "transcribeRunsOn" | "localBaseUrl" | "localVisionModel" | "localSttBaseUrl" | "localSttEngine"
 >;
 
 export function runsOn(s: RouteSettings, f: MediaFeature): RunsOn {
@@ -40,12 +40,13 @@ export function staysLocal(s: RouteSettings, f: MediaFeature): boolean {
 /**
  * True when this computer is set up to do the job: images need the chat
  * server and a vision model on it; transcription needs its own server (the
- * model is optional: servers fall back to their default).
+ * model is optional: servers fall back to their default), or the built-in
+ * engine, whose downloaded model media.ts checks.
  */
 export function localReady(s: RouteSettings, f: MediaFeature): boolean {
   if (!LOCAL_CAPABLE[f]) return false;
   if (f === "vision") return !!s.localBaseUrl.trim() && !!s.localVisionModel.trim();
-  return !!s.localSttBaseUrl.trim();
+  return (s.localSttEngine ?? "server") === "builtin" || !!s.localSttBaseUrl.trim();
 }
 
 /** Providers to try for a job, in order; [] when nothing is set up for it. */

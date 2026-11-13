@@ -2,6 +2,7 @@ mod blobs;
 mod sandbox;
 mod server;
 mod sync;
+mod whisper;
 
 use server::SharingState;
 use tauri::{Emitter, Manager, menu::{Menu, MenuItem}, tray::TrayIconBuilder};
@@ -158,6 +159,12 @@ pub fn run() {
             sync::sync_mark_pushed,
             sync::sync_config,
             sync::sync_log,
+            whisper::whisper_status,
+            whisper::whisper_download_model,
+            whisper::whisper_cancel_download,
+            whisper::whisper_delete_model,
+            whisper::whisper_transcribe,
+            whisper::whisper_cancel,
         ])
         .setup(move |app| {
             if let (Some(p), Some(w)) = (&profile, app.get_webview_window("main")) {

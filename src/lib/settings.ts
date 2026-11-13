@@ -248,6 +248,8 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localVisionModel: (s) => s.localVisionModel,
   visionRunsOn: (s) => (s.visionRunsOn === "auto" ? "" : s.visionRunsOn),
   transcribeRunsOn: (s) => (s.transcribeRunsOn === "auto" ? "" : s.transcribeRunsOn),
+  localSttEngine: (s) => s.localSttEngine,
+  builtinWhisperModel: (s) => s.builtinWhisperModel,
   localSttBaseUrl: (s) => s.localSttBaseUrl,
   localSttKey: (s) => s.localSttKey,
   localSttModel: (s) => s.localSttModel,
@@ -314,6 +316,7 @@ export async function loadSettings(): Promise<Settings> {
     localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
     localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
     imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
+    localSttEngine, builtinWhisperModel,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -374,6 +377,8 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localImageKey"),
     getSetting("localImageModel"),
     getSetting("localImageApi"),
+    getSetting("localSttEngine"),
+    getSetting("builtinWhisperModel"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -430,6 +435,9 @@ export async function loadSettings(): Promise<Settings> {
     localVisionModel: localVisionModel.trim(),
     visionRunsOn: parseRunsOn(visionRunsOn),
     transcribeRunsOn: parseRunsOn(transcribeRunsOn),
+    // Unset: a server someone already set up keeps working; otherwise built in.
+    localSttEngine: localSttEngine === "builtin" || localSttEngine === "server" ? localSttEngine : localSttBaseUrl ? "server" : "builtin",
+    builtinWhisperModel: builtinWhisperModel === "accurate" ? "accurate" : "fast",
     localSttBaseUrl,
     localSttKey,
     localSttModel: localSttModel.trim(),

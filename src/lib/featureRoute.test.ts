@@ -11,6 +11,7 @@ const base: S = {
   localBaseUrl: "",
   localVisionModel: "",
   localSttBaseUrl: "",
+  localSttEngine: "server",
   ttsProvider: "system",
 };
 const s = (over: Partial<Settings>): S => ({ ...base, ...over }) as S;
@@ -61,6 +62,11 @@ describe("localReady", () => {
     const ready = s({ localBaseUrl: "http://localhost:11434/v1", localVisionModel: "llava" });
     expect(localReady(ready, "vision")).toBe(true);
     expect(localReady({ ...ready, localBaseUrl: " " }, "vision")).toBe(false);
+  });
+
+  it("built-in transcription is ready without any server (its model is checked in media.ts)", () => {
+    expect(localReady(s({ localSttEngine: "builtin" }), "transcribe")).toBe(true);
+    expect(featureProviders(s({ provider: "local", localSttEngine: "builtin" }), "transcribe", keys("openai"))).toEqual(["local"]);
   });
 
   it("transcription needs its own server, not the chat one", () => {

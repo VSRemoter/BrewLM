@@ -3,7 +3,20 @@
  * when chat runs locally) and where each job runs — this computer or a cloud
  * provider (featureRoute.ts).
  */
-import { ArrowRight, Check, RefreshCw, Search } from "lucide-react";
+import { ArrowRight, Check, Download, RefreshCw, Search } from "lucide-react";
+import { encodeWav } from "../../lib/audioClips";
+import {
+  BUILTIN_MODEL_INFO,
+  cancelWhisperDownload,
+  deleteWhisperModel,
+  downloadWhisperModel,
+  megabytes,
+  onWhisperStatus,
+  refreshWhisperStatus,
+  transcribeBuiltin,
+  whisperStatusNow,
+  type WhisperStatus,
+} from "../../lib/builtinWhisper";
 import { useEffect, useState } from "react";
 import { planHasAi } from "../../lib/brewlmAi";
 import { CLOUD_PROVIDERS, imageRoute, LOCAL_CAPABLE, type MediaFeature, staysLocal } from "../../lib/featureRoute";
@@ -20,7 +33,7 @@ import {
 import { LOCAL_STT_DEFAULT_MODEL, mediaProviders, testLocalTranscription, testLocalVision, type VisionTest } from "../../lib/media";
 import { DEFAULT_TTS_MODELS, LOCAL_IMAGE_PRESETS, LOCAL_PRESETS, LOCAL_STT_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
 import { goToSettingsSection, type SettingsSectionId } from "../../lib/settingsNav";
-import type { ImageRunsOn, RunsOn, Settings } from "../../lib/types";
+import type { BuiltinWhisperModel, ImageRunsOn, RunsOn, Settings } from "../../lib/types";
 import { SEARCH_SERVICE_LABELS } from "../../lib/webSearch";
 import { Spinner } from "../ui";
 import { Card, Footnote, Row, SectionTitle } from "./controls";
@@ -259,8 +272,21 @@ function RunsOnRow({
   );
 }
 
+/** The built-in engine's status, kept current (downloads, deletes). Null until read. */
+function useWhisperStatus(): WhisperStatus | null {
+  const [status, setStatus] = useState<WhisperStatus | null>(whisperStatusNow());
+  useEffect(() => {
+    const off = onWhisperStatus(setStatus);
+    void refreshWhisperStatus();
+    return off;
+  }, []);
+  return status;
+}
+
 function RouteStatus({ feature, settings }: { feature: MediaFeature; settings: Settings }) {
+  useWhisperStatus(); // re-checks routing when a model arrives or goes
   const providers = mediaProviders(settings, feature);
+  const builtin = feature === "transcribe" && settings.localSttEngine === "builtin";
   const r = settings[RUNS_ON_KEY[feature]];
   let tone = "text-ink-3";
   let text: string;
@@ -269,7 +295,9 @@ function RouteStatus({ feature, settings }: { feature: MediaFeature; settings: S
     text =
       feature === "vision"
         ? `Runs on this computer with ${settings.localVisionModel}.`
-        : `Runs on this computer with ${settings.localSttModel || LOCAL_STT_DEFAULT_MODEL}.`;
+        : builtin
+          ? `Runs on this computer with the built-in ${BUILTIN_MODEL_INFO[settings.builtinWhisperModel].label.toLowerCase()} model.`
+          : `Runs on this computer with ${settings.localSttModel || LOCAL_STT_DEFAULT_MODEL}.`;
   } else if (providers.length) {
     text =
       providers.length === 1
@@ -280,7 +308,9 @@ function RouteStatus({ feature, settings }: { feature: MediaFeature; settings: S
     text =
       feature === "vision"
         ? "Pick a vision model below. Until then, images aren't read, and nothing is sent to the cloud."
-        : "Set the address of a transcription server below. Until then, recordings aren't transcribed, and nothing is sent to the cloud.";
+        : builtin
+          ? "Download the speech model below. Until then, recordings aren't transcribed, and nothing is sent to the cloud."
+          : "Set the address of a transcription server below. Until then, recordings aren't transcribed, and nothing is sent to the cloud.";
   } else {
     tone = "text-warn";
     text =
@@ -361,6 +391,165 @@ function VisionModelRows({
         {result && result !== "testing" && (
           <p className={`text-right text-[12px] leading-relaxed ${result.ok ? "text-ok" : "text-danger"}`}>
             {result.ok ? `It read the test picture correctly in ${result.seconds}s.` : result.message}
+          </p>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+/** On this computer: the built-in engine, or a transcription server. */
+function TranscriptionEngineRows({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  const status = useWhisperStatus();
+  // A build without the program offers only the server.
+  const builtinAvailable = status?.available !== false;
+  const engine = builtinAvailable ? settings.localSttEngine : "server";
+  return (
+    <>
+      <Row label="Engine" desc="Built in needs no other app: BrewLM runs Whisper itself once its speech model is downloaded." alignTop>
+        <div className="w-72">
+          <div className="grid grid-cols-2 gap-1 rounded-lg border border-edge bg-canvas p-1">
+            {(["builtin", "server"] as const).map((e) => (
+              <button
+                key={e}
+                onClick={() => patch({ localSttEngine: e })}
+                disabled={e === "builtin" && !builtinAvailable}
+                className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors disabled:opacity-40 ${
+                  engine === e ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+                }`}
+              >
+                {e === "builtin" ? "Built in" : "Transcription server"}
+              </button>
+            ))}
+          </div>
+          {!builtinAvailable && (
+            <p className="mt-1.5 text-right text-[12px] leading-relaxed text-ink-3">
+              Built-in transcription isn't included in this build of BrewLM.
+            </p>
+          )}
+        </div>
+      </Row>
+      {engine === "builtin" ? (
+        <BuiltinWhisperRows settings={settings} patch={patch} status={status} />
+      ) : (
+        <TranscriptionServerRows settings={settings} patch={patch} />
+      )}
+    </>
+  );
+}
+
+/** Built-in speech models: pick one, download it (with progress), delete it, test it. */
+function BuiltinWhisperRows({
+  settings,
+  patch,
+  status,
+}: {
+  settings: Settings;
+  patch: (p: Partial<Settings>) => void;
+  status: WhisperStatus | null;
+}) {
+  const [progress, setProgress] = useState<{ id: BuiltinWhisperModel; received: number; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<VisionTest | "testing" | null>(null);
+  const pickedId = settings.builtinWhisperModel;
+  const picked = status?.models.find((m) => m.id === pickedId);
+  useEffect(() => setResult(null), [pickedId]);
+
+  const download = async (id: BuiltinWhisperModel) => {
+    setError(null);
+    setProgress({ id, received: 0, total: status?.models.find((m) => m.id === id)?.bytes ?? 0 });
+    try {
+      await downloadWhisperModel(id, (received, total) => setProgress({ id, received, total }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") setError(msg);
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const test = async () => {
+    setResult("testing");
+    const started = Date.now();
+    try {
+      // A second of silence: proves the program, the model and this computer's GPU or CPU all work.
+      await transcribeBuiltin(encodeWav(new Float32Array(16_000), 16_000), pickedId);
+      setResult({ ok: true, seconds: Math.round((Date.now() - started) / 1000) });
+    } catch (e) {
+      setResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  return (
+    <Row label="Speech model" desc="Downloaded once from Hugging Face and checked before use. Kept on this computer only." alignTop>
+      <div className="flex w-72 flex-col gap-2">
+        {(Object.keys(BUILTIN_MODEL_INFO) as BuiltinWhisperModel[]).map((id) => {
+          const m = status?.models.find((x) => x.id === id);
+          const on = pickedId === id;
+          return (
+            <button
+              key={id}
+              onClick={() => patch({ builtinWhisperModel: id })}
+              aria-pressed={on}
+              className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                on ? "border-ink-3 bg-panel" : "border-edge bg-canvas hover:border-ink-3"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2 text-[12.5px]">
+                <span className="font-medium text-ink">{BUILTIN_MODEL_INFO[id].label}</span>
+                <span className={m?.installed ? "text-ok" : "text-ink-3"}>
+                  {m ? (m.installed ? `Downloaded · ${megabytes(m.bytes)}` : megabytes(m.bytes)) : ""}
+                </span>
+              </div>
+              <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-3">{BUILTIN_MODEL_INFO[id].desc}</div>
+            </button>
+          );
+        })}
+
+        {progress && (
+          <div className="flex flex-col gap-1.5">
+            <div className="h-1.5 overflow-hidden rounded-full bg-hover">
+              <div
+                className="h-full rounded-full bg-accent transition-[width]"
+                style={{ width: `${progress.total ? Math.round((progress.received / progress.total) * 100) : 0}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[12px] text-ink-3">
+              <span>
+                Downloading {BUILTIN_MODEL_INFO[progress.id].label.toLowerCase()} model · {megabytes(progress.received)} of{" "}
+                {megabytes(progress.total)}
+              </span>
+              <button onClick={() => void cancelWhisperDownload(progress.id)} className="font-medium text-link hover:underline">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!progress && picked && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {picked.installed ? (
+              <>
+                <button onClick={() => void deleteWhisperModel(pickedId)} className={smallButton}>
+                  Delete ({megabytes(picked.bytes)})
+                </button>
+                <button onClick={() => void test()} disabled={result === "testing"} className={smallButton}>
+                  {result === "testing" ? <Spinner size={12} /> : <RefreshCw size={12} />}
+                  {result === "testing" ? "Transcribing a test clip…" : "Test"}
+                </button>
+              </>
+            ) : (
+              <button onClick={() => void download(pickedId)} className={smallButton}>
+                <Download size={12} />
+                Download {BUILTIN_MODEL_INFO[pickedId].label.toLowerCase()} model ({megabytes(picked.bytes)})
+              </button>
+            )}
+          </div>
+        )}
+        {error && <p className="text-right text-[12px] leading-relaxed text-danger">{error}</p>}
+        {result && result !== "testing" && (
+          <p className={`text-right text-[12px] leading-relaxed ${result.ok ? "text-ok" : "text-danger"}`}>
+            {result.ok ? `Built-in transcription ran in ${result.seconds}s.` : result.message}
           </p>
         )}
       </div>
@@ -780,7 +969,7 @@ export default function LocalModelsSection({
           settings={settings}
           patch={patch}
         />
-        {staysLocal(settings, "transcribe") && <TranscriptionServerRows settings={settings} patch={patch} />}
+        {staysLocal(settings, "transcribe") && <TranscriptionEngineRows settings={settings} patch={patch} />}
       </Card>
 
       <Card>

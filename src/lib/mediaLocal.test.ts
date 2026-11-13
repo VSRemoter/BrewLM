@@ -13,6 +13,15 @@ vi.mock("./audioEncode", () => ({
   splitRecording: async () => [],
   toTranscribeWav: async () => new Uint8Array([0x52, 0x49, 0x46, 0x46]),
 }));
+const builtin = vi.hoisted(() => ({ ready: true as boolean | null, wavs: [] as { bytes: number; model: string }[] }));
+vi.mock("./builtinWhisper", () => ({
+  builtinModelReady: () => builtin.ready,
+  refreshWhisperStatus: async () => ({}),
+  transcribeBuiltin: async (wav: Uint8Array, model: string) => {
+    builtin.wavs.push({ bytes: wav.length, model });
+    return " Hello from the built-in model. [BLANK_AUDIO] ";
+  },
+}));
 vi.mock("../platform", () => ({
   platform: {
     kind: "desktop",
@@ -37,6 +46,8 @@ const settings = (over: Partial<Settings> = {}) =>
     transcribeRunsOn: "auto",
     visionRunsOn: "auto",
     localBaseUrl: "http://localhost:11434/v1",
+    localSttEngine: "server",
+    builtinWhisperModel: "fast",
     localSttBaseUrl: "localhost:8000",
     localSttKey: "",
     localSttModel: "Systran/faster-whisper-small",
@@ -55,6 +66,8 @@ const clip = () => new Blob([new Uint8Array(100)], { type: "audio/mpeg" });
 beforeEach(() => {
   server.reply = "json";
   server.requests = [];
+  builtin.ready = true;
+  builtin.wavs = [];
 });
 
 describe("local transcription", () => {
@@ -96,5 +109,22 @@ describe("local transcription", () => {
     expect(await testLocalTranscription(settings())).toMatchObject({ ok: true });
     server.reply = "down";
     expect(await testLocalTranscription(settings())).toMatchObject({ ok: false, message: expect.stringMatching(/^Couldn't reach/) });
+  });
+});
+
+describe("built-in transcription", () => {
+  it("runs the bundled model on the WAV, with no server and no cloud key", async () => {
+    const out = await transcribeAudio(clip(), "memo.m4a", settings({ localSttEngine: "builtin", localSttBaseUrl: "", builtinWhisperModel: "accurate" }));
+    expect(out.text).toBe("[Transcript]\n\nHello from the built-in model.");
+    expect(builtin.wavs).toEqual([{ bytes: 4, model: "accurate" }]);
+    expect(server.requests).toEqual([]);
+  });
+
+  it("waits, with a download hint, until the model is on disk", async () => {
+    builtin.ready = false;
+    const out = await transcribeAudio(clip(), "memo.m4a", settings({ localSttEngine: "builtin" }));
+    expect(out.text).toBe("");
+    expect(out.warning).toMatch(/download the built-in speech model/);
+    expect(builtin.wavs).toEqual([]);
   });
 });

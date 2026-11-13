@@ -182,6 +182,8 @@ const LOCAL_SETTINGS = new Set([
   "localVisionModel",
   "localTtsBaseUrl",
   "localTtsKey",
+  "localSttEngine",
+  "builtinWhisperModel",
   "localSttBaseUrl",
   "localSttKey",
   "localSttModel",
