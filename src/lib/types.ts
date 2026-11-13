@@ -126,6 +126,12 @@ export interface Artifact {
  */
 export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local";
 
+/**
+ * Where a job such as image reading or transcription runs. "auto" follows the
+ * chat provider; with a local chat model that means this computer only.
+ */
+export type RunsOn = "auto" | Provider;
+
 /** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
 export type Thinking = "auto" | "low" | "medium" | "high";
 
@@ -154,6 +160,12 @@ export interface Settings {
   localEmbedModel: string;
   /** The local model's context window in tokens; sizes how much source text is sent. */
   localContext: number;
+  /** Model on the local server that reads images ("" = none picked). */
+  localVisionModel: string;
+  /** Where image sources are read (described and OCR'd). */
+  visionRunsOn: RunsOn;
+  /** Where audio and video sources are transcribed. */
+  transcribeRunsOn: RunsOn;
   model: string;
   theme: string;
   /** UI font id from fonts.ts ("system" follows the theme's default stack). */

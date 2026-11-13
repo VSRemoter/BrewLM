@@ -61,8 +61,19 @@ export function isEmbeddingModel(id: string): boolean {
   return /embed|bge-|e5-|minilm|nomic-embed|gte-/i.test(id);
 }
 
+/**
+ * Likely able to read images, judging by the name (Ollama and LM Studio don't
+ * say over the OpenAI API). Only used to sort and pre-pick; the Test button
+ * in Settings → Local models is the real check.
+ */
+export function isVisionModel(id: string): boolean {
+  return /vision|[-_.:]vl\b|vl[-_.:]|llava|bakllava|gemma-?3|gemma-?4|minicpm-?v|pixtral|moondream|internvl|smolvlm|granite.*vision|llama-?4|mistral-small-?3\.[12]|qwen\d?(\.\d)?-?omni/i.test(
+    id
+  );
+}
+
 /** Model ids the server reports at GET {base}/models. Throws with a readable reason. */
-export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "key">): Promise<string[]> {
+export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "key">, connectTimeout = 4000): Promise<string[]> {
   const s = server ?? (await loadLocalServer());
   const base = normalizeBaseUrl(s.baseUrl);
   if (!base) return [];
@@ -70,7 +81,7 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   try {
     res = await platform.fetch(`${base}/models`, {
       headers: localHeaders(s.key),
-      connectTimeout: 4000,
+      connectTimeout,
     });
   } catch {
     throw new Error(`Couldn't reach ${base}. Is the server running?`);
@@ -81,6 +92,36 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   const json = (await res.json().catch(() => null)) as { data?: { id?: unknown }[] } | null;
   const ids = (json?.data ?? []).map((m) => m?.id).filter((id): id is string => typeof id === "string");
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+}
+
+/** Where the popular local runners listen by default. */
+const DETECT_TARGETS: { label: string; port: number }[] = [
+  { label: "Ollama", port: 11434 },
+  { label: "LM Studio", port: 1234 },
+  { label: "llama.cpp", port: 8080 },
+  { label: "Jan", port: 1337 },
+  { label: "vLLM", port: 8000 },
+];
+
+export interface FoundServer {
+  label: string;
+  baseUrl: string;
+  models: string[];
+}
+
+/** Local servers answering on their usual ports, checked side by side. */
+export async function detectLocalServers(): Promise<FoundServer[]> {
+  const found = await Promise.all(
+    DETECT_TARGETS.map(async ({ label, port }) => {
+      const baseUrl = `http://localhost:${port}/v1`;
+      try {
+        return { label, baseUrl, models: await listLocalModels({ baseUrl, key: "" }, 1500) };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return found.filter((f): f is FoundServer => f !== null);
 }
 
 /* ------------------------------ context budget ------------------------------ */

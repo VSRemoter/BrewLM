@@ -174,7 +174,17 @@ const ACCOUNT_REFRESH_MS = import.meta.env.DEV ? 60_000 : 10 * 60_000;
 export const MIN_PASSWORD = 10;
 
 /** Settings that describe this machine, never another device. */
-const LOCAL_SETTINGS = new Set(["localBaseUrl", "localKey", "localContext", "localEmbedModel", "customModels.local"]);
+const LOCAL_SETTINGS = new Set([
+  "localBaseUrl",
+  "localKey",
+  "localContext",
+  "localEmbedModel",
+  "localVisionModel",
+  "customModels.local",
+  // Where each job runs depends on what this computer has set up.
+  "visionRunsOn",
+  "transcribeRunsOn",
+]);
 const LOCAL_SETTING_PREFIXES = ["condense."]; // per-notebook caches, rebuilt on demand
 const API_KEY_SETTINGS = new Set([
   "anthropicKey",

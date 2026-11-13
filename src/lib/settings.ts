@@ -14,6 +14,7 @@ import type {
   Difficulty,
   Provider,
   ReportType,
+  RunsOn,
   Settings,
   Thinking,
   TtsProvider,
@@ -211,6 +212,9 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localKey: (s) => s.localKey,
   localEmbedModel: (s) => s.localEmbedModel,
   localContext: (s) => String(s.localContext),
+  localVisionModel: (s) => s.localVisionModel,
+  visionRunsOn: (s) => (s.visionRunsOn === "auto" ? "" : s.visionRunsOn),
+  transcribeRunsOn: (s) => (s.transcribeRunsOn === "auto" ? "" : s.transcribeRunsOn),
   model: (s) => s.model,
   theme: (s) => s.theme,
   font: (s) => s.font,
@@ -260,6 +264,7 @@ export async function loadSettings(): Promise<Settings> {
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
+    localVisionModel, visionRunsOn, transcribeRunsOn,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -303,6 +308,9 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("customText"),
     getSetting("customAccent"),
     getSetting("showReasoning"),
+    getSetting("localVisionModel"),
+    getSetting("visionRunsOn"),
+    getSetting("transcribeRunsOn"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -356,6 +364,9 @@ export async function loadSettings(): Promise<Settings> {
     localKey,
     localEmbedModel,
     localContext: safeContext,
+    localVisionModel: localVisionModel.trim(),
+    visionRunsOn: parseRunsOn(visionRunsOn),
+    transcribeRunsOn: parseRunsOn(transcribeRunsOn),
     model: safeModel,
     theme: safeTheme,
     font: safeFont,
@@ -409,6 +420,11 @@ function cloudProviderOnWeb(s: Settings): Settings {
     (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => (p !== "brewlm" || aiPlan) && activeKey({ ...s, provider: p })) ??
     "openrouter";
   return { ...s, provider, model: defaultModelFor(provider) };
+}
+
+/** Stored "Runs on" choice; "" or anything unknown → Automatic. */
+function parseRunsOn(raw: string): RunsOn {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, raw) ? (raw as Provider) : "auto";
 }
 
 /** Stored JSON {provider: id} → only string entries for known providers. */

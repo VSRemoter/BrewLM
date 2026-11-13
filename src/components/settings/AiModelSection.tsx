@@ -1,8 +1,10 @@
-import { ExternalLink, Plus, RefreshCw } from "lucide-react";
+import { ArrowRight, ExternalLink, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
 import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../lib/media";
-import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
+import { staysLocal } from "../../lib/featureRoute";
+import { budgetForContext, isEmbeddingModel } from "../../lib/local";
+import { goToSettingsSection } from "../../lib/settingsNav";
 import {
   DEFAULT_IMAGE_MODEL,
   defaultModelFor,
@@ -21,8 +23,8 @@ import {
   saveTranscribeModelList,
 } from "../../lib/settings";
 import type { Provider, Settings, Thinking } from "../../lib/types";
-import { Spinner } from "../ui";
 import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
+import { LocalServerRows } from "./LocalModelsSection";
 import ProviderRoutingCard from "./ProviderRoutingCard";
 import { BrewLmAiStatusRow, BrewLmTierRow, useAiOffered } from "./BrewLmAi";
 import { platform } from "../../platform";
@@ -45,122 +47,6 @@ const KEY_LINKS: Record<Provider, string> = {
 
 const inputClass =
   "w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
-
-type Connection =
-  | { state: "idle" }
-  | { state: "testing" }
-  | { state: "ok"; models: string[] }
-  | { state: "error"; message: string };
-
-/** Server address, presets, optional key and a connection test for the Local provider. */
-function LocalServerRows({
-  settings,
-  patch,
-  onModels,
-}: {
-  settings: Settings;
-  patch: (p: Partial<Settings>) => void;
-  onModels: (models: string[]) => void;
-}) {
-  const [conn, setConn] = useState<Connection>({ state: "idle" });
-  const activePreset = LOCAL_PRESETS.find((p) => p.url === settings.localBaseUrl)?.id ?? "custom";
-
-  const test = async (baseUrl = settings.localBaseUrl, key = settings.localKey) => {
-    setConn({ state: "testing" });
-    try {
-      const models = await listLocalModels({ baseUrl, key });
-      setConn({ state: "ok", models });
-      onModels(models);
-      // First connection: pick sensible defaults so chat works right away.
-      const chat = models.filter((m) => !isEmbeddingModel(m));
-      const next: Partial<Settings> = {};
-      if (!settings.model.trim() || !models.includes(settings.model)) next.model = chat[0] ?? "";
-      if (!settings.localEmbedModel) next.localEmbedModel = models.find(isEmbeddingModel) ?? "";
-      if (Object.keys(next).length) patch(next);
-    } catch (e) {
-      setConn({ state: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  };
-
-  // Check the saved server once when the section opens.
-  useEffect(() => {
-    if (settings.localBaseUrl) void test();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <>
-      <Row label="Server" desc="Any app that serves an OpenAI-compatible API on your computer or network.">
-        <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
-          {LOCAL_PRESETS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => {
-                patch({ localBaseUrl: p.url });
-                void test(p.url);
-              }}
-              className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                activePreset === p.id ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-          <span
-            className={`rounded-md px-2 py-1.5 text-center text-[12.5px] font-medium ${
-              activePreset === "custom" ? "bg-panel text-ink shadow-sm" : "text-ink-3"
-            }`}
-          >
-            Custom
-          </span>
-        </div>
-      </Row>
-      <Row label="Address" alignTop>
-        <div className="w-72">
-          <input
-            value={settings.localBaseUrl}
-            onChange={(e) => patch({ localBaseUrl: e.target.value })}
-            onBlur={(e) => {
-              const url = normalizeBaseUrl(e.target.value);
-              if (url !== e.target.value) patch({ localBaseUrl: url });
-            }}
-            placeholder="http://localhost:11434/v1"
-            className={inputClass}
-          />
-        </div>
-      </Row>
-      <Row label="API key" desc="Optional. Only needed if your server asks for one." alignTop>
-        <div className="w-72">
-          <input
-            type="password"
-            value={settings.localKey}
-            onChange={(e) => patch({ localKey: e.target.value })}
-            placeholder="none"
-            className={inputClass}
-          />
-        </div>
-      </Row>
-      <Row label="Connection" alignTop>
-        <div className="flex w-72 flex-col items-end gap-1.5">
-          <button
-            onClick={() => void test()}
-            disabled={!settings.localBaseUrl.trim() || conn.state === "testing"}
-            className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover disabled:opacity-40"
-          >
-            {conn.state === "testing" ? <Spinner size={12} /> : <RefreshCw size={12} />}
-            Test connection
-          </button>
-          {conn.state === "ok" && (
-            <p className="text-right text-[12px] text-ok">
-              Connected. {conn.models.length === 0 ? "No models found. Download one in your server app." : `${conn.models.length} ${conn.models.length === 1 ? "model" : "models"} available.`}
-            </p>
-          )}
-          {conn.state === "error" && <p className="text-right text-[12px] leading-relaxed text-danger">{conn.message}</p>}
-        </div>
-      </Row>
-    </>
-  );
-}
 
 /** One provider's transcription pick: a model id box plus its saved list, "Automatic" on top. */
 function TranscriptionModelRows({
@@ -265,7 +151,8 @@ function TranscriptionModelCard({
 }) {
   // BrewLM AI transcribes with its own model: nothing to pick.
   const providers = transcribeProviders(settings).filter((p) => p !== "brewlm");
-  if (settings.provider === "brewlm") return null;
+  // Transcription kept on this computer: no cloud model to pick (Settings → Local Models says why).
+  if (settings.provider === "brewlm" || staysLocal(settings, "transcribe")) return null;
   return (
     <Card>
       <div className="pt-3">
@@ -513,9 +400,16 @@ export default function AiModelSection({
             </Row>
           </Card>
           <Footnote>
-            Everything stays on your computer with a local model. Ollama starts with a small context
-            window; raise it with the <code>OLLAMA_CONTEXT_LENGTH</code> setting, then pick the same
-            size here. Web search, deep research and <code>/image</code> still need a cloud provider.
+            Ollama starts with a small context window; raise it with the{" "}
+            <code>OLLAMA_CONTEXT_LENGTH</code> setting, then pick the same size here. Image reading,
+            transcription and other jobs each have their own setting in{" "}
+            <button
+              onClick={() => goToSettingsSection("local")}
+              className="inline-flex items-center gap-0.5 text-link hover:underline"
+            >
+              Local Models <ArrowRight size={10} />
+            </button>
+            .
           </Footnote>
         </>
       )}

@@ -82,7 +82,7 @@ import {
 } from "../lib/genImage";
 import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
-import { ensureMediaText } from "../lib/media";
+import { cloudJobs, ensureMediaText } from "../lib/media";
 import {
   cloneReply,
   constitutionTurn,
@@ -3588,6 +3588,12 @@ export default function ChatPanel({
             {settings.provider === "brewlm"
               ? `BrewLM AI · ${brewlmModelLabel(model)}`
               : `${model || "no model picked"} · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
+            {settings.provider === "local" && cloudJobs(settings).length > 0 && (
+              <span title={`These still use a cloud service: ${cloudJobs(settings).join(", ")}. Change them in Settings → Local Models.`}>
+                {" "}
+                · some jobs use the cloud
+              </span>
+            )}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}
