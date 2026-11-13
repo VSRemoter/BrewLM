@@ -82,6 +82,7 @@ import {
 } from "../lib/genImage";
 import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
+import { imageRoute } from "../lib/featureRoute";
 import { cloudJobs, ensureMediaText } from "../lib/media";
 import {
   cloneReply,
@@ -1557,6 +1558,17 @@ export default function ChatPanel({
 
   /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
   const runImageModelCommand = async (text: string): Promise<void> => {
+    const route = imageRoute(settings);
+    if ("via" in route && route.via === "local") {
+      const id = text.replace(/^\/imagemodel\s*/i, "").trim();
+      if (!id || /^(add|remove)\b/i.test(id))
+        return say(
+          `Pictures are drawn on this computer with \`${settings.localImageModel || "whatever your image server has loaded"}\`. Switch with \`/imagemodel <name>\`, or pick from your server's models in **Settings → Local Models → Pictures**.`
+        );
+      await patchSettings({ localImageModel: id });
+      onSettingsChanged();
+      return say(`Local image model set to \`${id}\`. If your image server doesn't have it, \`/image\` will say so.`);
+    }
     if (settings.provider === "brewlm")
       return say("BrewLM AI draws pictures with its own image model. To pick one yourself, use your own OpenRouter key in **Settings → AI Model**.");
     const sub = /^\/imagemodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);

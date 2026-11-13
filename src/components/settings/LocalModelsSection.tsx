@@ -6,7 +6,8 @@
 import { ArrowRight, Check, RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { planHasAi } from "../../lib/brewlmAi";
-import { CLOUD_PROVIDERS, LOCAL_CAPABLE, type MediaFeature, staysLocal } from "../../lib/featureRoute";
+import { CLOUD_PROVIDERS, imageRoute, LOCAL_CAPABLE, type MediaFeature, staysLocal } from "../../lib/featureRoute";
+import { detectImageServer, generateLocalImages, type ImageServer, imageServerRoot } from "../../lib/localImage";
 import {
   detectLocalServers,
   type FoundServer,
@@ -17,9 +18,9 @@ import {
   normalizeBaseUrl,
 } from "../../lib/local";
 import { LOCAL_STT_DEFAULT_MODEL, mediaProviders, testLocalTranscription, testLocalVision, type VisionTest } from "../../lib/media";
-import { DEFAULT_TTS_MODELS, LOCAL_PRESETS, LOCAL_STT_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
+import { DEFAULT_TTS_MODELS, LOCAL_IMAGE_PRESETS, LOCAL_PRESETS, LOCAL_STT_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
 import { goToSettingsSection, type SettingsSectionId } from "../../lib/settingsNav";
-import type { RunsOn, Settings } from "../../lib/types";
+import type { ImageRunsOn, RunsOn, Settings } from "../../lib/types";
 import { SEARCH_SERVICE_LABELS } from "../../lib/webSearch";
 import { Spinner } from "../ui";
 import { Card, Footnote, Row, SectionTitle } from "./controls";
@@ -517,6 +518,202 @@ function TranscriptionServerRows({
   );
 }
 
+/** Pictures (/image): where they're drawn, and the local image server when it's this computer. */
+function PicturesRows({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  const route = imageRoute(settings);
+  const local = "via" in route && route.via === "local";
+  const localWanted = settings.imageRunsOn === "local" || (settings.imageRunsOn === "auto" && settings.provider === "local");
+  const [server, setServer] = useState<ImageServer | null>(null);
+  const [check, setCheck] = useState<{ state: "checking" } | { state: "error"; message: string } | null>(null);
+  const [draw, setDraw] = useState<{ state: "drawing" } | { state: "ok"; image: string; seconds: number } | { state: "error"; message: string } | null>(null);
+  const activePreset = LOCAL_IMAGE_PRESETS.find((p) => p.url === settings.localImageBaseUrl)?.id ?? "custom";
+
+  const connect = async (url = settings.localImageBaseUrl, key = settings.localImageKey) => {
+    if (!url.trim()) return;
+    setCheck({ state: "checking" });
+    setDraw(null);
+    try {
+      const found = await detectImageServer({ localImageBaseUrl: url, localImageKey: key });
+      setServer(found);
+      setCheck(null);
+      const next: Partial<Settings> = {};
+      if (found.api !== settings.localImageApi) next.localImageApi = found.api;
+      if (found.models.length && !found.models.includes(settings.localImageModel)) next.localImageModel = found.models[0];
+      if (Object.keys(next).length) patch(next);
+    } catch (e) {
+      setServer(null);
+      setCheck({ state: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  useEffect(() => {
+    if (localWanted && settings.localImageBaseUrl) void connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localWanted]);
+
+  const testDraw = async () => {
+    setDraw({ state: "drawing" });
+    const started = Date.now();
+    try {
+      const { images } = await generateLocalImages(
+        settings,
+        { prompt: "a red apple on a white table, studio photo", aspectRatio: "1:1" },
+        (api) => patch({ localImageApi: api })
+      );
+      setDraw({ state: "ok", image: images[0], seconds: Math.round((Date.now() - started) / 1000) });
+    } catch (e) {
+      setDraw({ state: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const options: { value: ImageRunsOn; label: string }[] = [
+    {
+      value: "auto",
+      label:
+        settings.provider === "local"
+          ? "Automatic · this computer"
+          : settings.provider === "brewlm"
+            ? "Automatic · BrewLM AI"
+            : "Automatic · OpenRouter",
+    },
+    { value: "local", label: "This computer" },
+    { value: "openrouter", label: "OpenRouter" },
+  ];
+
+  return (
+    <>
+      <Row label="Pictures (/image)" desc="Draws pictures from what you type. Only your prompt is sent — and, to edit one, that picture." alignTop>
+        <div className="w-72">
+          <select
+            value={settings.imageRunsOn}
+            onChange={(e) => patch({ imageRunsOn: e.target.value as ImageRunsOn })}
+            className={inputClass}
+            aria-label="Where pictures are drawn"
+          >
+            {options.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <p className={`mt-1.5 text-right text-[12px] leading-relaxed ${"error" in route ? "text-warn" : local ? "text-ok" : "text-ink-3"}`}>
+            {"error" in route
+              ? local || localWanted
+                ? "Set the address of an image server below."
+                : "Needs an OpenRouter key. Add one in AI Model."
+              : local
+                ? `Drawn on this computer${settings.localImageModel ? ` with ${settings.localImageModel}` : ""}.`
+                : route.via === "brewlm"
+                  ? "Drawn by BrewLM AI's image model."
+                  : `Drawn by ${settings.imageModel} on OpenRouter.`}
+          </p>
+        </div>
+      </Row>
+      {localWanted && (
+        <>
+          <Row label="Image server" desc="Forge, Automatic1111 or SD.Next started with --api, Draw Things with its API server on, or LocalAI." alignTop>
+            <div className="flex w-72 flex-col gap-2">
+              <div className="grid grid-cols-3 gap-1 rounded-lg border border-edge bg-canvas p-1">
+                {LOCAL_IMAGE_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      patch({ localImageBaseUrl: p.url, localImageApi: "" });
+                      void connect(p.url);
+                    }}
+                    className={`rounded-md px-1.5 py-1.5 text-[12px] font-medium leading-tight transition-colors ${
+                      p.id === "a1111" ? "col-span-2" : ""
+                    } ${activePreset === p.id ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"}`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={settings.localImageBaseUrl}
+                onChange={(e) => patch({ localImageBaseUrl: e.target.value, localImageApi: "" })}
+                onBlur={(e) => {
+                  const url = imageServerRoot(e.target.value);
+                  // Keep /v1 for OpenAI-style servers; the A1111 root has none.
+                  const keep = /\/v1\/?$/i.test(e.target.value.trim()) ? `${url}/v1` : url;
+                  if (keep !== e.target.value) patch({ localImageBaseUrl: keep });
+                  void connect(keep);
+                }}
+                placeholder="http://localhost:7860"
+                aria-label="Image server address"
+                className={inputClass}
+              />
+              <input
+                type="password"
+                value={settings.localImageKey}
+                onChange={(e) => patch({ localImageKey: e.target.value })}
+                placeholder="API key (optional)"
+                aria-label="Image server API key"
+                className={inputClass}
+              />
+              {check?.state === "checking" && (
+                <p className="flex items-center justify-end gap-1.5 text-[12px] text-ink-3">
+                  <Spinner size={11} /> Checking the server…
+                </p>
+              )}
+              {check?.state === "error" && <p className="text-right text-[12px] leading-relaxed text-danger">{check.message}</p>}
+              {server && (
+                <p className="text-right text-[12px] leading-relaxed text-ok">
+                  Connected · {server.api === "a1111" ? "Automatic1111-style API: draws and edits" : "OpenAI-style API: draws new pictures only"}
+                </p>
+              )}
+            </div>
+          </Row>
+          <Row label="Image model" desc="Leave empty to use whatever the server has loaded." alignTop>
+            <div className="flex w-72 flex-col items-end gap-1.5">
+              {server && server.models.length > 0 ? (
+                <select
+                  value={settings.localImageModel}
+                  onChange={(e) => patch({ localImageModel: e.target.value })}
+                  className={inputClass}
+                  aria-label="Local image model"
+                >
+                  {settings.localImageModel && !server.models.includes(settings.localImageModel) && (
+                    <option value={settings.localImageModel}>{settings.localImageModel} (not on the server)</option>
+                  )}
+                  {server.models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={settings.localImageModel}
+                  onChange={(e) => patch({ localImageModel: e.target.value.trim() })}
+                  placeholder="Server's loaded model"
+                  aria-label="Local image model"
+                  className={inputClass}
+                />
+              )}
+              <button
+                onClick={() => void testDraw()}
+                disabled={!settings.localImageBaseUrl.trim() || draw?.state === "drawing"}
+                className={smallButton}
+              >
+                {draw?.state === "drawing" ? <Spinner size={12} /> : <RefreshCw size={12} />}
+                {draw?.state === "drawing" ? "Drawing a test picture…" : "Draw a test picture"}
+              </button>
+              {draw?.state === "ok" && (
+                <div className="flex flex-col items-end gap-1">
+                  <img src={draw.image} alt="Test picture: a red apple" className="h-28 w-28 rounded-lg border border-edge object-cover" />
+                  <p className="text-[12px] text-ok">Drawn in {draw.seconds}s.</p>
+                </div>
+              )}
+              {draw?.state === "error" && <p className="text-right text-[12px] leading-relaxed text-danger">{draw.message}</p>}
+            </div>
+          </Row>
+        </>
+      )}
+    </>
+  );
+}
+
 /** A job that has no choice here: where it runs now, and where to change it. */
 function StatusRow({
   label,
@@ -587,6 +784,10 @@ export default function LocalModelsSection({
       </Card>
 
       <Card>
+        <PicturesRows settings={settings} patch={patch} />
+      </Card>
+
+      <Card>
         <StatusRow
           label="Chat and Studio"
           where={chatLocal ? `This computer · ${settings.model || "no model picked"}` : chatLabel}
@@ -616,17 +817,7 @@ export default function LocalModelsSection({
           local={settings.ttsProvider === "system" || settings.ttsProvider === "local"}
           goTo={{ section: "audio", label: "Change in Audio Voices" }}
         />
-        <StatusRow
-          label="Pictures (/image)"
-          where={
-            settings.provider === "brewlm"
-              ? "BrewLM AI"
-              : settings.openrouterKey
-                ? "OpenRouter"
-                : "Needs an OpenRouter key"
-          }
-          local={false}
-        />
+
         <StatusRow
           label="Web search and deep research"
           where={

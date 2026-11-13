@@ -188,6 +188,11 @@ const LOCAL_SETTINGS = new Set([
   // A SearXNG address is this machine's; the choice follows it.
   "searchService",
   "searxngUrl",
+  "imageRunsOn",
+  "localImageBaseUrl",
+  "localImageKey",
+  "localImageModel",
+  "localImageApi",
   "customModels.local",
   // Where each job runs depends on what this computer has set up.
   "visionRunsOn",

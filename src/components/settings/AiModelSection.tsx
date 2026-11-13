@@ -562,8 +562,8 @@ export default function AiModelSection({
         )}
       </Card>
 
-      {/* Image generation (/image); BrewLM AI uses its own image model. */}
-      {!isBrewlm && (
+      {/* Image generation (/image); BrewLM AI uses its own image model, a local server is set in Local Models. */}
+      {settings.imageRunsOn !== "local" && !(settings.imageRunsOn === "auto" && (isLocal || isBrewlm)) && (
       <Card>
         <div className="py-3">
           <div className="text-[13px] font-medium text-ink">Image model</div>

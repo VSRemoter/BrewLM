@@ -132,6 +132,12 @@ export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local
  */
 export type RunsOn = "auto" | Provider;
 
+/** Where /image draws: "auto" = BrewLM AI or OpenRouter as before, or this computer with a local chat model. */
+export type ImageRunsOn = "auto" | "local" | "openrouter";
+
+/** Which API a local image server speaks: Automatic1111-style (Forge, SD.Next, Draw Things) or OpenAI-style (LocalAI). */
+export type LocalImageApi = "a1111" | "openai";
+
 /**
  * Where web search runs for research, /search and /fetch. "auto" = the cloud
  * provider's own search; the others work with any chat provider, local too.
@@ -213,6 +219,15 @@ export interface Settings {
   maxOutput: number | null;
   /** OpenRouter Image API model used by /image (separate from the chat model). */
   imageModel: string;
+  /** Where /image draws (Settings → Local Models → Pictures). */
+  imageRunsOn: ImageRunsOn;
+  /** Local image server address ("" = not set up). */
+  localImageBaseUrl: string;
+  localImageKey: string;
+  /** Model or checkpoint on that server ("" = whatever it has loaded). */
+  localImageModel: string;
+  /** The API it was found to speak; "" = not checked yet (found on first use). */
+  localImageApi: LocalImageApi | "";
   /** Web search service (Settings → AI Model → Web search). */
   searchService: SearchService;
   /** Self-hosted SearXNG address, e.g. http://localhost:8888 ("" = not set up). */

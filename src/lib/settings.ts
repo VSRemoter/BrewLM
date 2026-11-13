@@ -14,6 +14,7 @@ import type {
   Difficulty,
   Provider,
   ReportType,
+  ImageRunsOn,
   RunsOn,
   SearchService,
   Settings,
@@ -164,6 +165,12 @@ export const LOCAL_STT_PRESETS: { id: string; label: string; url: string }[] = [
   { id: "whispercpp", label: "whisper.cpp / LocalAI", url: "http://localhost:8080/v1" },
 ];
 
+/** One-click addresses for local image servers. Forge, SD.Next and Draw Things all serve A1111's API on 7860. */
+export const LOCAL_IMAGE_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "a1111", label: "Forge / A1111 / Draw Things", url: "http://localhost:7860" },
+  { id: "localai", label: "LocalAI", url: "http://localhost:8080/v1" },
+];
+
 /** One-click addresses for popular local speech servers (all serve /v1/audio/speech). */
 export const LOCAL_TTS_PRESETS: { id: string; label: string; url: string }[] = [
   { id: "kokoro", label: "Kokoro", url: "http://localhost:8880/v1" },
@@ -219,6 +226,7 @@ const AUDIO_FORMATS: AudioFormat[] = ["deep-dive", "brief", "debate", "critique"
 const AUDIO_LENGTHS: AudioLength[] = ["short", "standard", "long"];
 const REPORT_TYPES: ReportType[] = ["study-guide", "briefing-doc", "analysis", "custom"];
 const SEARCH_SERVICES: SearchService[] = ["auto", "searxng", "brave", "tavily"];
+const IMAGE_RUNS_ON: ImageRunsOn[] = ["auto", "local", "openrouter"];
 
 function pick<T extends string>(raw: string, vocab: T[], fallback: T): T {
   return (vocab as string[]).includes(raw) ? (raw as T) : fallback;
@@ -264,6 +272,11 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
   searchService: (s) => (s.searchService === "auto" ? "" : s.searchService),
+  imageRunsOn: (s) => (s.imageRunsOn === "auto" ? "" : s.imageRunsOn),
+  localImageBaseUrl: (s) => s.localImageBaseUrl,
+  localImageKey: (s) => s.localImageKey,
+  localImageModel: (s) => s.localImageModel,
+  localImageApi: (s) => s.localImageApi,
   searxngUrl: (s) => s.searxngUrl,
   braveKey: (s) => s.braveKey,
   tavilyKey: (s) => s.tavilyKey,
@@ -300,6 +313,7 @@ export async function loadSettings(): Promise<Settings> {
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
     localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
     localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
+    imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -355,6 +369,11 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("searxngUrl"),
     getSetting("braveKey"),
     getSetting("tavilyKey"),
+    getSetting("imageRunsOn"),
+    getSetting("localImageBaseUrl"),
+    getSetting("localImageKey"),
+    getSetting("localImageModel"),
+    getSetting("localImageApi"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -439,6 +458,12 @@ export async function loadSettings(): Promise<Settings> {
     searxngUrl,
     braveKey,
     tavilyKey,
+    // The web app can't reach an image server on the computer.
+    imageRunsOn: pick(imageRunsOn, IMAGE_RUNS_ON, "auto") === "local" && platform.kind === "web" ? "auto" : pick(imageRunsOn, IMAGE_RUNS_ON, "auto"),
+    localImageBaseUrl,
+    localImageKey,
+    localImageModel: localImageModel.trim(),
+    localImageApi: localImageApi === "a1111" || localImageApi === "openai" ? localImageApi : "",
     researchModels: parseProviderModels(researchModels),
     transcribeModels: parseProviderModels(transcribeModels),
     openrouterRouting: parseRouting(openrouterRouting),

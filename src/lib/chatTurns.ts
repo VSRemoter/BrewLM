@@ -17,12 +17,16 @@ import {
   maxInputReferences,
   supportedAspectRatios,
 } from "./imageApi";
+import { imageRoute } from "./featureRoute";
+import { detectImageServer, generateLocalImages, localImageCanEdit, ratioOf } from "./localImage";
+import { patchSettings } from "./settings";
 import { buildSystemPrompt } from "../components/ChatPanel";
 import type { MentionItem } from "./mentions";
 import { contextBudget } from "./local";
 import { ensureIndexed, rankChunks, type RetrievedChunk } from "./rag";
 import { recordUsage } from "./usage";
 import { aiConfigNow } from "./brewlmAi";
+import type { StreamUsage } from "./llm";
 import type { ChatMessage, Settings, Source } from "./types";
 
 function aborted(): DOMException {
@@ -66,9 +70,13 @@ export async function imageTurn(opts: {
   imageId?: string;
   signal: AbortSignal;
 }): Promise<string> {
-  const { text, history, settings, notebookId, chatId, signal } = opts;
-  const brewlm = settings.provider === "brewlm";
-  const activeIsImageModel = settings.provider === "openrouter" && (await isImageApiModel(settings.model));
+  const { text, history, signal } = opts;
+  const { notebookId, chatId } = opts;
+  let settings = opts.settings;
+  const route = imageRoute(settings);
+  const local = "via" in route && route.via === "local";
+  const brewlm = "via" in route && route.via === "brewlm";
+  const activeIsImageModel = !local && settings.provider === "openrouter" && (await isImageApiModel(settings.model));
   const imgCmd = IMAGE_CMD.exec(text)?.[1].toLowerCase();
   let prompt = imgCmd ? text.replace(/^\/\w+\s*/, "").trim() : text;
   let ratio: string | undefined;
@@ -80,7 +88,15 @@ export async function imageTurn(opts: {
   // The selected model wins when it is an image model; otherwise the
   // dedicated Image model setting.
   // BrewLM AI draws with its plan's image model only.
-  let model = brewlm ? aiConfigNow().roles.image : activeIsImageModel ? settings.model : settings.imageModel;
+  let model = local
+    ? settings.localImageModel || "local image model"
+    : brewlm
+      ? aiConfigNow().roles.image
+      : activeIsImageModel
+        ? settings.model
+        : settings.imageModel;
+  /** Whether this model can take the picture being changed. */
+  const takesReference = async () => (local ? localImageCanEdit(settings) : (await maxInputReferences(model)) > 0);
   let mode: "new" | "edit" | "remix" | "more" =
     imgCmd === "edit" || imgCmd === "remix" || imgCmd === "more" ? imgCmd : "new";
   let targetId: string | undefined;
@@ -94,7 +110,7 @@ export async function imageTurn(opts: {
   // model can take a reference; otherwise it simply draws fresh).
   let followUp = false;
   const prev = history[history.length - 2];
-  if (!imgCmd && prev?.role === "assistant" && (await maxInputReferences(model)) > 0) {
+  if (!imgCmd && prev?.role === "assistant" && (await takesReference())) {
     const prevId = imageIdsIn(prev.content).pop();
     if (prevId) {
       mode = "edit";
@@ -108,8 +124,7 @@ export async function imageTurn(opts: {
     followUp = false;
   }
 
-  if (!brewlm && !settings.openrouterKey)
-    return "Pictures use OpenRouter's image models. Add an OpenRouter API key in **Settings → AI Model** (select OpenRouter to enter it — you can switch your chat provider back afterwards).";
+  if ("error" in route) return route.error;
   if (mode === "new" && !prompt)
     return "What should I draw? e.g. `/image a watercolor fox in snow`, or add a shape first: `/image 16:9 a misty mountain lake at dawn`.";
   if (mode !== "new" && !targetId) return "There's no picture in this chat yet — make one first with `/image <prompt>`.";
@@ -120,10 +135,22 @@ export async function imageTurn(opts: {
       : "What should the remix be? e.g. `/remix same style, but a city at night`.";
 
   // "More like this" stays on the model that drew the original.
-  if (!brewlm && mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
+  if (!brewlm && !local && mode === "more" && source && source.model !== model && (await isImageApiModel(source.model))) {
     model = source.model;
   }
-  const canReference = (await maxInputReferences(model)) > 0;
+  // A local server's API is checked once, then saved: it decides whether pictures can be edited.
+  if (local && !settings.localImageApi && mode !== "new") {
+    try {
+      const { api } = await detectImageServer(settings);
+      settings = { ...settings, localImageApi: api };
+      await patchSettings({ localImageApi: api });
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+  const canReference = await takesReference();
+  if ((mode === "edit" || mode === "remix") && !canReference && local)
+    return "Your image server can only draw new pictures, not edit them (it speaks OpenAI's image API). An Automatic1111-style server — Forge, SD.Next or Draw Things — can edit. Or describe the whole picture with `/image <prompt>`.";
   if ((mode === "edit" || mode === "remix") && !canReference) {
     if (brewlm)
       return "BrewLM AI's picture model draws new pictures but can't edit existing ones. Describe the whole picture with `/image <prompt>`, or use your own OpenRouter key to pick an image model that edits.";
@@ -135,17 +162,20 @@ export async function imageTurn(opts: {
 
   // The one picture sent as a reference: the target for edit/remix;
   // for "more", whatever the original itself was made from.
+  // Local "more" just redraws the prompt: an img2img of the parent would only blur toward it.
   const refId =
-    mode === "edit" || mode === "remix" ? source!.id : mode === "more" && canReference ? source!.parent_id : "";
+    mode === "edit" || mode === "remix" ? source!.id : mode === "more" && canReference && !local ? source!.parent_id : "";
   const refUri = refId ? await libraryImageAsReference(refId) : null;
+  // Diffusion models read the prompt as a picture description, so a local remix sends it as it is.
   const apiPrompt =
     mode === "more"
       ? source!.prompt
-      : mode === "remix"
+      : mode === "remix" && !local
         ? `Create a new image inspired by the reference image (keep its style and mood): ${prompt}`
         : prompt;
-  // Keep the original's shape unless the user named one.
-  if (!ratio && source && source.width > 0 && source.height > 0) {
+  // Keep the original's shape unless the user named one. A local server takes any shape.
+  if (!ratio && source && local) ratio = ratioOf(source.width, source.height);
+  if (!ratio && source && !local && source.width > 0 && source.height > 0) {
     const want = source.width / source.height;
     const best = (await supportedAspectRatios(model))
       ?.map((r) => {
@@ -156,18 +186,35 @@ export async function imageTurn(opts: {
       .sort((a, b) => a.diff - b.diff)[0];
     if (best && best.diff < 0.05) ratio = best.r;
   }
-  const result = await generateImages({
-    via: brewlm ? "brewlm" : "openrouter",
-    apiKey: settings.openrouterKey,
-    model,
-    prompt: apiPrompt,
-    aspectRatio: ratio,
-    references: refUri ? [refUri] : undefined,
-    n: mode === "more" ? Math.min(2, await maxImagesPerRequest(model)) : 1,
-    signal,
-  });
+  const result: { images: string[]; aspectRatio?: string; usage: StreamUsage } = local
+    ? {
+        ...(await generateLocalImages(
+          settings,
+          {
+            prompt: apiPrompt,
+            aspectRatio: ratio,
+            reference: refUri ?? undefined,
+            // An edit keeps more of the picture than a remix.
+            strength: mode === "remix" ? 0.75 : 0.6,
+            n: mode === "more" ? 2 : 1,
+            signal,
+          },
+          (api) => void patchSettings({ localImageApi: api })
+        )),
+        usage: {},
+      }
+    : await generateImages({
+        via: brewlm ? "brewlm" : "openrouter",
+        apiKey: settings.openrouterKey,
+        model,
+        prompt: apiPrompt,
+        aspectRatio: ratio,
+        references: refUri ? [refUri] : undefined,
+        n: mode === "more" ? Math.min(2, await maxImagesPerRequest(model)) : 1,
+        signal,
+      });
   if (signal.aborted) throw aborted();
-  void recordUsage("image", brewlm ? "brewlm" : "openrouter", model, result.usage);
+  void recordUsage("image", local ? "local" : brewlm ? "brewlm" : "openrouter", model, result.usage);
   // Alt text is the description later chat turns see.
   const alt =
     mode === "edit"
@@ -188,7 +235,7 @@ export async function imageTurn(opts: {
   }
   const cost = result.usage.costUsd;
   const label = { new: null, edit: "edit", remix: "remix", more: "more like this" }[mode];
-  const caption = [label, model, result.aspectRatio, cost != null ? `$${cost.toFixed(3)}` : null]
+  const caption = [label, model, local ? "on this computer" : null, result.aspectRatio, cost != null ? `$${cost.toFixed(3)}` : null]
     .filter(Boolean)
     .join(" · ");
   const unsupported =

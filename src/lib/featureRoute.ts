@@ -74,3 +74,32 @@ export function cloudJobsWhileLocal(
   if (s.ttsProvider !== "system" && s.ttsProvider !== "local") out.push("audio overview voices");
   return out;
 }
+
+/* --------------------------------- /image --------------------------------- */
+
+export type ImageRoute = { via: "brewlm" | "openrouter" | "local" } | { error: string };
+
+/**
+ * Where /image draws. Automatic: BrewLM AI's model on BrewLM AI, this
+ * computer with a local chat model (never a saved cloud key, as above), and
+ * OpenRouter otherwise.
+ */
+export function imageRoute(
+  s: Pick<Settings, "provider" | "imageRunsOn" | "localImageBaseUrl" | "openrouterKey">
+): ImageRoute {
+  const r = s.imageRunsOn ?? "auto";
+  if (r === "local" || (r === "auto" && s.provider === "local"))
+    return s.localImageBaseUrl.trim()
+      ? { via: "local" }
+      : {
+          error:
+            "Pictures are set to run on this computer, but no image server is set up. Add one under **Settings → Local Models → Pictures**, or choose OpenRouter for pictures there.",
+        };
+  if (r === "auto" && s.provider === "brewlm") return { via: "brewlm" };
+  return s.openrouterKey
+    ? { via: "openrouter" }
+    : {
+        error:
+          "Pictures use OpenRouter's image models. Add an OpenRouter API key in **Settings → AI Model** (select OpenRouter to enter it — you can switch your chat provider back afterwards), or draw on this computer under **Settings → Local Models → Pictures**.",
+      };
+}
