@@ -136,7 +136,8 @@ export type RunsOn = "auto" | Provider;
 export type Thinking = "auto" | "low" | "medium" | "high";
 
 /** Where Audio overviews get their voices from. */
-export type TtsProvider = "system" | "brewlm" | "openai" | "openrouter" | "elevenlabs";
+/** "local" = a speech server the user runs (Kokoro-FastAPI, Speaches, LocalAI…) via /audio/speech. */
+export type TtsProvider = "system" | "brewlm" | "openai" | "openrouter" | "elevenlabs" | "local";
 
 /* Studio tool option vocabularies (canonical home; studio.ts re-exports them). */
 export type Amount = "compact" | "default" | "more";
@@ -182,6 +183,10 @@ export interface Settings {
   /** Dedicated TTS key for OpenRouter; falls back to openrouterKey when empty. */
   openrouterTtsKey: string;
   elevenlabsKey: string;
+  /** Local speech server base URL including /v1 ("" = not set up). */
+  localTtsBaseUrl: string;
+  /** Optional bearer token for the local speech server. */
+  localTtsKey: string;
   /** Empty → provider default. */
   ttsModel: string;
   ttsVoiceAlex: string;

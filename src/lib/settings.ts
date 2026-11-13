@@ -2,7 +2,7 @@ import { platform } from "../platform";
 import { getSetting, hasSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
-import { isEmbeddingModel, listLocalModels } from "./local";
+import { isEmbeddingModel, listLocalModels, LOCAL_TTS_VOICES } from "./local";
 import { DEFAULT_THEME, RETIRED_THEMES, THEMES } from "./themes";
 import { normalizeHex } from "./color";
 import { DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
@@ -121,6 +121,7 @@ export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
   elevenlabs: "ElevenLabs",
+  local: "Local",
 };
 
 export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> = {
@@ -128,6 +129,8 @@ export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> 
   openai: "gpt-4o-mini-tts",
   openrouter: "openai/gpt-audio-mini",
   elevenlabs: "eleven_multilingual_v2",
+  // Kokoro-FastAPI's name; Speaches and others list theirs at /models (picked on Test).
+  local: "kokoro",
 };
 
 export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]> = {
@@ -136,6 +139,7 @@ export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]>
   // Any OpenRouter speech model works; gpt-audio models go through chat completions.
   openrouter: ["openai/gpt-audio-mini", "openai/gpt-audio", "mistralai/voxtral-mini-tts-3-0"],
   elevenlabs: ["eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"],
+  local: [],
 };
 
 export const OPENAI_TTS_VOICES = [
@@ -148,6 +152,13 @@ export const OPENAI_TTS_VOICES = [
  * name their own voices (e.g. voice_3150 for Voxtral TTS 3), so any name is accepted.
  */
 export const OPENROUTER_TTS_VOICES = OPENAI_TTS_VOICES;
+
+/** One-click addresses for popular local speech servers (all serve /v1/audio/speech). */
+export const LOCAL_TTS_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "kokoro", label: "Kokoro", url: "http://localhost:8880/v1" },
+  { id: "speaches", label: "Speaches", url: "http://localhost:8000/v1" },
+  { id: "localai", label: "LocalAI", url: "http://localhost:8080/v1" },
+];
 
 /** A few ElevenLabs premade voices so users don't have to hunt IDs down. */
 export const ELEVENLABS_VOICE_PRESETS: { name: string; id: string }[] = [
@@ -164,6 +175,8 @@ const DEFAULT_TTS = {
   openaiTtsKey: "",
   openrouterTtsKey: "",
   elevenlabsKey: "",
+  localTtsBaseUrl: "",
+  localTtsKey: "",
   ttsModel: "",
   ttsVoiceAlex: "",
   ttsVoiceSam: "",
@@ -225,6 +238,8 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   openaiTtsKey: (s) => s.openaiTtsKey,
   openrouterTtsKey: (s) => s.openrouterTtsKey,
   elevenlabsKey: (s) => s.elevenlabsKey,
+  localTtsBaseUrl: (s) => s.localTtsBaseUrl,
+  localTtsKey: (s) => s.localTtsKey,
   ttsModel: (s) => s.ttsModel,
   ttsVoiceAlex: (s) => s.ttsVoiceAlex,
   ttsVoiceSam: (s) => s.ttsVoiceSam,
@@ -264,7 +279,7 @@ export async function loadSettings(): Promise<Settings> {
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
-    localVisionModel, visionRunsOn, transcribeRunsOn,
+    localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -311,6 +326,8 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localVisionModel"),
     getSetting("visionRunsOn"),
     getSetting("transcribeRunsOn"),
+    getSetting("localTtsBaseUrl"),
+    getSetting("localTtsKey"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -377,6 +394,8 @@ export async function loadSettings(): Promise<Settings> {
     openaiTtsKey: openaiTtsKey || DEFAULT_TTS.openaiTtsKey,
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,
     elevenlabsKey: elevenlabsKey || DEFAULT_TTS.elevenlabsKey,
+    localTtsBaseUrl,
+    localTtsKey,
     ttsModel: safeTtsModel,
     ttsVoiceAlex: scrubVoice(ttsVoiceAlex) || DEFAULT_TTS.ttsVoiceAlex,
     ttsVoiceSam: scrubVoice(ttsVoiceSam) || DEFAULT_TTS.ttsVoiceSam,
@@ -414,7 +433,10 @@ export async function loadSettings(): Promise<Settings> {
  * changing the stored choice: the computer keeps its local model.
  */
 function cloudProviderOnWeb(s: Settings): Settings {
-  if (platform.kind !== "web" || s.provider !== "local") return s;
+  if (platform.kind !== "web") return s;
+  // Local voices run on the computer too: the web app reads the script aloud with system voices.
+  if (s.ttsProvider === "local") s = { ...s, ttsProvider: "system" };
+  if (s.provider !== "local") return s;
   const aiPlan = ["pro", "max"].includes(getSyncStatus().account?.plan ?? "");
   const provider =
     (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => (p !== "brewlm" || aiPlan) && activeKey({ ...s, provider: p })) ??
@@ -572,6 +594,8 @@ const VOICE_PRESETS: Record<VoiceProvider, SavedVoice[]> = {
   openai: OPENAI_TTS_VOICES.map((v) => ({ name: v, id: v })),
   openrouter: OPENROUTER_TTS_VOICES.map((v) => ({ name: v, id: v })),
   elevenlabs: ELEVENLABS_VOICE_PRESETS,
+  // Kokoro's voices, the most common local server; "Load from server" brings in the rest.
+  local: LOCAL_TTS_VOICES.map((v) => ({ name: v, id: v })),
 };
 
 /** The only voices a provider accepts, or null when any voice works (OpenRouter, ElevenLabs). */
@@ -619,7 +643,8 @@ export type Host = keyof typeof DEFAULT_HOST_VOICES;
  */
 export function hostVoice(s: Settings, host: Host): string {
   const v = (host === "Alex" ? s.ttsVoiceAlex : s.ttsVoiceSam).trim();
-  if (s.ttsProvider === "system") return v;
+  // Local: whatever was picked; tts.ts checks it against the server's voices.
+  if (s.ttsProvider === "system" || s.ttsProvider === "local") return v;
   if (s.ttsProvider === "elevenlabs") return OPENAI_TTS_VOICES.includes(v.toLowerCase()) ? "" : v;
   // ElevenLabs IDs are 20 mixed-case letters/digits; OpenAI voices are lowercase words.
   const looksLikeElevenLabsId = /^[A-Za-z0-9]{20}$/.test(v) && /[A-Z0-9]/.test(v);

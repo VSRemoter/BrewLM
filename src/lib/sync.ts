@@ -180,6 +180,8 @@ const LOCAL_SETTINGS = new Set([
   "localContext",
   "localEmbedModel",
   "localVisionModel",
+  "localTtsBaseUrl",
+  "localTtsKey",
   "customModels.local",
   // Where each job runs depends on what this computer has set up.
   "visionRunsOn",

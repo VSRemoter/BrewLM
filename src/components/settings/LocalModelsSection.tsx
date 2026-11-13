@@ -16,7 +16,7 @@ import {
   normalizeBaseUrl,
 } from "../../lib/local";
 import { mediaProviders, testLocalVision, type VisionTest } from "../../lib/media";
-import { LOCAL_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
+import { DEFAULT_TTS_MODELS, LOCAL_PRESETS, PROVIDER_LABELS, TTS_PROVIDER_LABELS } from "../../lib/settings";
 import { goToSettingsSection, type SettingsSectionId } from "../../lib/settingsNav";
 import type { RunsOn, Settings } from "../../lib/types";
 import { Spinner } from "../ui";
@@ -450,8 +450,14 @@ export default function LocalModelsSection({
         />
         <StatusRow
           label="Audio overview voices"
-          where={settings.ttsProvider === "system" ? "This computer · system voices" : TTS_PROVIDER_LABELS[settings.ttsProvider]}
-          local={settings.ttsProvider === "system"}
+          where={
+            settings.ttsProvider === "system"
+              ? "This computer · system voices"
+              : settings.ttsProvider === "local"
+                ? `This computer · ${settings.ttsModel.trim() || DEFAULT_TTS_MODELS.local}`
+                : TTS_PROVIDER_LABELS[settings.ttsProvider]
+          }
+          local={settings.ttsProvider === "system" || settings.ttsProvider === "local"}
           goTo={{ section: "audio", label: "Change in Audio Voices" }}
         />
         <StatusRow

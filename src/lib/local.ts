@@ -94,6 +94,73 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
 }
 
+/* ------------------------------ local speech ------------------------------ */
+
+/** Starter voices for Local: Kokoro's (af_ = American female, bm_ = British male…). */
+export const LOCAL_TTS_VOICES = ["af_heart", "af_bella", "am_michael", "am_adam", "bf_emma", "bm_george"];
+
+/**
+ * The voices the two hosts use on a local server. Picks the server has are
+ * kept; a missing or unknown one (say "nova", left from OpenAI) is replaced by
+ * a server voice the other host isn't using, so the hosts never sound alike by
+ * accident. With no voice list from the server, the picks go as they are
+ * ("" = the server's default).
+ */
+export function localHostVoices(
+  picked: { Alex: string; Sam: string },
+  served: string[] | null
+): { Alex: string; Sam: string } {
+  if (!served?.length) return picked;
+  const ok = (v: string) => (v && served.includes(v) ? v : "");
+  const other = (avoid: string) =>
+    LOCAL_TTS_VOICES.find((v) => served.includes(v) && v !== avoid) ?? served.find((v) => v !== avoid) ?? served[0];
+  let alex = ok(picked.Alex);
+  let sam = ok(picked.Sam);
+  if (!alex) alex = other(sam);
+  if (!sam) sam = other(alex);
+  return { Alex: alex, Sam: sam };
+}
+
+/** Speech models among a server's models (Speaches also lists Whisper; LocalAI lists everything). */
+export function isSpeechModel(id: string): boolean {
+  return /kokoro|tts|piper|orpheus|xtts|chatterbox|melo|outetts|kitten|parler|bark|zonos|csm|dia-|f5|vits|sesame/i.test(id) && !isEmbeddingModel(id) && !/whisper|transcri|stt/i.test(id);
+}
+
+/** Voice ids out of the shapes servers use: ["af_heart"], {voices: [...]}, {data: [{id}]}… */
+export function parseVoiceList(json: unknown): string[] {
+  const obj = json as { voices?: unknown; data?: unknown } | null;
+  const raw: unknown[] = Array.isArray(json) ? json : Array.isArray(obj?.voices) ? obj.voices : Array.isArray(obj?.data) ? obj.data : [];
+  const ids = raw
+    .map((v) => {
+      if (typeof v === "string") return v;
+      const o = v as { id?: unknown; voice_id?: unknown; name?: unknown } | null;
+      const id = o?.id ?? o?.voice_id ?? o?.name;
+      return typeof id === "string" ? id : "";
+    })
+    .filter((id) => id.trim());
+  return [...new Set(ids)];
+}
+
+/**
+ * Voices the speech server offers, or null when it doesn't say (not every
+ * server has a voice list: Kokoro-FastAPI does at /audio/voices).
+ */
+export async function listLocalVoices(server: { baseUrl: string; key: string }): Promise<string[] | null> {
+  const base = normalizeBaseUrl(server.baseUrl);
+  if (!base) return null;
+  for (const path of ["/audio/voices", "/audio/speech/voices"]) {
+    try {
+      const res = await platform.fetch(`${base}${path}`, { headers: localHeaders(server.key), connectTimeout: 4000 });
+      if (!res.ok) continue;
+      const voices = parseVoiceList(await res.json().catch(() => null));
+      if (voices.length) return voices;
+    } catch {
+      return null; // unreachable: no point trying the other path
+    }
+  }
+  return null;
+}
+
 /** Where the popular local runners listen by default. */
 const DETECT_TARGETS: { label: string; port: number }[] = [
   { label: "Ollama", port: 11434 },

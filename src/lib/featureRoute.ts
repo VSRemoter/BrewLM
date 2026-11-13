@@ -66,6 +66,6 @@ export function cloudJobsWhileLocal(
   const out: string[] = [];
   if (!staysLocal(s, "vision") && featureProviders(s, "vision", hasKey).length) out.push("image reading");
   if (!staysLocal(s, "transcribe") && featureProviders(s, "transcribe", hasKey).length) out.push("transcription");
-  if (s.ttsProvider !== "system") out.push("audio overview voices");
+  if (s.ttsProvider !== "system" && s.ttsProvider !== "local") out.push("audio overview voices");
   return out;
 }

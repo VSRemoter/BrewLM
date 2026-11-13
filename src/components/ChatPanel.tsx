@@ -1608,7 +1608,7 @@ export default function ChatPanel({
   /** /voice, /voice add|remove|swap, /voicehost, /voicecohost — no LLM. */
   const runVoiceCommand = async (text: string): Promise<void> => {
     if (!voiceProvider)
-      return say("Your audio uses **System voices**, which your computer picks automatically. Choose OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
+      return say("Your audio uses **System voices**, which your computer picks automatically. Choose Local, OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
     const p = voiceProvider;
     const providerLabel = TTS_PROVIDER_LABELS[p];
     const builtIn = builtInVoices(p);
@@ -1647,8 +1647,13 @@ export default function ChatPanel({
         return say(`${role} now speaks with **${match}** (added back to your voices).`);
       }
       if (!voicesNeedIds(p)) {
-        // OpenRouter: voices belong to the TTS model, so any name is taken as-is.
-        if (/\s/.test(raw)) return say(`Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`);
+        // OpenRouter and Local: voices belong to the TTS model or server, so any name is taken as-is.
+        if (/\s/.test(raw))
+          return say(
+            p === "local"
+              ? `Voice names have no spaces — use the exact name your speech server gives, e.g. \`${cmd} af_heart\`.`
+              : `Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`
+          );
         await saveList([...list, { name: raw, id: raw }]);
         await setHost(host, raw);
         return say(`${role} now speaks with **${raw}** (added to your voices). If the TTS model doesn't know that voice, the audio overview will say so.`);
@@ -1697,13 +1702,17 @@ export default function ChatPanel({
       return say(`Added **${match}** to your voices. Use it with \`/voicehost ${match}\` or \`/voicecohost ${match}\`.`);
     }
     if (!voicesNeedIds(p)) {
-      // OpenRouter: the voice's own name is what the model expects.
+      // OpenRouter and Local: the voice's own name is what the model expects.
       const name = stripOuterQuotes(arg);
       if (!name || /\s/.test(name))
-        return say("Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page.");
+        return say(
+          p === "local"
+            ? "Give the voice exactly as your speech server names it, e.g. `/voice add af_heart` for Kokoro. Test connection in Settings → Audio Voices adds the server's voices for you."
+            : "Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page."
+        );
       if (findVoice(list, name)) return say(`**${name}** is already in your voices. Use it with \`/voicehost ${name}\`.`);
       await saveList([...list, { name, id: name }]);
-      return say(`Added **${name}** to your OpenRouter voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
+      return say(`Added **${name}** to your ${providerLabel} voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
     }
     // ElevenLabs: a name (quote it if it has spaces) then the voice ID.
     const parsed = /^(?:"([^"]+)"|(.+?))\s+(\S+)$/.exec(arg);

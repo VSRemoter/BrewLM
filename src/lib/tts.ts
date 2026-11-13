@@ -1,8 +1,10 @@
-/** Text-to-speech for studio audio: OpenAI, ElevenLabs, or in-app system voices. */
+/** Text-to-speech for studio audio: OpenAI, OpenRouter, ElevenLabs, a local speech server, or in-app system voices. */
 
 import { platform } from "../platform";
+import { joinSamples, parseWav, sniffAudio } from "./audioClips";
 import { encodeM4a } from "./audioEncode";
-import { sseLines } from "./llm";
+import { isAbortError, sseLines } from "./llm";
+import { listLocalVoices, localHeaders, localHostVoices, normalizeBaseUrl } from "./local";
 import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, OPENROUTER_API, openRouterApi } from "./brewlmAi";
 import { DEFAULT_TTS_MODELS, hostVoice, type Host } from "./settings";
@@ -261,6 +263,99 @@ async function openRouterSpeech(
   return { bytes: new Uint8Array(await resp.arrayBuffer()), rate: pcmRate(resp.headers.get("content-type")) };
 }
 
+/**
+ * One line through a local speech server's OpenAI-compatible /audio/speech,
+ * via the app's own HTTP client (no CORS setup needed). Returns the reply's
+ * bytes as they came: mp3 is asked for, but some servers only send wav.
+ */
+async function localSpeech(
+  settings: Settings,
+  model: string,
+  voice: string,
+  text: string,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  throwIfAborted(signal);
+  const base = normalizeBaseUrl(settings.localTtsBaseUrl);
+  let resp: Response;
+  try {
+    resp = await platform.fetch(`${base}/audio/speech`, {
+      method: "POST",
+      headers: localHeaders(settings.localTtsKey),
+      body: JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: "mp3" }),
+      signal,
+      connectTimeout: 10000,
+    });
+  } catch (e) {
+    if (isAbortError(e) || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    throw new Error(`Couldn't reach your local speech server at ${base}. Is it running?`);
+  }
+  if (!resp.ok) {
+    const raw = await resp.text().catch(() => "");
+    let detail = raw.slice(0, 200);
+    try {
+      const j = JSON.parse(raw) as { error?: { message?: string } | string; detail?: unknown; message?: string };
+      const d = typeof j.error === "string" ? j.error : j.error?.message ?? j.message ?? j.detail;
+      if (d) detail = typeof d === "string" ? d : JSON.stringify(d).slice(0, 200);
+    } catch {
+      /* keep raw */
+    }
+    if (resp.status === 404 && !/voice|model/i.test(detail))
+      throw new Error(`Your speech server has no ${base}/audio/speech. Check the address in Settings → Audio Voices; it usually ends in /v1.`);
+    if (/voice/i.test(detail))
+      throw new Error(`Your speech server didn't accept the voice “${voice || "(default)"}”: ${detail} Pick one of its voices in Settings → Audio Voices.`);
+    if (/model/i.test(detail))
+      throw new Error(`Your speech server didn't accept the model “${model}”: ${detail} Pick one of its models in Settings → Audio Voices.`);
+    throw new Error(`Local speech server HTTP ${resp.status}: ${detail}`);
+  }
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
+/** A script's lines spoken on the local speech server, joined into one file. */
+async function synthesizeLocal(turns: ScriptTurn[], settings: Settings, opts: SynthesizeOptions): Promise<TtsResult> {
+  const { signal, onProgress } = opts;
+  if (!normalizeBaseUrl(settings.localTtsBaseUrl))
+    return { audio: null, note: "Set your local speech server's address in Settings → Audio Voices to synthesize audio." };
+  const model = settings.ttsModel.trim() || DEFAULT_TTS_MODELS.local;
+  const served = await listLocalVoices({ baseUrl: settings.localTtsBaseUrl, key: settings.localTtsKey });
+  const voices = localHostVoices({ Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") }, served);
+  const mp3: Uint8Array[] = [];
+  const pcm: Float32Array[] = [];
+  let rate = 0;
+  for (let i = 0; i < turns.length; i++) {
+    onProgress?.(i, turns.length);
+    const bytes = await localSpeech(settings, model, voices[turns[i].speaker], turns[i].text, signal);
+    const format = sniffAudio(bytes);
+    if (format === "wav") {
+      const clip = parseWav(bytes);
+      if (rate && clip.rate !== rate) throw new Error("Your speech server changed sample rate mid-script, so the clips can't be joined.");
+      rate = clip.rate;
+      pcm.push(clip.samples);
+    } else if (format === "mp3") mp3.push(bytes);
+    else throw new Error("Your speech server sent audio in a format BrewLM can't join (only mp3 and wav).");
+    if (mp3.length && pcm.length) throw new Error("Your speech server mixed mp3 and wav replies, so the clips can't be joined.");
+  }
+  if (mp3.length) return { audio: `data:audio/mpeg;base64,${chunksToBase64(mp3)}` };
+  const merged = joinSamples(pcm);
+  const m4a = await encodeM4a(merged, rate).catch(() => null);
+  if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
+  return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWavPcm16(merged, rate)])}` };
+}
+
+/**
+ * Settings → Audio Voices → Test: one short line in a host's voice on the
+ * local speech server, as a playable data URL.
+ */
+export async function speakLocalSample(settings: Settings, host: Host): Promise<string> {
+  const { audio, note } = await synthesizeLocal(
+    [{ speaker: host, text: host === "Alex" ? "Hi! I'm the host of your audio overviews." : "And I'm the co-host. Nice to meet you." }],
+    settings,
+    {}
+  );
+  if (!audio) throw new Error(note ?? "No audio came back.");
+  return audio;
+}
+
 /** Encode mono float samples as a 16-bit PCM wav file. */
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Uint8Array {
   const buf = new ArrayBuffer(44 + samples.length * 2);
@@ -344,8 +439,10 @@ export async function synthesizeScript(
     case "system":
       return {
         audio: null,
-        note: "TTS provider is “System voices” — play the script in-app, or switch to OpenAI / ElevenLabs in Settings → Audio voices for a downloadable mp3.",
+        note: "TTS provider is “System voices” — play the script in-app, or switch to Local, OpenAI or ElevenLabs in Settings → Audio voices for a downloadable file.",
       };
+    case "local":
+      return synthesizeLocal(turns, settings, opts);
     case "openai": {
       const key = settings.openaiTtsKey.trim() || settings.openaiKey;
       if (!key)
