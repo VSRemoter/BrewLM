@@ -5,7 +5,9 @@ import {
   ChevronDown,
   Download,
   FolderClosed,
+  FolderInput,
   FolderPlus,
+  House,
   ImagePlus,
   LayoutGrid,
   LayoutTemplate,
@@ -15,6 +17,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  SquareCheck,
   Settings as SettingsIcon,
   Star,
   Trash2,
@@ -45,6 +48,13 @@ type View = "grid" | "list";
 
 const SORTS = ["date-desc", "date-asc", "name-asc", "name-desc"] as const;
 type SortKey = (typeof SORTS)[number];
+
+/** Quiet toolbar button inside a bordered group (28px tall). */
+const toolbarBtn =
+  "flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-40";
+/** Quiet standalone toolbar button (32px tall, matches the bordered controls). */
+const toolbarBtnLg =
+  "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink";
 
 const SORT_LABELS: Record<SortKey, string> = {
   "date-desc": "Most recent",
@@ -1024,157 +1034,200 @@ export default function Home({
                 )}
               </div>
             </div>
+            {/* One height (32px), one radius (pill), one icon size (14px) across the bar. */}
             <div className="flex items-center gap-2">
               {selecting ? (
                 <>
-                  <span className="text-[12.5px] font-medium text-ink-2">
-                    {selectedIds.length} selected
-                  </span>
-                  {/* Move to folder */}
-                  <div className="relative">
-                    <button
-                      onClick={() => setMoveMenuOpen((v) => !v)}
-                      disabled={selectedIds.length === 0}
-                      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-40"
-                      aria-haspopup="menu"
-                      aria-expanded={moveMenuOpen}
-                    >
-                      <FolderClosed size={13} strokeWidth={1.8} />
-                      Move to folder…
-                      <ChevronDown
-                        size={12}
-                        strokeWidth={2}
-                        className={`transition-transform ${moveMenuOpen ? "rotate-180" : ""}`}
-                      />
-                    </button>
-                    {moveMenuOpen && selectedIds.length > 0 && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-10 cursor-default"
-                          onClick={() => setMoveMenuOpen(false)}
+                  <div className="flex h-8 items-center rounded-full border border-edge bg-panel p-0.5 shadow-sm">
+                    <span className="flex items-center gap-1.5 whitespace-nowrap pl-1.5 pr-2 text-[12.5px] font-medium text-ink">
+                      <span
+                        className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums transition-colors ${
+                          selectedIds.length > 0 ? "bg-accent text-accent-ink" : "bg-hover text-ink-3"
+                        }`}
+                      >
+                        {selectedIds.length}
+                      </span>
+                      selected
+                    </span>
+                    <span className="mx-0.5 h-4 w-px bg-edge" aria-hidden />
+                    {/* Move to folder */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setMoveMenuOpen((v) => !v)}
+                        disabled={selectedIds.length === 0}
+                        className={toolbarBtn}
+                        aria-label="Move to folder"
+                        aria-haspopup="menu"
+                        aria-expanded={moveMenuOpen}
+                      >
+                        <FolderInput size={14} strokeWidth={1.8} />
+                        <span className="hidden sm:inline">Move to</span>
+                        <ChevronDown
+                          size={12}
+                          strokeWidth={2}
+                          className={`text-ink-3 transition-transform ${moveMenuOpen ? "rotate-180" : ""}`}
                         />
-                        <div
-                          role="menu"
-                          className="anim-menu absolute right-0 z-20 mt-1.5 w-48 rounded-xl border border-edge bg-panel p-1 shadow-lg"
-                        >
-                          <button
-                            role="menuitem"
-                            onClick={() => {
-                              onMoveNotebookBulk(selectedIds, "");
-                              exitSelect();
-                            }}
-                            className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover-soft"
+                      </button>
+                      {moveMenuOpen && selectedIds.length > 0 && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-10 cursor-default"
+                            onClick={() => setMoveMenuOpen(false)}
+                          />
+                          <div
+                            role="menu"
+                            className="anim-menu absolute right-0 z-20 mt-1.5 w-52 rounded-xl border border-edge bg-panel p-1 shadow-lg"
                           >
-                            No folder (Brewery)
-                          </button>
-                          {folders.map((f) => (
                             <button
-                              key={f.id}
                               role="menuitem"
                               onClick={() => {
-                                onMoveNotebookBulk(selectedIds, f.id);
+                                onMoveNotebookBulk(selectedIds, "");
                                 exitSelect();
                               }}
-                              className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover-soft"
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                             >
-                              {f.name}
+                              <House size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                              No folder (Brewery)
                             </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
+                            {folders.length > 0 && (
+                              <div className="mx-1.5 my-1 h-px bg-edge-soft" aria-hidden />
+                            )}
+                            {folders.map((f) => (
+                              <button
+                                key={f.id}
+                                role="menuitem"
+                                onClick={() => {
+                                  onMoveNotebookBulk(selectedIds, f.id);
+                                  exitSelect();
+                                }}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+                              >
+                                <FolderClosed size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                                <span className="truncate">{f.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setBulkTrashing(true)}
+                      disabled={selectedIds.length === 0}
+                      className="flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-danger-bg hover:text-danger disabled:pointer-events-none disabled:opacity-40"
+                      aria-label="Move to Trash"
+                    >
+                      <Trash2 size={14} strokeWidth={1.8} />
+                      <span className="hidden sm:inline">Trash</span>
+                    </button>
                   </div>
                   <button
-                    onClick={() => setBulkTrashing(true)}
-                    disabled={selectedIds.length === 0}
-                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-danger transition-colors hover:bg-danger-bg disabled:opacity-40"
-                  >
-                    <Trash2 size={13} strokeWidth={1.8} />
-                    Move to Trash
-                  </button>
-                  <button
                     onClick={exitSelect}
-                    className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
+                    className="flex h-8 items-center rounded-full bg-accent px-3.5 text-[12.5px] font-medium text-accent-ink transition-opacity hover:opacity-85"
                   >
                     Done
                   </button>
                 </>
               ) : (
                 <>
-                  <button
-                    onClick={onOpenLink}
-                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-                    title="Open a notebook someone shared with you"
-                    aria-label="Open link"
-                  >
-                    <Link2 size={13} strokeWidth={1.8} />
-                    {/* Phones: the icon alone, so the row fits on one line. */}
-                    <span className="hidden sm:inline">Open link</span>
-                  </button>
-                  <button
-                    onClick={() => setSelecting(true)}
-                    className="rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-                  >
-                    Select
-                  </button>
-                  {/* Sort picker */}
-              <div className="relative">
-                <button
-                  onClick={() => setSortMenuOpen((v) => !v)}
-                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft"
-                  aria-label="Sort notebooks"
-                  aria-haspopup="menu"
-                  aria-expanded={sortMenuOpen}
-                >
-                  <ArrowUpDown size={13} strokeWidth={1.8} />
-                  {SORT_LABELS[sort]}
-                  <ChevronDown
-                    size={12}
-                    strokeWidth={2}
-                    className={`transition-transform ${sortMenuOpen ? "rotate-180" : ""}`}
-                  />
-                </button>
-                {sortMenuOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-10 cursor-default"
-                      onClick={() => setSortMenuOpen(false)}
-                    />
-                    <div
-                      role="menu"
-                      className="anim-menu absolute right-0 z-20 mt-1.5 w-44 rounded-xl border border-edge bg-panel p-1 shadow-lg"
+                  {/* Actions: quiet text buttons. */}
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      onClick={onOpenLink}
+                      className={toolbarBtnLg}
+                      title="Open a notebook someone shared with you"
+                      aria-label="Open link"
                     >
-                      {SORTS.map((s) => (
-                        <button
-                          key={s}
-                          role="menuitem"
-                          onClick={() => {
-                            setSort(s);
-                            setSortMenuOpen(false);
-                          }}
-                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
-                            s === sort ? "font-medium text-ink" : "text-ink-2 hover:bg-hover-soft"
-                          }`}
+                      <Link2 size={14} strokeWidth={1.8} />
+                      {/* Phones: the icon alone, so the row fits on one line. */}
+                      <span className="hidden sm:inline">Open link</span>
+                    </button>
+                    <button
+                      onClick={() => setSelecting(true)}
+                      className={toolbarBtnLg}
+                      title="Select notebooks to move or trash"
+                      aria-label="Select"
+                    >
+                      <SquareCheck size={14} strokeWidth={1.8} />
+                      <span className="hidden sm:inline">Select</span>
+                    </button>
+                  </div>
+                  <span className="mx-1 hidden h-4 w-px bg-edge sm:block" aria-hidden />
+                  {/* View controls: bordered, grouped together. */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setSortMenuOpen((v) => !v)}
+                      className={`flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-edge bg-panel pl-3 pr-2.5 text-[12.5px] font-medium text-ink-2 shadow-sm transition-colors hover:bg-hover-soft hover:text-ink ${
+                        sortMenuOpen ? "bg-hover-soft text-ink" : ""
+                      }`}
+                      aria-label="Sort notebooks"
+                      aria-haspopup="menu"
+                      aria-expanded={sortMenuOpen}
+                    >
+                      <ArrowUpDown size={14} strokeWidth={1.8} className="hidden text-ink-3 sm:block" />
+                      {SORT_LABELS[sort]}
+                      <ChevronDown
+                        size={12}
+                        strokeWidth={2}
+                        className={`text-ink-3 transition-transform ${sortMenuOpen ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    {sortMenuOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10 cursor-default"
+                          onClick={() => setSortMenuOpen(false)}
+                        />
+                        <div
+                          role="menu"
+                          className="anim-menu absolute right-0 z-20 mt-1.5 w-44 rounded-xl border border-edge bg-panel p-1 shadow-lg"
                         >
-                          {SORT_LABELS[s]}
-                          {s === sort && <Check size={13} strokeWidth={2.2} />}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-              {/* Grid / list toggle */}
-              <IconButton
-                onClick={() => setView((v) => (v === "grid" ? "list" : "grid"))}
-                label={view === "grid" ? "Switch to list view" : "Switch to grid view"}
-              >
-                {view === "grid" ? (
-                  <List size={15} strokeWidth={1.8} />
-                ) : (
-                  <LayoutGrid size={15} strokeWidth={1.8} />
-                )}
-              </IconButton>
+                          {SORTS.map((s) => (
+                            <button
+                              key={s}
+                              role="menuitem"
+                              onClick={() => {
+                                setSort(s);
+                                setSortMenuOpen(false);
+                              }}
+                              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+                                s === sort ? "font-medium text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+                              }`}
+                            >
+                              {SORT_LABELS[s]}
+                              {s === sort && <Check size={13} strokeWidth={2.2} />}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {/* Grid / list: a segmented control, so both options and the current one are visible. */}
+                  <div
+                    role="radiogroup"
+                    aria-label="Layout"
+                    className="flex h-8 items-center rounded-full border border-edge bg-panel p-0.5 shadow-sm"
+                  >
+                    {(
+                      [
+                        ["grid", LayoutGrid, "Grid view"],
+                        ["list", List, "List view"],
+                      ] as const
+                    ).map(([v, Icon, label]) => (
+                      <button
+                        key={v}
+                        role="radio"
+                        aria-checked={view === v}
+                        aria-label={label}
+                        title={label}
+                        onClick={() => setView(v)}
+                        className={`flex h-7 w-8 items-center justify-center rounded-full transition-colors ${
+                          view === v ? "bg-hover text-ink" : "text-ink-3 hover:text-ink"
+                        }`}
+                      >
+                        <Icon size={14} strokeWidth={1.8} />
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
             </div>
