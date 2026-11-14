@@ -5,18 +5,25 @@
  * video → a transcript (speech-to-text). The result is stored in
  * `sources.text` and flows through retrieval like any other source text.
  *
- * Provider choice is independent of the chat provider: whichever configured
- * key can do the job is used, with small fixed models known to support the
- * modality (so a text-only chat model never breaks ingestion).
+ * Each job has its own "Runs on" choice (featureRoute.ts). On Automatic with a
+ * cloud chat provider, whichever configured key can do the job is used, with
+ * small fixed models known to support the modality (so a text-only chat model
+ * never breaks ingestion). With a local chat model, Automatic means this
+ * computer only: a local vision model reads images, and nothing is sent to a
+ * cloud key that happens to be saved.
  */
 
 import { platform } from "../platform";
-import { compressRecording, type Recording, splitRecording } from "./audioEncode";
+import { compressRecording, type Recording, splitRecording, toTranscribeWav } from "./audioEncode";
 import { isBlobRef, isMediaValue, mediaBlob } from "./blobs";
 import { setSourceContent, setSourceText, sourceText, updateSource } from "./db";
 import type { StreamUsage } from "./llm";
 import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, brewlmSession, openRouterApi, planHasAi, speaksOpenRouter } from "./brewlmAi";
+import { cloudJobsWhileLocal, featureProviders, type MediaFeature, staysLocal } from "./featureRoute";
+import { encodeWav } from "./audioClips";
+import { builtinModelReady, refreshWhisperStatus, transcribeBuiltin } from "./builtinWhisper";
+import { localHeaders, normalizeBaseUrl } from "./local";
 import { loadOpenRouterCatalog } from "./modelLimits";
 import { loadSettings } from "./settings";
 import type { Provider, Settings, Source } from "./types";
@@ -28,13 +35,19 @@ const VISION_MODELS: Record<Provider, string> = {
   openai: "gpt-4o-mini",
   openrouter: "google/gemini-2.5-flash",
   anthropic: "claude-haiku-4-5-20251001",
-  local: "", // media reading only uses the cloud providers listed in `allowed`
+  local: "", // the user's pick: Settings → Local Models → Image reading
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
 
-function visionModel(p: Provider): string {
+function visionModel(s: Settings, p: Provider): string {
+  if (p === "local") return s.localVisionModel.trim();
   return p === "brewlm" ? aiConfigNow().roles.transcribe : VISION_MODELS[p];
 }
+
+/** Local vision models get a smaller picture: it fits small context windows and reads faster on a laptop. */
+const LOCAL_IMAGE_SIDE = 1280;
+/** Cap on what a local model writes about one image (it's the whole reply, so generous but bounded). */
+const LOCAL_VISION_MAX_TOKENS = 2048;
 const OPENAI_TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
 /** What "Automatic" means in Settings → Transcription model, per provider. */
 export const AUTO_TRANSCRIBE_MODEL: Partial<Record<Provider, string>> = {
@@ -68,17 +81,35 @@ export interface MediaResult {
 /* ---------------------------------- keys ---------------------------------- */
 
 function keyFor(s: Settings, p: Provider): string {
-  // BrewLM AI reads media for anyone whose plan includes it, whatever chat runs on.
-  if (p === "brewlm") return planHasAi() ? brewlmSession() : "";
-  if (p === "openai") return s.openaiKey || s.openaiTtsKey;
-  if (p === "openrouter") return s.openrouterKey || s.openrouterTtsKey;
-  return s.anthropicKey;
+  switch (p) {
+    // BrewLM AI reads media for anyone whose plan includes it, whatever chat runs on.
+    case "brewlm":
+      return planHasAi() ? brewlmSession() : "";
+    case "openai":
+      return s.openaiKey || s.openaiTtsKey;
+    case "openrouter":
+      return s.openrouterKey || s.openrouterTtsKey;
+    case "anthropic":
+      return s.anthropicKey;
+    case "local":
+      return s.localKey;
+  }
 }
 
-/** Providers with a key, the active chat provider first. */
-function providersWithKeys(s: Settings, allowed: Provider[]): Provider[] {
-  const order = [s.provider, ...allowed.filter((p) => p !== s.provider)];
-  return order.filter((p) => allowed.includes(p) && keyFor(s, p));
+const hasKeyIn = (s: Settings) => (p: Provider) => p !== "local" && !!keyFor(s, p);
+
+/** Providers to try for a job, in order, per its "Runs on" choice ([] = nothing set up). */
+export function mediaProviders(s: Settings, f: MediaFeature): Provider[] {
+  const out = featureProviders(s, f, hasKeyIn(s));
+  // Built-in transcription waits until its model is downloaded (unknown until the first check: try it).
+  if (f === "transcribe" && out[0] === "local" && s.localSttEngine === "builtin" && builtinModelReady(s.builtinWhisperModel) === false)
+    return [];
+  return out;
+}
+
+/** With a local chat model: the jobs that would still reach a cloud service (chat footer). */
+export function cloudJobs(s: Settings): string[] {
+  return cloudJobsWhileLocal(s, hasKeyIn(s));
 }
 
 function cap(text: string): string {
@@ -134,12 +165,53 @@ function toVisionJpeg(src: Blob | string, maxSide = 1600): Promise<string> {
   });
 }
 
+/** One image and one instruction to the local server's chat endpoint. */
+async function localVisionCall(s: Settings, jpeg: string, prompt: string): Promise<{ text: string; usage: StreamUsage }> {
+  const base = normalizeBaseUrl(s.localBaseUrl);
+  const model = s.localVisionModel.trim();
+  if (!base) throw new Error("no local server address is set");
+  if (!model) throw new Error("no local vision model is picked");
+  let res: Response;
+  try {
+    res = await platform.fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: localHeaders(s.localKey),
+      body: JSON.stringify({
+        model,
+        max_tokens: LOCAL_VISION_MAX_TOKENS,
+        stream: false,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: jpeg } },
+            ],
+          },
+        ],
+      }),
+      connectTimeout: 10000,
+    });
+  } catch {
+    throw new Error(`couldn't reach your local server at ${base}. Is it running?`);
+  }
+  if (!res.ok) {
+    const err = await failure(res);
+    throw new Error(`${err.message}. Check that “${model}” can read images`);
+  }
+  return readCompletion(await res.json());
+}
+
 async function visionCall(s: Settings, p: Provider, jpeg: string): Promise<string> {
   const key = keyFor(s, p);
-  const model = visionModel(p);
+  const model = visionModel(s, p);
   let usage: StreamUsage = {};
   let text = "";
-  if (p === "anthropic") {
+  if (p === "local") {
+    const out = await localVisionCall(s, jpeg, IMAGE_PROMPT);
+    text = out.text;
+    usage = out.usage;
+  } else if (p === "anthropic") {
     const res = await platform.fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -214,7 +286,11 @@ async function chatCompletion(
     const err = await failure(res);
     throw p === "openrouter" ? new Error((await routingError(err.message, model)) || err.message) : err;
   }
-  const json = await res.json();
+  return readCompletion(await res.json());
+}
+
+/** Text and token counts from a non-streaming chat-completions reply. */
+function readCompletion(json: any): { text: string; usage: StreamUsage } { // eslint-disable-line @typescript-eslint/no-explicit-any
   const msg = json?.choices?.[0]?.message?.content;
   const text = Array.isArray(msg)
     ? msg.map((part: { text?: string }) => part?.text ?? "").join("")
@@ -232,16 +308,19 @@ async function chatCompletion(
 /** Image (File or data URL) → description + OCR text. Never throws. */
 export async function describeImage(src: Blob | string, settings?: Settings): Promise<MediaResult> {
   const s = settings ?? (await loadSettings());
-  const providers = providersWithKeys(s, ["openai", "openrouter", "anthropic", "brewlm"]);
+  const providers = mediaProviders(s, "vision");
   if (providers.length === 0)
     return {
       text: "",
-      warning:
-        "add an API key in Settings so the AI can read images — it will be described automatically before your next question.",
+      warning: staysLocal(s, "vision")
+        ? "pick a vision model in Settings → Local Models so it can be read on this computer — it will be described automatically before your next question. Nothing is sent to the cloud while you use a local model."
+        : s.visionRunsOn !== "auto"
+          ? "the provider chosen for image reading in Settings → Local Models has no key yet. Add one, or switch image reading back to Automatic."
+          : "add an API key in Settings so the AI can read images — it will be described automatically before your next question.",
     };
   let jpeg: string;
   try {
-    jpeg = await toVisionJpeg(src);
+    jpeg = await toVisionJpeg(src, providers[0] === "local" ? LOCAL_IMAGE_SIDE : undefined);
   } catch (e) {
     return { text: "", warning: e instanceof Error ? e.message : String(e) };
   }
@@ -249,12 +328,57 @@ export async function describeImage(src: Blob | string, settings?: Settings): Pr
   for (const p of providers) {
     try {
       const text = cap(await visionCall(s, p, jpeg));
-      if (text) return { text: `[Image contents, as read by ${visionModel(p)}]\n\n${text}` };
+      if (text) return { text: `[Image contents, as read by ${visionModel(s, p)}]\n\n${text}` };
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
     }
   }
   return { text: "", warning: `couldn't analyze the image (${lastErr || "empty response"}).` };
+}
+
+/** A small picture of known text, drawn here, so the vision test needs no file. */
+function testCardJpeg(code: string): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = 480;
+  canvas.height = 200;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is unavailable.");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#000";
+  ctx.font = "bold 72px Helvetica, Arial, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(code, canvas.width / 2, canvas.height / 2);
+  return canvas.toDataURL("image/jpeg", 0.92);
+}
+
+export type VisionTest = { ok: true; seconds: number } | { ok: false; message: string };
+
+/**
+ * Settings → Local Models → Test: shows the local vision model a picture of a
+ * random number and checks it reads the number back.
+ */
+export async function testLocalVision(s: Settings): Promise<VisionTest> {
+  const code = String(Math.floor(100 + Math.random() * 900));
+  const started = Date.now();
+  try {
+    const { text } = await localVisionCall(
+      s,
+      testCardJpeg(code),
+      "What number is written in this image? Reply with the number only."
+    );
+    if (text.replace(/\D/g, "").includes(code)) return { ok: true, seconds: Math.round((Date.now() - started) / 1000) };
+    return {
+      ok: false,
+      message: text.trim()
+        ? `It answered “${text.trim().slice(0, 80)}” instead of ${code}, so it probably can't read images. Try a vision model such as qwen2.5vl, gemma3 or llava.`
+        : "It sent back an empty answer, so it probably can't read images. Try a vision model such as qwen2.5vl, gemma3 or llava.",
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: msg.charAt(0).toUpperCase() + msg.slice(1) + "." };
+  }
 }
 
 /* ------------------------------ audio / video ------------------------------ */
@@ -310,9 +434,83 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** Built-in whisper.cpp: the piece as 16 kHz WAV, the one format the bundled program reads here. */
+async function builtinTranscribe(s: Settings, blob: Blob): Promise<string> {
+  const wav = await toTranscribeWav(blob);
+  if (!wav) throw new Error("this recording couldn't be converted for built-in transcription on this computer");
+  const text = await transcribeBuiltin(wav, s.builtinWhisperModel);
+  void recordUsage("sources", "local", `whisper ${s.builtinWhisperModel}`, {});
+  // whisper marks silence and music in brackets; they aren't speech.
+  return text.replace(/\[(BLANK_AUDIO|MUSIC|NO SPEECH|SILENCE)\]/gi, "").trim();
+}
+
+/** What a local transcription request names when no model is picked: most servers map it to their default. */
+export const LOCAL_STT_DEFAULT_MODEL = "whisper-1";
+
+/**
+ * One piece of audio to the local server's OpenAI-compatible
+ * /audio/transcriptions, as 16 kHz WAV when this platform can convert it.
+ */
+async function localTranscribe(s: Settings, blob: Blob, filename: string): Promise<string> {
+  const base = normalizeBaseUrl(s.localSttBaseUrl);
+  if (!base) throw new Error("no local transcription server is set");
+  const model = s.localSttModel.trim() || LOCAL_STT_DEFAULT_MODEL;
+  const wav = await toTranscribeWav(blob);
+  const form = new FormData();
+  if (wav) form.append("file", new Blob([wav], { type: "audio/wav" }), filename.replace(/\.[a-z0-9]+$/i, "") + ".wav");
+  else form.append("file", blob, filename);
+  form.append("model", model);
+  form.append("response_format", "json");
+  let res: Response;
+  try {
+    res = await platform.fetch(`${base}/audio/transcriptions`, {
+      method: "POST",
+      headers: s.localSttKey ? { Authorization: `Bearer ${s.localSttKey}` } : {},
+      body: form,
+      connectTimeout: 10000,
+    });
+  } catch {
+    throw new Error(`couldn't reach your local transcription server at ${base}. Is it running?`);
+  }
+  if (!res.ok) {
+    const err = await failure(res);
+    if (res.status === 404 && !/model/i.test(err.message))
+      throw new Error(`${base}/audio/transcriptions wasn't found. Check the address in Settings → Local Models (whisper.cpp needs --inference-path /v1/audio/transcriptions)`);
+    throw new Error(`${err.message}${/model/i.test(err.message) ? `. Check that “${model}” is on your transcription server` : ""}`);
+  }
+  // Most servers answer {"text": …}; whisper.cpp may send plain text.
+  const raw = await res.text();
+  let text = raw;
+  try {
+    const json = JSON.parse(raw);
+    text = typeof json?.text === "string" ? json.text : raw;
+  } catch {
+    /* plain text */
+  }
+  void recordUsage("sources", "local", model, {});
+  return text;
+}
+
+/**
+ * Settings → Local Models → Test: a second of silence to the transcription
+ * server, which proves the address, model and file format all work.
+ */
+export async function testLocalTranscription(s: Settings): Promise<VisionTest> {
+  const started = Date.now();
+  try {
+    const silence = encodeWav(new Float32Array(16_000), 16_000);
+    await localTranscribe(s, new Blob([silence], { type: "audio/wav" }), "test.wav");
+    return { ok: true, seconds: Math.round((Date.now() - started) / 1000) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: msg.charAt(0).toUpperCase() + msg.slice(1) + "." };
+  }
+}
+
 /** One transcription request: bytes in, transcript out (throws on failure). */
 async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: string, ext: string): Promise<string> {
   const pick = s.transcribeModels?.[p];
+  if (p === "local") return s.localSttEngine === "builtin" ? builtinTranscribe(s, blob) : localTranscribe(s, blob, filename);
   if (p === "openai") return openAiTranscribe(keyFor(s, p), blob, filename, pick);
   const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
   let lastErr: unknown = null;
@@ -334,7 +532,7 @@ async function transcribeOnce(s: Settings, p: Provider, blob: Blob, filename: st
 
 /** Providers that can transcribe with the configured keys, in the order they're tried. */
 export function transcribeProviders(s: Settings): Provider[] {
-  return providersWithKeys(s, ["openai", "openrouter", "brewlm"]);
+  return mediaProviders(s, "transcribe");
 }
 
 /**
@@ -380,13 +578,19 @@ export async function transcribeAudio(
       text: "",
       warning: `too large to transcribe (${(blob.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB) and its audio couldn't be extracted on this device — split or compress it, then re-add.`,
     };
+  if (s.localSttEngine === "builtin" && staysLocal(s, "transcribe")) await refreshWhisperStatus();
   const providers = transcribeProviders(s);
   if (providers.length === 0)
     return {
       text: "",
       recording,
-      warning:
-        "transcribing audio needs an OpenAI or OpenRouter key (Anthropic models can't hear audio). Add one in Settings and it will be transcribed automatically before your next question.",
+      warning: staysLocal(s, "transcribe")
+        ? s.localSttEngine === "builtin"
+          ? "download the built-in speech model in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
+          : "set up a transcription server in Settings → Local Models so it can be transcribed on this computer — it will be transcribed automatically before your next question. Nothing is sent to the cloud while you use a local model."
+        : s.transcribeRunsOn !== "auto"
+          ? "the provider chosen for transcription in Settings → Local Models has no key yet. Add one, or switch transcription back to Automatic."
+          : "transcribing audio needs an OpenAI or OpenRouter key (Anthropic models can't hear audio). Add one in Settings and it will be transcribed automatically before your next question.",
     };
   let pieces: Blob[];
   let ext: string;
@@ -449,7 +653,11 @@ export async function ensureMediaText(sources: Source[], settings?: Settings): P
   );
   if (pending.length === 0) return;
   const st = settings ?? (await loadSettings());
+  // Know whether the built-in model is on disk before deciding what can be read now.
+  if (st.localSttEngine === "builtin" && pending.some((p) => p.type === "audio")) await refreshWhisperStatus();
   for (const src of pending) {
+    // Nothing set up to read it yet: try again once something is, without a restart.
+    if (src.type !== "link" && mediaProviders(st, src.type === "image" ? "vision" : "transcribe").length === 0) continue;
     attempted.add(src.id);
     try {
       if (src.type === "link") {

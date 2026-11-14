@@ -126,11 +126,36 @@ export interface Artifact {
  */
 export type Provider = "brewlm" | "openrouter" | "openai" | "anthropic" | "local";
 
+/**
+ * Where a job such as image reading or transcription runs. "auto" follows the
+ * chat provider; with a local chat model that means this computer only.
+ */
+export type RunsOn = "auto" | Provider;
+
+/** How transcription runs on this computer: whisper.cpp built into the app, or a transcription server. */
+export type LocalSttEngine = "builtin" | "server";
+
+/** The built-in speech model: Whisper base, or large-v3 turbo. */
+export type BuiltinWhisperModel = "fast" | "accurate";
+
+/** Where /image draws: "auto" = BrewLM AI or OpenRouter as before, or this computer with a local chat model. */
+export type ImageRunsOn = "auto" | "local" | "openrouter";
+
+/** Which API a local image server speaks: Automatic1111-style (Forge, SD.Next, Draw Things) or OpenAI-style (LocalAI). */
+export type LocalImageApi = "a1111" | "openai";
+
+/**
+ * Where web search runs for research, /search and /fetch. "auto" = the cloud
+ * provider's own search; the others work with any chat provider, local too.
+ */
+export type SearchService = "auto" | "searxng" | "brave" | "tavily";
+
 /** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
 export type Thinking = "auto" | "low" | "medium" | "high";
 
 /** Where Audio overviews get their voices from. */
-export type TtsProvider = "system" | "brewlm" | "openai" | "openrouter" | "elevenlabs";
+/** "local" = a speech server the user runs (Kokoro-FastAPI, Speaches, LocalAI…) via /audio/speech. */
+export type TtsProvider = "system" | "brewlm" | "openai" | "openrouter" | "elevenlabs" | "local";
 
 /* Studio tool option vocabularies (canonical home; studio.ts re-exports them). */
 export type Amount = "compact" | "default" | "more";
@@ -154,6 +179,22 @@ export interface Settings {
   localEmbedModel: string;
   /** The local model's context window in tokens; sizes how much source text is sent. */
   localContext: number;
+  /** Model on the local server that reads images ("" = none picked). */
+  localVisionModel: string;
+  /** Where image sources are read (described and OCR'd). */
+  visionRunsOn: RunsOn;
+  /** Where audio and video sources are transcribed. */
+  transcribeRunsOn: RunsOn;
+  /** Built-in whisper.cpp or a transcription server, when transcription runs on this computer. */
+  localSttEngine: LocalSttEngine;
+  /** Which built-in speech model to use (downloaded in Settings → Local Models). */
+  builtinWhisperModel: BuiltinWhisperModel;
+  /** Local transcription server base URL including /v1 ("" = not set up). */
+  localSttBaseUrl: string;
+  /** Optional bearer token for the local transcription server. */
+  localSttKey: string;
+  /** Speech-to-text model on that server ("" = whisper-1, which most servers map to their default). */
+  localSttModel: string;
   model: string;
   theme: string;
   /** UI font id from fonts.ts ("system" follows the theme's default stack). */
@@ -170,6 +211,10 @@ export interface Settings {
   /** Dedicated TTS key for OpenRouter; falls back to openrouterKey when empty. */
   openrouterTtsKey: string;
   elevenlabsKey: string;
+  /** Local speech server base URL including /v1 ("" = not set up). */
+  localTtsBaseUrl: string;
+  /** Optional bearer token for the local speech server. */
+  localTtsKey: string;
   /** Empty → provider default. */
   ttsModel: string;
   ttsVoiceAlex: string;
@@ -184,6 +229,21 @@ export interface Settings {
   maxOutput: number | null;
   /** OpenRouter Image API model used by /image (separate from the chat model). */
   imageModel: string;
+  /** Where /image draws (Settings → Local Models → Pictures). */
+  imageRunsOn: ImageRunsOn;
+  /** Local image server address ("" = not set up). */
+  localImageBaseUrl: string;
+  localImageKey: string;
+  /** Model or checkpoint on that server ("" = whatever it has loaded). */
+  localImageModel: string;
+  /** The API it was found to speak; "" = not checked yet (found on first use). */
+  localImageApi: LocalImageApi | "";
+  /** Web search service (Settings → AI Model → Web search). */
+  searchService: SearchService;
+  /** Self-hosted SearXNG address, e.g. http://localhost:8888 ("" = not set up). */
+  searxngUrl: string;
+  braveKey: string;
+  tavilyKey: string;
   /** Model for /research and /search, per chat provider; missing or "" = the main model. */
   researchModels: Partial<Record<Provider, string>>;
   /** Speech-to-text model for audio/video sources, per provider (OpenAI, OpenRouter); missing or "" = automatic. */

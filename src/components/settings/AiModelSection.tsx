@@ -1,8 +1,10 @@
-import { ExternalLink, Plus, RefreshCw } from "lucide-react";
+import { ArrowRight, ExternalLink, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
 import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../lib/media";
-import { budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl } from "../../lib/local";
+import { staysLocal } from "../../lib/featureRoute";
+import { budgetForContext, isEmbeddingModel } from "../../lib/local";
+import { goToSettingsSection } from "../../lib/settingsNav";
 import {
   DEFAULT_IMAGE_MODEL,
   defaultModelFor,
@@ -21,9 +23,22 @@ import {
   saveTranscribeModelList,
 } from "../../lib/settings";
 import type { Provider, Settings, Thinking } from "../../lib/types";
-import { Spinner } from "../ui";
-import { Card, Footnote, ModelIdInput, Row, SavedModelList, SectionTitle, Slider, Toggle } from "./controls";
+import {
+  Card,
+  Disclosure,
+  Footnote,
+  GroupLabel,
+  ModelIdInput,
+  Row,
+  SavedModelList,
+  SectionTitle,
+  Slider,
+  Toggle,
+} from "./controls";
+import { Segmented } from "../ui";
+import { LocalServerRows } from "./LocalModelsSection";
 import ProviderRoutingCard from "./ProviderRoutingCard";
+import WebSearchCard from "./WebSearchCard";
 import { BrewLmAiStatusRow, BrewLmTierRow, useAiOffered } from "./BrewLmAi";
 import { platform } from "../../platform";
 
@@ -45,122 +60,6 @@ const KEY_LINKS: Record<Provider, string> = {
 
 const inputClass =
   "w-full rounded-lg border border-edge bg-panel px-3 py-2 font-mono text-[12.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
-
-type Connection =
-  | { state: "idle" }
-  | { state: "testing" }
-  | { state: "ok"; models: string[] }
-  | { state: "error"; message: string };
-
-/** Server address, presets, optional key and a connection test for the Local provider. */
-function LocalServerRows({
-  settings,
-  patch,
-  onModels,
-}: {
-  settings: Settings;
-  patch: (p: Partial<Settings>) => void;
-  onModels: (models: string[]) => void;
-}) {
-  const [conn, setConn] = useState<Connection>({ state: "idle" });
-  const activePreset = LOCAL_PRESETS.find((p) => p.url === settings.localBaseUrl)?.id ?? "custom";
-
-  const test = async (baseUrl = settings.localBaseUrl, key = settings.localKey) => {
-    setConn({ state: "testing" });
-    try {
-      const models = await listLocalModels({ baseUrl, key });
-      setConn({ state: "ok", models });
-      onModels(models);
-      // First connection: pick sensible defaults so chat works right away.
-      const chat = models.filter((m) => !isEmbeddingModel(m));
-      const next: Partial<Settings> = {};
-      if (!settings.model.trim() || !models.includes(settings.model)) next.model = chat[0] ?? "";
-      if (!settings.localEmbedModel) next.localEmbedModel = models.find(isEmbeddingModel) ?? "";
-      if (Object.keys(next).length) patch(next);
-    } catch (e) {
-      setConn({ state: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  };
-
-  // Check the saved server once when the section opens.
-  useEffect(() => {
-    if (settings.localBaseUrl) void test();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <>
-      <Row label="Server" desc="Any app that serves an OpenAI-compatible API on your computer or network.">
-        <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
-          {LOCAL_PRESETS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => {
-                patch({ localBaseUrl: p.url });
-                void test(p.url);
-              }}
-              className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                activePreset === p.id ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-          <span
-            className={`rounded-md px-2 py-1.5 text-center text-[12.5px] font-medium ${
-              activePreset === "custom" ? "bg-panel text-ink shadow-sm" : "text-ink-3"
-            }`}
-          >
-            Custom
-          </span>
-        </div>
-      </Row>
-      <Row label="Address" alignTop>
-        <div className="w-72">
-          <input
-            value={settings.localBaseUrl}
-            onChange={(e) => patch({ localBaseUrl: e.target.value })}
-            onBlur={(e) => {
-              const url = normalizeBaseUrl(e.target.value);
-              if (url !== e.target.value) patch({ localBaseUrl: url });
-            }}
-            placeholder="http://localhost:11434/v1"
-            className={inputClass}
-          />
-        </div>
-      </Row>
-      <Row label="API key" desc="Optional. Only needed if your server asks for one." alignTop>
-        <div className="w-72">
-          <input
-            type="password"
-            value={settings.localKey}
-            onChange={(e) => patch({ localKey: e.target.value })}
-            placeholder="none"
-            className={inputClass}
-          />
-        </div>
-      </Row>
-      <Row label="Connection" alignTop>
-        <div className="flex w-72 flex-col items-end gap-1.5">
-          <button
-            onClick={() => void test()}
-            disabled={!settings.localBaseUrl.trim() || conn.state === "testing"}
-            className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover disabled:opacity-40"
-          >
-            {conn.state === "testing" ? <Spinner size={12} /> : <RefreshCw size={12} />}
-            Test connection
-          </button>
-          {conn.state === "ok" && (
-            <p className="text-right text-[12px] text-ok">
-              Connected. {conn.models.length === 0 ? "No models found. Download one in your server app." : `${conn.models.length} ${conn.models.length === 1 ? "model" : "models"} available.`}
-            </p>
-          )}
-          {conn.state === "error" && <p className="text-right text-[12px] leading-relaxed text-danger">{conn.message}</p>}
-        </div>
-      </Row>
-    </>
-  );
-}
 
 /** One provider's transcription pick: a model id box plus its saved list, "Automatic" on top. */
 function TranscriptionModelRows({
@@ -265,7 +164,8 @@ function TranscriptionModelCard({
 }) {
   // BrewLM AI transcribes with its own model: nothing to pick.
   const providers = transcribeProviders(settings).filter((p) => p !== "brewlm");
-  if (settings.provider === "brewlm") return null;
+  // Transcription kept on this computer: no cloud model to pick (Settings → Local Models says why).
+  if (settings.provider === "brewlm" || staysLocal(settings, "transcribe")) return null;
   return (
     <Card>
       <div className="pt-3">
@@ -397,39 +297,55 @@ export default function AiModelSection({
 
   const temp = settings.temperature;
 
+  /* What the optional groups show while closed. */
+  const behaviorSummary = [
+    !isLocal && `${THINKING_LABELS[settings.thinking]} thinking`,
+    temp == null ? "default temperature" : `temperature ${temp.toFixed(2)}`,
+    settings.maxOutput == null ? "automatic length" : `up to ${settings.maxOutput / 1024}K tokens`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+    .replace(/^./, (c) => c.toUpperCase());
+
+  const showImage =
+    settings.imageRunsOn !== "local" && !(settings.imageRunsOn === "auto" && (isLocal || isBrewlm));
+  const showWeb = !isBrewlm && platform.kind === "desktop";
+  const showResearch = !isBrewlm;
+  const showTranscribe = !isBrewlm && !staysLocal(settings, "transcribe");
+  const shortId = (id: string) => id.trim().split("/").pop() ?? id;
+  const customJobs = [
+    showResearch && researchModel.trim() && `Research: ${shortId(researchModel)}`,
+    showImage && settings.imageModel !== DEFAULT_IMAGE_MODEL && `Images: ${shortId(settings.imageModel)}`,
+    showTranscribe && Object.values(settings.transcribeModels).some((m) => m?.trim()) && "custom transcription",
+    showWeb && settings.searchService !== "auto" && "custom web search",
+  ].filter(Boolean) as string[];
+  const jobsSummary = customJobs.length ? customJobs.join(" · ") : "All automatic";
+
   return (
     <div>
-      <SectionTitle title="AI Model" />
+      <SectionTitle
+        title="AI Model"
+        desc="Choose who runs the AI and which model. That's all most people need; everything under More options is optional."
+      />
 
       {/* Provider + key + model */}
       <Card>
         <Row label="Provider">
-          <div
-            className="grid gap-1 rounded-lg border border-edge bg-canvas p-1"
-            style={{ gridTemplateColumns: `repeat(${providers.length}, minmax(0, 1fr))` }}
-          >
-            {providers.map((p) => (
-                <button
-                  key={p}
-                  onClick={() =>
-                    // Model ids are provider-namespaced, so another provider's
-                    // id is invalid: start empty and let the user pick.
-                    patch(
-                      p === "local"
-                        ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
-                        : p === "brewlm"
-                          ? { provider: p, model: defaultModelFor(p) }
-                          : { provider: p, model: "" }
-                    )
-                  }
-                  className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                    provider === p ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-                  }`}
-                >
-                  {PROVIDER_LABELS[p]}
-                </button>
-              ))}
-          </div>
+          <Segmented<Provider>
+            options={providers.map((p) => ({ id: p, label: PROVIDER_LABELS[p] }))}
+            value={provider}
+            onChange={(p) =>
+              // Model ids are provider-namespaced, so another provider's
+              // id is invalid: start empty and let the user pick.
+              patch(
+                p === "local"
+                  ? { provider: p, model: "", localBaseUrl: settings.localBaseUrl || LOCAL_PRESETS[0].url }
+                  : p === "brewlm"
+                    ? { provider: p, model: defaultModelFor(p) }
+                    : { provider: p, model: "" }
+              )
+            }
+          />
         </Row>
         {isBrewlm ? (
           <BrewLmAiStatusRow model={settings.model} />
@@ -513,9 +429,16 @@ export default function AiModelSection({
             </Row>
           </Card>
           <Footnote>
-            Everything stays on your computer with a local model. Ollama starts with a small context
-            window; raise it with the <code>OLLAMA_CONTEXT_LENGTH</code> setting, then pick the same
-            size here. Web search, deep research and <code>/image</code> still need a cloud provider.
+            Ollama starts with a small context window; raise it with the{" "}
+            <code>OLLAMA_CONTEXT_LENGTH</code> setting, then pick the same size here. Image reading,
+            transcription and other jobs each have their own setting in{" "}
+            <button
+              onClick={() => goToSettingsSection("local")}
+              className="inline-flex items-center gap-0.5 text-link hover:underline"
+            >
+              Local Models <ArrowRight size={10} />
+            </button>
+            .
           </Footnote>
         </>
       )}
@@ -576,172 +499,178 @@ export default function AiModelSection({
       </Card>
       )}
 
-      {provider === "openrouter" && <ProviderRoutingCard settings={settings} patch={patch} models={modelList} />}
-
-      {/* Temperature */}
-      <Card>
-        <Row
-          label="Custom temperature"
-          desc="Sampling creativity for chat and Studio generations. Off uses each provider's default — nothing is sent."
-        >
-          <Toggle
-            label="Custom temperature"
-            checked={temp != null}
-            onChange={(on) => patch({ temperature: on ? 0.7 : null })}
-          />
-        </Row>
-        {temp != null && (
-          <Row label="Creativity" desc="0 = precise and deterministic · 1 = creative and varied">
-            <div className="flex items-center gap-3">
-              <Slider
-                label="Temperature"
-                min={0}
-                max={1}
-                step={0.05}
-                value={temp}
-                onChange={(v) => patch({ temperature: v })}
-              />
-              <span className="w-9 text-right font-mono text-[12px] text-ink-2">{temp.toFixed(2)}</span>
-            </div>
-          </Row>
-        )}
-      </Card>
-      {temp != null && !supportsTemperature(settings.model) && (
-        <Footnote>
-          “{settings.model}” doesn't take a custom temperature, so it's left at the model's default.
-          The setting stays saved for your other models.
-        </Footnote>
-      )}
-
-      {/* Thinking effort + output limit */}
-      <Card>
-        {!isLocal && (
-          <Row
-            label="Thinking effort"
-            desc="How long reasoning models think before answering. Lower is faster and cheaper, and leaves more room for long outputs. Auto uses each model's default; models that don't think ignore it."
-            alignTop
-          >
-            <div className="grid grid-cols-4 gap-1 rounded-lg border border-edge bg-canvas p-1">
-              {(Object.keys(THINKING_LABELS) as Thinking[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => patch({ thinking: t })}
-                  className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                    settings.thinking === t ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-                  }`}
-                >
-                  {THINKING_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          </Row>
-        )}
-        <Row
-          label="Custom output limit"
-          desc={
-            isLocal
-              ? "The most a reply can be. Off sizes it to your context window."
-              : `The most a reply can be, thinking included. Off uses up to ${AUTO_OUTPUT_TOKENS / 1000}K tokens, within what each model allows. You only pay for what's written.`
-          }
-        >
-          <Toggle
-            label="Custom output limit"
-            checked={settings.maxOutput != null}
-            onChange={(on) => patch({ maxOutput: on ? 16384 : null })}
-          />
-        </Row>
-        {settings.maxOutput != null && (
-          <Row label="Limit" desc="Lowered automatically when a model allows less.">
-            <div className="flex items-center gap-3">
-              <Slider
-                label="Output limit"
-                min={0}
-                max={MAX_OUTPUT_OPTIONS.length - 1}
-                step={1}
-                value={Math.max(0, MAX_OUTPUT_OPTIONS.indexOf(settings.maxOutput))}
-                onChange={(i) => patch({ maxOutput: MAX_OUTPUT_OPTIONS[i] })}
-              />
-              <span className="w-10 text-right font-mono text-[12px] text-ink-2">{settings.maxOutput / 1024}K</span>
-            </div>
-          </Row>
-        )}
-      </Card>
-
-      {/* Image generation (/image); BrewLM AI uses its own image model. */}
-      {!isBrewlm && (
-      <Card>
-        <div className="py-3">
-          <div className="text-[13px] font-medium text-ink">Image model</div>
-          <div className="mt-0.5 mb-2.5 text-[12px] leading-relaxed text-ink-3">
-            Used by <code>/image</code>. It runs separately from your chat model and gets only your
-            prompt — no sources or chat history — so each picture costs just the image. If your
-            selected chat model is itself an image model, that one is used instead. Needs an
-            OpenRouter key. Type any image model id, or pick a saved one below.
-          </div>
-          <ModelIdInput
-            value={settings.imageModel}
-            onChange={(v) => patch({ imageModel: v })}
-            onBlur={(v) => !v.trim() && patch({ imageModel: DEFAULT_IMAGE_MODEL })}
-            onAdd={addImageModel}
-            canAdd={!!settings.imageModel.trim() && !imageList.includes(settings.imageModel.trim())}
-            placeholder={DEFAULT_IMAGE_MODEL}
-            addTitle="Save to your image model list"
-          />
-          {!settings.openrouterKey && (
-            <p className="mt-2 text-[12px] text-ink-3">
-              No OpenRouter key yet — select OpenRouter above to add one (you can switch your chat
-              provider back afterwards; keys are kept separately).
-            </p>
-          )}
-        </div>
-        <SavedModelList
-          title="Saved image models"
-          models={imageList}
-          active={settings.imageModel}
-          onPick={(m) => patch({ imageModel: m })}
-          onRemove={removeImageModel}
-        />
-      </Card>
-      )}
-
-      {/* Research model (/research, /search) — web search needs a cloud provider. */}
-      {!isLocal && !isBrewlm && (
+      {/* Everything below is optional: closed by default, with a summary of what's set. */}
+      <GroupLabel>More options</GroupLabel>
+      <Disclosure id="ai-behavior" title="Response style" summary={behaviorSummary}>
+        {/* Temperature */}
         <Card>
-          <div className="py-3">
-            <div className="text-[13px] font-medium text-ink">Research model</div>
-            <div className="mt-0.5 mb-2.5 text-[12px] leading-relaxed text-ink-3">
-              Used by Deep Research and <code>/search</code>. A research run reads many pages and
-              writes a long report, so you may want a stronger (or cheaper) model here than for chat.
-              Leave it on “Same as main model” to use your main model.
-              {provider === "openai" && (
-                <> On OpenAI the web search itself always runs on gpt-4o-mini-search-preview; this model plans and writes the report.</>
+          <Row
+            label="Custom temperature"
+            desc="Sampling creativity for chat and Studio generations. Off uses each provider's default — nothing is sent."
+          >
+            <Toggle
+              label="Custom temperature"
+              checked={temp != null}
+              onChange={(on) => patch({ temperature: on ? 0.7 : null })}
+            />
+          </Row>
+          {temp != null && (
+            <Row label="Creativity" desc="0 = precise and deterministic · 1 = creative and varied">
+              <div className="flex items-center gap-3">
+                <Slider
+                  label="Temperature"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={temp}
+                  onChange={(v) => patch({ temperature: v })}
+                />
+                <span className="w-9 text-right font-mono text-[12px] text-ink-2">{temp.toFixed(2)}</span>
+              </div>
+            </Row>
+          )}
+        </Card>
+        {temp != null && !supportsTemperature(settings.model) && (
+          <Footnote>
+            “{settings.model}” doesn't take a custom temperature, so it's left at the model's default.
+            The setting stays saved for your other models.
+          </Footnote>
+        )}
+
+        {/* Thinking effort + output limit */}
+        <Card>
+          {!isLocal && (
+            <Row
+              label="Thinking effort"
+              desc="How long reasoning models think before answering. Lower is faster and cheaper, and leaves more room for long outputs. Auto uses each model's default; models that don't think ignore it."
+              alignTop
+            >
+              <Segmented<Thinking>
+                options={(Object.keys(THINKING_LABELS) as Thinking[]).map((t) => ({ id: t, label: THINKING_LABELS[t] }))}
+                value={settings.thinking}
+                onChange={(t) => patch({ thinking: t })}
+              />
+            </Row>
+          )}
+          <Row
+            label="Custom output limit"
+            desc={
+              isLocal
+                ? "The most a reply can be. Off sizes it to your context window."
+                : `The most a reply can be, thinking included. Off uses up to ${AUTO_OUTPUT_TOKENS / 1000}K tokens, within what each model allows. You only pay for what's written.`
+            }
+          >
+            <Toggle
+              label="Custom output limit"
+              checked={settings.maxOutput != null}
+              onChange={(on) => patch({ maxOutput: on ? 16384 : null })}
+            />
+          </Row>
+          {settings.maxOutput != null && (
+            <Row label="Limit" desc="Lowered automatically when a model allows less.">
+              <div className="flex items-center gap-3">
+                <Slider
+                  label="Output limit"
+                  min={0}
+                  max={MAX_OUTPUT_OPTIONS.length - 1}
+                  step={1}
+                  value={Math.max(0, MAX_OUTPUT_OPTIONS.indexOf(settings.maxOutput))}
+                  onChange={(i) => patch({ maxOutput: MAX_OUTPUT_OPTIONS[i] })}
+                />
+                <span className="w-10 text-right font-mono text-[12px] text-ink-2">{settings.maxOutput / 1024}K</span>
+              </div>
+            </Row>
+          )}
+        </Card>
+      </Disclosure>
+      {(showImage || showWeb || showResearch || showTranscribe) && (
+        <Disclosure id="ai-jobs" title="Models for specific jobs" summary={jobsSummary}>
+          {/* Image generation (/image); BrewLM AI uses its own image model, a local server is set in Local Models. */}
+          {showImage && (
+          <Card>
+            <div className="py-3">
+              <div className="text-[13px] font-medium text-ink">Image model</div>
+              <div className="mt-0.5 mb-2.5 text-[12px] leading-relaxed text-ink-3">
+                Used by <code>/image</code>. It runs separately from your chat model and gets only your
+                prompt — no sources or chat history — so each picture costs just the image. If your
+                selected chat model is itself an image model, that one is used instead. Needs an
+                OpenRouter key. Type any image model id, or pick a saved one below.
+              </div>
+              <ModelIdInput
+                value={settings.imageModel}
+                onChange={(v) => patch({ imageModel: v })}
+                onBlur={(v) => !v.trim() && patch({ imageModel: DEFAULT_IMAGE_MODEL })}
+                onAdd={addImageModel}
+                canAdd={!!settings.imageModel.trim() && !imageList.includes(settings.imageModel.trim())}
+                placeholder={DEFAULT_IMAGE_MODEL}
+                addTitle="Save to your image model list"
+              />
+              {!settings.openrouterKey && (
+                <p className="mt-2 text-[12px] text-ink-3">
+                  No OpenRouter key yet — select OpenRouter above to add one (you can switch your chat
+                  provider back afterwards; keys are kept separately).
+                </p>
               )}
             </div>
-            <ModelIdInput
-              value={researchModel}
-              onChange={setResearchModel}
-              onAdd={addResearchModel}
-              canAdd={!!researchModel.trim() && !researchList.includes(researchModel.trim())}
-              placeholder={`Same as main model (${settings.model || "not set"})`}
-              addTitle="Save to your research model list"
+            <SavedModelList
+              title="Saved image models"
+              models={imageList}
+              active={settings.imageModel}
+              onPick={(m) => patch({ imageModel: m })}
+              onRemove={removeImageModel}
             />
-          </div>
-          <SavedModelList
-            title="Saved research models"
-            models={researchList}
-            active={researchModel}
-            onPick={setResearchModel}
-            onRemove={removeResearchModel}
-            fallback={{
-              label: `Same as main model · ${settings.model || "not set"}`,
-              active: !researchModel.trim(),
-              onPick: () => setResearchModel(""),
-            }}
-          />
-        </Card>
-      )}
+          </Card>
+          )}
 
-      <TranscriptionModelCard settings={settings} patch={patch} />
+          {/* Where research, /search and /fetch find pages. Desktop only: see loadSettings. */}
+          {showWeb && <WebSearchCard settings={settings} patch={patch} />}
+
+          {/* Research model (/research, /search). */}
+          {!isBrewlm && (
+            <Card>
+              <div className="py-3">
+                <div className="text-[13px] font-medium text-ink">Research model</div>
+                <div className="mt-0.5 mb-2.5 text-[12px] leading-relaxed text-ink-3">
+                  Used by Deep Research and <code>/search</code>. A research run reads many pages and
+                  writes a long report, so you may want a stronger (or cheaper) model here than for chat.
+                  Leave it on “Same as main model” to use your main model.
+                  {provider === "openai" && settings.searchService === "auto" && (
+                    <> On OpenAI the web search itself always runs on gpt-4o-mini-search-preview; this model plans and writes the report.</>
+                  )}
+                </div>
+                <ModelIdInput
+                  value={researchModel}
+                  onChange={setResearchModel}
+                  onAdd={addResearchModel}
+                  canAdd={!!researchModel.trim() && !researchList.includes(researchModel.trim())}
+                  placeholder={`Same as main model (${settings.model || "not set"})`}
+                  addTitle="Save to your research model list"
+                />
+              </div>
+              <SavedModelList
+                title="Saved research models"
+                models={researchList}
+                active={researchModel}
+                onPick={setResearchModel}
+                onRemove={removeResearchModel}
+                fallback={{
+                  label: `Same as main model · ${settings.model || "not set"}`,
+                  active: !researchModel.trim(),
+                  onPick: () => setResearchModel(""),
+                }}
+              />
+            </Card>
+          )}
+
+          <TranscriptionModelCard settings={settings} patch={patch} />
+        </Disclosure>
+      )}
+      {provider === "openrouter" && (
+        <Disclosure id="ai-routing" title="OpenRouter routing" summary="Provider priority, privacy and pins">
+          <ProviderRoutingCard settings={settings} patch={patch} models={modelList} />
+        </Disclosure>
+      )}
+      <div className="border-t border-edge-soft" />
     </div>
   );
 }

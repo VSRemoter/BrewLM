@@ -6,7 +6,7 @@
  * Deep Research needs no customize modal: opening it already asks for input.
  */
 
-import { Check } from "lucide-react";
+import { Check, Clock, Gauge, Layers, LayoutList, Mic, PenLine, Shapes } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
   AMOUNT_LABELS,
@@ -34,7 +34,17 @@ import {
 } from "../lib/studio";
 import type { InteractiveOptions } from "../lib/interactive";
 import type { Source } from "../lib/types";
-import { Modal, PrimaryButton, Segmented } from "./ui";
+import { SOURCE_TYPE_ICON } from "./sourceIcons";
+import {
+  Divider,
+  FormField,
+  GhostButton,
+  Modal,
+  PrimaryButton,
+  PropertyRow,
+  Segmented,
+  textareaClass,
+} from "./ui";
 
 const AMOUNTS: Amount[] = ["compact", "default", "more"];
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
@@ -45,27 +55,15 @@ const REPORT_TYPES: ReportType[] = ["study-guide", "briefing-doc", "analysis", "
 
 /** Short labels so four report types fit one segmented row. */
 const REPORT_TYPE_SHORT: Record<ReportType, string> = {
-  "study-guide": "Study Guide",
+  "study-guide": "Study guide",
   "briefing-doc": "Briefing",
   analysis: "Analysis",
   custom: "Custom",
 };
 
-const textareaClass =
-  "w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3";
+const ICON = { size: 14, strokeWidth: 1.8 } as const;
 
 /* ------------------------------ shared pieces ------------------------------ */
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
 
 function SourcePicker({
   sources,
@@ -78,17 +76,25 @@ function SourcePicker({
 }) {
   const allSelected = selected.length === sources.length;
   return (
-    <Field label={`Sources · ${selected.length}/${sources.length}`}>
-      <div className="max-h-36 overflow-y-auto rounded-lg border border-edge bg-canvas p-1">
-        <button
-          type="button"
-          onClick={() => onChange(allSelected ? [] : sources.map((s) => s.id))}
-          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[12px] font-medium text-ink-3 transition-colors hover:bg-hover-soft hover:text-ink"
-        >
-          {allSelected ? "Deselect all" : "Select all"}
-        </button>
+    <FormField
+      label="Sources"
+      note={`${selected.length} of ${sources.length}`}
+      aside={
+        sources.length > 1 && (
+          <button
+            type="button"
+            onClick={() => onChange(allSelected ? [] : sources.map((s) => s.id))}
+            className="rounded px-1 text-[12.5px] text-ink-3 transition-colors hover:text-ink"
+          >
+            {allSelected ? "Clear" : "Select all"}
+          </button>
+        )
+      }
+    >
+      <div className="-mx-2 flex flex-col">
         {sources.map((s) => {
           const checked = selected.includes(s.id);
+          const Icon = SOURCE_TYPE_ICON[s.type];
           return (
             <button
               type="button"
@@ -96,30 +102,35 @@ function SourcePicker({
               onClick={() =>
                 onChange(checked ? selected.filter((id) => id !== s.id) : [...selected, s.id])
               }
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover-soft"
+              className="group flex w-full items-center gap-2.5 rounded-md px-2 py-[7px] text-left transition-colors hover:bg-hover"
               role="checkbox"
               aria-checked={checked}
             >
               <span
-                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
-                  checked ? "border-accent bg-accent text-accent-ink" : "border-edge bg-panel"
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                  checked ? "border-accent bg-accent text-accent-ink" : "border-ink-3/50 group-hover:border-ink-3"
                 }`}
               >
                 {checked && <Check size={11} strokeWidth={3} />}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[12.5px]">{s.title}</span>
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
-                {s.type}
+              <Icon size={14} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+              <span
+                className={`min-w-0 flex-1 truncate text-[13px] transition-colors ${checked ? "text-ink" : "text-ink-3"}`}
+              >
+                {s.title}
               </span>
             </button>
           );
         })}
       </div>
-    </Field>
+    </FormField>
   );
 }
 
-/** Shared modal scaffold: name field + tool fields + source picker + generate button. */
+/**
+ * Shared scaffold: settings as rows (name first), then long-form fields,
+ * then the source list, with Generate pinned in the footer.
+ */
 function CustomizeFrame({
   title,
   name,
@@ -131,6 +142,7 @@ function CustomizeFrame({
   onGenerate,
   generateLabel,
   disabled,
+  rows,
   children,
 }: {
   title: string;
@@ -144,34 +156,48 @@ function CustomizeFrame({
   onGenerate: () => void;
   generateLabel: string;
   disabled?: boolean;
-  children: ReactNode;
+  /** Short settings, shown as label/control rows under Name. */
+  rows?: ReactNode;
+  /** Long-form fields (descriptions, instructions), full width. */
+  children?: ReactNode;
 }) {
+  const none = selected.length === 0;
   return (
-    <Modal title={title} onClose={onClose}>
-      <div className="flex flex-col gap-3.5">
-        <Field label="Save as">
-          <input
-            value={name}
-            onChange={(e) => onNameChange(e.target.value)}
-            maxLength={80}
-            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none placeholder:text-ink-3 focus:border-ink-3"
-          />
-        </Field>
-        {children}
-        <SourcePicker sources={sources} selected={selected} onChange={onSourcesChange} />
-        {selected.length === 0 && (
-          <p className="-mt-2 text-[11px] leading-snug text-ink-3">
-            Select at least one source to generate from.
-          </p>
-        )}
-        <div className="flex justify-end pt-0.5">
-          <PrimaryButton
-            onClick={onGenerate}
-            disabled={disabled || selected.length === 0}
-          >
+    <Modal
+      title={title}
+      onClose={onClose}
+      size="lg"
+      footer={
+        <>
+          <span className={`mr-auto text-[12.5px] ${none ? "text-warn" : "text-ink-3"}`}>
+            {none
+              ? "Pick at least one source"
+              : `From ${selected.length} ${selected.length === 1 ? "source" : "sources"}`}
+          </span>
+          <GhostButton onClick={onClose}>Cancel</GhostButton>
+          <PrimaryButton onClick={onGenerate} disabled={disabled || none}>
             {generateLabel}
           </PrimaryButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2.5">
+          <PropertyRow label="Name" icon={<PenLine {...ICON} />}>
+            <input
+              value={name}
+              onChange={(e) => onNameChange(e.target.value)}
+              maxLength={80}
+              aria-label="Name"
+              // Reads as text until hovered or focused, like a Notion property.
+              className="-mx-2 h-8 w-[calc(100%+1rem)] rounded-md border border-transparent bg-transparent px-2 text-[13.5px] font-medium text-ink outline-none transition-colors hover:bg-hover focus:border-accent/70 focus:bg-panel focus:ring-3 focus:ring-accent/15"
+            />
+          </PropertyRow>
+          {rows}
         </div>
+        {children}
+        <Divider />
+        <SourcePicker sources={sources} selected={selected} onChange={onSourcesChange} />
       </div>
     </Modal>
   );
@@ -181,13 +207,15 @@ function DescriptionField({
   value,
   onChange,
   placeholder,
+  label = "Focus",
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
+  label?: string;
 }) {
   return (
-    <Field label="Description (optional)">
+    <FormField label={label} note="Optional">
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -195,7 +223,7 @@ function DescriptionField({
         rows={2}
         className={textareaClass}
       />
-    </Field>
+    </FormField>
   );
 }
 
@@ -235,26 +263,30 @@ export function FlashcardsModal({
       onGenerate={() =>
         onGenerate({ amount, difficulty, sourceIds, description: description.trim(), title: name.trim() || "Flashcards" })
       }
-      generateLabel="Generate flashcards"
+      generateLabel="Generate"
+      rows={
+        <>
+          <PropertyRow label="Cards" icon={<Layers {...ICON} />} hint={`About ${FLASHCARD_COUNTS[amount]} cards`}>
+            <Segmented
+              options={AMOUNTS.map((id) => ({ id, label: AMOUNT_LABELS[id] }))}
+              value={amount}
+              onChange={setAmount}
+            />
+          </PropertyRow>
+          <PropertyRow label="Difficulty" icon={<Gauge {...ICON} />}>
+            <Segmented
+              options={DIFFICULTIES.map((id) => ({ id, label: DIFFICULTY_LABELS[id] }))}
+              value={difficulty}
+              onChange={setDifficulty}
+            />
+          </PropertyRow>
+        </>
+      }
     >
-      <Field label={`Number of cards · ${FLASHCARD_COUNTS[amount]}`}>
-        <Segmented
-          options={AMOUNTS.map((id) => ({ id, label: AMOUNT_LABELS[id] }))}
-          value={amount}
-          onChange={setAmount}
-        />
-      </Field>
-      <Field label="Difficulty">
-        <Segmented
-          options={DIFFICULTIES.map((id) => ({ id, label: DIFFICULTY_LABELS[id] }))}
-          value={difficulty}
-          onChange={setDifficulty}
-        />
-      </Field>
       <DescriptionField
         value={description}
         onChange={setDescription}
-        placeholder="What should the cards focus on? e.g. key definitions from chapters 3–4"
+        placeholder="e.g. key definitions from chapters 3–4"
       />
     </CustomizeFrame>
   );
@@ -292,26 +324,30 @@ export function QuizModal({
       onGenerate={() =>
         onGenerate({ amount, difficulty, sourceIds, description: description.trim(), title: name.trim() || "Quiz" })
       }
-      generateLabel="Generate quiz"
+      generateLabel="Generate"
+      rows={
+        <>
+          <PropertyRow label="Questions" icon={<Layers {...ICON} />} hint={`About ${QUIZ_COUNTS[amount]} questions`}>
+            <Segmented
+              options={AMOUNTS.map((id) => ({ id, label: AMOUNT_LABELS[id] }))}
+              value={amount}
+              onChange={setAmount}
+            />
+          </PropertyRow>
+          <PropertyRow label="Difficulty" icon={<Gauge {...ICON} />}>
+            <Segmented
+              options={DIFFICULTIES.map((id) => ({ id, label: DIFFICULTY_LABELS[id] }))}
+              value={difficulty}
+              onChange={setDifficulty}
+            />
+          </PropertyRow>
+        </>
+      }
     >
-      <Field label={`Number of questions · ${QUIZ_COUNTS[amount]}`}>
-        <Segmented
-          options={AMOUNTS.map((id) => ({ id, label: AMOUNT_LABELS[id] }))}
-          value={amount}
-          onChange={setAmount}
-        />
-      </Field>
-      <Field label="Difficulty">
-        <Segmented
-          options={DIFFICULTIES.map((id) => ({ id, label: DIFFICULTY_LABELS[id] }))}
-          value={difficulty}
-          onChange={setDifficulty}
-        />
-      </Field>
       <DescriptionField
         value={description}
         onChange={setDescription}
-        placeholder="What topics should the questions cover? e.g. mostly the transformer architecture"
+        placeholder="e.g. mostly the transformer architecture"
       />
     </CustomizeFrame>
   );
@@ -342,12 +378,12 @@ export function MindmapModal({
       onSourcesChange={setSourceIds}
       onClose={onClose}
       onGenerate={() => onGenerate({ sourceIds, description: description.trim(), title: name.trim() || "Mind map" })}
-      generateLabel="Generate mind map"
+      generateLabel="Generate"
     >
       <DescriptionField
         value={description}
         onChange={setDescription}
-        placeholder="What should the map emphasize? e.g. how the concepts relate to each other"
+        placeholder="e.g. how the concepts relate to each other"
       />
     </CustomizeFrame>
   );
@@ -384,39 +420,37 @@ export function AudioModal({
       onSourcesChange={setSourceIds}
       onClose={onClose}
       onGenerate={() => onGenerate({ format, length, mode, sourceIds, description: description.trim(), title: name.trim() || "Audio overview" })}
-      generateLabel="Generate audio"
+      generateLabel="Generate"
+      rows={
+        <>
+          <PropertyRow label="Hosts" icon={<Mic {...ICON} />} hint={AUDIO_MODE_DESCS[mode]}>
+            <Segmented
+              options={AUDIO_MODES.map((id) => ({ id, label: AUDIO_MODE_LABELS[id] }))}
+              value={mode}
+              onChange={setMode}
+            />
+          </PropertyRow>
+          <PropertyRow label="Format" icon={<Shapes {...ICON} />} hint={AUDIO_FORMAT_DESCS[format]}>
+            <Segmented
+              options={AUDIO_FORMATS.map((id) => ({ id, label: AUDIO_FORMAT_LABELS[id] }))}
+              value={format}
+              onChange={setFormat}
+            />
+          </PropertyRow>
+          <PropertyRow label="Length" icon={<Clock {...ICON} />} hint={`About ${AUDIO_LENGTH_MINUTES[length]} minutes`}>
+            <Segmented
+              options={AUDIO_LENGTHS.map((id) => ({ id, label: AUDIO_LENGTH_LABELS[id] }))}
+              value={length}
+              onChange={setLength}
+            />
+          </PropertyRow>
+        </>
+      }
     >
-      <Field label="Hosts">
-        <Segmented
-          options={AUDIO_MODES.map((id) => ({ id, label: AUDIO_MODE_LABELS[id] }))}
-          value={mode}
-          onChange={setMode}
-        />
-        <p className="mt-1.5 text-[11.5px] leading-snug text-ink-3">
-          {AUDIO_MODE_DESCS[mode]}
-        </p>
-      </Field>
-      <Field label="Format">
-        <Segmented
-          options={AUDIO_FORMATS.map((id) => ({ id, label: AUDIO_FORMAT_LABELS[id] }))}
-          value={format}
-          onChange={setFormat}
-        />
-        <p className="mt-1.5 text-[11.5px] leading-snug text-ink-3">
-          {AUDIO_FORMAT_DESCS[format]}
-        </p>
-      </Field>
-      <Field label="Length">
-        <Segmented
-          options={AUDIO_LENGTHS.map((id) => ({ id, label: AUDIO_LENGTH_LABELS[id], hint: `~${AUDIO_LENGTH_MINUTES[id]} min` }))}
-          value={length}
-          onChange={setLength}
-        />
-      </Field>
       <DescriptionField
         value={description}
         onChange={setDescription}
-        placeholder="What should the episode discuss? e.g. focus on the practical implications"
+        placeholder="e.g. focus on the practical implications"
       />
     </CustomizeFrame>
   );
@@ -459,18 +493,20 @@ export function ReportModal({
       onGenerate={() =>
         onGenerate({ type, customPrompt: customPrompt.trim(), sourceIds, title: name.trim() || REPORT_TYPE_LABELS[type] })
       }
-      generateLabel="Generate report"
+      generateLabel="Generate"
       disabled={type === "custom" && !customPrompt.trim()}
+      rows={
+        <PropertyRow label="Type" icon={<LayoutList {...ICON} />}>
+          <Segmented
+            options={REPORT_TYPES.map((id) => ({ id, label: REPORT_TYPE_SHORT[id] }))}
+            value={type}
+            onChange={changeType}
+          />
+        </PropertyRow>
+      }
     >
-      <Field label="Report type">
-        <Segmented
-          options={REPORT_TYPES.map((id) => ({ id, label: REPORT_TYPE_SHORT[id] }))}
-          value={type}
-          onChange={changeType}
-        />
-      </Field>
       {type === "custom" && (
-        <Field label="Custom instructions">
+        <FormField label="Instructions">
           <textarea
             value={customPrompt}
             onChange={(e) => setCustomPrompt(e.target.value)}
@@ -479,7 +515,7 @@ export function ReportModal({
             autoFocus
             className={textareaClass}
           />
-        </Field>
+        </FormField>
       )}
     </CustomizeFrame>
   );
@@ -510,22 +546,20 @@ export function InteractiveModal({
       onSourcesChange={setSourceIds}
       onClose={onClose}
       onGenerate={() => onGenerate({ topic: topic.trim(), sourceIds, title: name.trim() || "Interactive" })}
-      generateLabel="Generate interactive"
+      generateLabel="Generate"
     >
-      <p className="text-[12px] leading-snug text-ink-2">
-        Generate web apps, animations, games, simulations and more from your sources. Describe what you want, or leave it blank and the AI picks.
-      </p>
-      <Field label="What do you want to make? (optional)">
+      <FormField label="What do you want to make?" note="Optional">
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           rows={3}
+          placeholder="A web app, animation, game or simulation. Leave blank and the AI picks."
           className={textareaClass}
         />
-      </Field>
-      <p className="-mt-1.5 text-[11px] leading-snug text-ink-3">
-        Writes a whole web page, so it uses more of your model&apos;s output than other tools (roughly 15–45k tokens). Works best on a strong model.
-      </p>
+        <p className="mt-1.5 text-[12px] leading-snug text-ink-3">
+          Writes a whole web page, so it uses more of your model&apos;s output than other tools (roughly 15–45k tokens). Works best on a strong model.
+        </p>
+      </FormField>
     </CustomizeFrame>
   );
 }

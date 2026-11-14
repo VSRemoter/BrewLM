@@ -82,7 +82,8 @@ import {
 } from "../lib/genImage";
 import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
-import { ensureMediaText } from "../lib/media";
+import { imageRoute } from "../lib/featureRoute";
+import { cloudJobs, ensureMediaText } from "../lib/media";
 import {
   cloneReply,
   constitutionTurn,
@@ -1557,6 +1558,17 @@ export default function ChatPanel({
 
   /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
   const runImageModelCommand = async (text: string): Promise<void> => {
+    const route = imageRoute(settings);
+    if ("via" in route && route.via === "local") {
+      const id = text.replace(/^\/imagemodel\s*/i, "").trim();
+      if (!id || /^(add|remove)\b/i.test(id))
+        return say(
+          `Pictures are drawn on this computer with \`${settings.localImageModel || "whatever your image server has loaded"}\`. Switch with \`/imagemodel <name>\`, or pick from your server's models in **Settings → Local Models → Pictures**.`
+        );
+      await patchSettings({ localImageModel: id });
+      onSettingsChanged();
+      return say(`Local image model set to \`${id}\`. If your image server doesn't have it, \`/image\` will say so.`);
+    }
     if (settings.provider === "brewlm")
       return say("BrewLM AI draws pictures with its own image model. To pick one yourself, use your own OpenRouter key in **Settings → AI Model**.");
     const sub = /^\/imagemodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
@@ -1582,8 +1594,6 @@ export default function ChatPanel({
     const provider = settings.provider;
     if (provider === "brewlm")
       return say("BrewLM AI runs research on its own research model, whatever chat uses. To pick one yourself, use your own key in **Settings → AI Model**.");
-    if (provider === "local")
-      return say("Research and `/search` need web search, which local models can't do — switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to pick a research model.");
     const sub = /^\/researchmodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
     if (sub) return say(await runModelListCommand("research", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
     const raw = normalizeModelId(text.replace(/^\/researchmodel\s*/i, ""));
@@ -1608,7 +1618,7 @@ export default function ChatPanel({
   /** /voice, /voice add|remove|swap, /voicehost, /voicecohost — no LLM. */
   const runVoiceCommand = async (text: string): Promise<void> => {
     if (!voiceProvider)
-      return say("Your audio uses **System voices**, which your computer picks automatically. Choose OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
+      return say("Your audio uses **System voices**, which your computer picks automatically. Choose Local, OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
     const p = voiceProvider;
     const providerLabel = TTS_PROVIDER_LABELS[p];
     const builtIn = builtInVoices(p);
@@ -1647,8 +1657,13 @@ export default function ChatPanel({
         return say(`${role} now speaks with **${match}** (added back to your voices).`);
       }
       if (!voicesNeedIds(p)) {
-        // OpenRouter: voices belong to the TTS model, so any name is taken as-is.
-        if (/\s/.test(raw)) return say(`Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`);
+        // OpenRouter and Local: voices belong to the TTS model or server, so any name is taken as-is.
+        if (/\s/.test(raw))
+          return say(
+            p === "local"
+              ? `Voice names have no spaces — use the exact name your speech server gives, e.g. \`${cmd} af_heart\`.`
+              : `Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`
+          );
         await saveList([...list, { name: raw, id: raw }]);
         await setHost(host, raw);
         return say(`${role} now speaks with **${raw}** (added to your voices). If the TTS model doesn't know that voice, the audio overview will say so.`);
@@ -1697,13 +1712,17 @@ export default function ChatPanel({
       return say(`Added **${match}** to your voices. Use it with \`/voicehost ${match}\` or \`/voicecohost ${match}\`.`);
     }
     if (!voicesNeedIds(p)) {
-      // OpenRouter: the voice's own name is what the model expects.
+      // OpenRouter and Local: the voice's own name is what the model expects.
       const name = stripOuterQuotes(arg);
       if (!name || /\s/.test(name))
-        return say("Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page.");
+        return say(
+          p === "local"
+            ? "Give the voice exactly as your speech server names it, e.g. `/voice add af_heart` for Kokoro. Test connection in Settings → Audio Voices adds the server's voices for you."
+            : "Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page."
+        );
       if (findVoice(list, name)) return say(`**${name}** is already in your voices. Use it with \`/voicehost ${name}\`.`);
       await saveList([...list, { name, id: name }]);
-      return say(`Added **${name}** to your OpenRouter voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
+      return say(`Added **${name}** to your ${providerLabel} voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
     }
     // ElevenLabs: a name (quote it if it has spaces) then the voice ID.
     const parsed = /^(?:"([^"]+)"|(.+?))\s+(\S+)$/.exec(arg);
@@ -3588,6 +3607,12 @@ export default function ChatPanel({
             {settings.provider === "brewlm"
               ? `BrewLM AI · ${brewlmModelLabel(model)}`
               : `${model || "no model picked"} · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
+            {settings.provider === "local" && cloudJobs(settings).length > 0 && (
+              <span title={`These still use a cloud service: ${cloudJobs(settings).join(", ")}. Change them in Settings → Local Models.`}>
+                {" "}
+                · some jobs use the cloud
+              </span>
+            )}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}

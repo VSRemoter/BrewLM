@@ -90,7 +90,8 @@ import {
   QuizModal,
   ReportModal,
 } from "./StudioCustomize";
-import { GhostButton, Modal, PrimaryButton, Spinner } from "./ui";
+import { FormField, GhostButton, inputClass, Modal, PrimaryButton, Spinner, textareaClass } from "./ui";
+import { Toggle } from "./settings/controls";
 
 const TOOLS: {
   kind: ArtifactKind;
@@ -1275,47 +1276,41 @@ function ResearchModal({
   const [description, setDescription] = useState("");
 
   return (
-    <Modal title="Deep research" onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <p className="-mt-1 text-[12px] leading-relaxed text-ink-3">
+    <Modal
+      title="Deep research"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="mr-auto text-[12px] text-ink-3">Uses your provider's web search, which may cost a little extra.</span>
+          <PrimaryButton onClick={() => onStart(title.trim(), description.trim())} disabled={!title.trim()}>
+            Start research
+          </PrimaryButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p className="-mt-1 text-[13px] leading-relaxed text-ink-3">
           The model plans web searches, reads the most relevant pages, and writes a
           cited report. Read pages are added as notebook sources.
         </p>
-        <div>
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-            Title
-          </label>
+        <FormField label="Topic">
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Grid-scale battery storage"
             autoFocus
-            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none focus:border-ink-3"
+            className={inputClass}
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-            Description <span className="font-normal normal-case">(optional)</span>
-          </label>
+        </FormField>
+        <FormField label="Focus" note="Optional">
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Angle, depth, or specific questions to cover…"
             rows={3}
-            className="w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-ink-3"
+            className={textareaClass}
           />
-        </div>
-        <p className="-mt-1 text-[11px] leading-relaxed text-ink-3">
-          Uses your provider's web search — may incur small extra provider charges.
-        </p>
-        <div className="flex justify-end">
-          <PrimaryButton
-            onClick={() => onStart(title.trim(), description.trim())}
-            disabled={!title.trim()}
-          >
-            Start research
-          </PrimaryButton>
-        </div>
+        </FormField>
       </div>
     </Modal>
   );
@@ -1361,71 +1356,59 @@ function ReviseModal({
   };
 
   return (
-    <Modal title={`Revise ${a.title}`} onClose={onClose}>
-      <div className="flex flex-col gap-3.5">
-        <div>
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-            Title
-          </label>
+    <Modal
+      title={`Revise ${a.title}`}
+      onClose={onClose}
+      footer={
+        <>
+          {busy !== null && (
+            <button onClick={onCancel} className="mr-auto rounded-md px-2 py-1.5 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink">
+              Stop
+            </button>
+          )}
+          <GhostButton onClick={() => onRun(false)} disabled={busy !== null || !note.trim()}>
+            {busy === "new" ? <Spinner size={13} /> : null}
+            Save as new copy
+          </GhostButton>
+          <PrimaryButton onClick={() => onRun(true)} disabled={busy !== null || !note.trim()}>
+            {busy === "replace" ? <Spinner size={13} /> : null}
+            Replace original
+          </PrimaryButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <FormField label="Title" aside={<span className="text-[12px] text-ink-3">Renames save automatically</span>}>
           <input
             value={title}
             onChange={(e) => onTitleChange(e.target.value)}
             maxLength={80}
-            className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+            className={inputClass}
           />
-          <p className="mt-1 text-[11px] text-ink-3">Renames save automatically.</p>
-        </div>
-        <div>
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-            Description
-          </label>
+        </FormField>
+        <FormField label="What should change?">
           <textarea
             value={note}
             onChange={(e) => onNoteChange(e.target.value)}
-            placeholder={placeholder[a.kind] ?? "What should change?"}
+            placeholder={placeholder[a.kind] ?? "Describe the change"}
             rows={3}
             autoFocus
-            className="w-full resize-none rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-ink-3 focus:border-ink-3"
+            className={textareaClass}
           />
-        </div>
+        </FormField>
         {a.kind === "audio" && (
-          <label className="flex items-start gap-2.5 text-[12px] leading-snug text-ink-2">
-            <input
-              type="checkbox"
-              checked={reAudio}
-              onChange={(e) => onReAudioChange(e.target.checked)}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent"
-            />
-            <span>
-              Also re-generate the audio (slower — re-synthesizes every turn).{" "}
-              <span className="text-ink-3">Off keeps the current mp3.</span>
+          <label className="flex items-start justify-between gap-4 rounded-lg bg-hover/60 px-3 py-2.5">
+            <span className="text-[13px] leading-snug text-ink">
+              Re-generate the audio
+              <span className="mt-0.5 block text-[12px] text-ink-3">
+                Slower: re-synthesizes every turn. Off keeps the current mp3.
+              </span>
+            </span>
+            <span className="mt-0.5 shrink-0">
+              <Toggle checked={reAudio} onChange={onReAudioChange} label="Re-generate the audio" />
             </span>
           </label>
         )}
-        <div className="flex items-center justify-end gap-2">
-          {busy !== null && (
-            <button
-              onClick={onCancel}
-              className="mr-auto text-[12px] text-ink-3 hover:text-ink"
-            >
-              Cancel
-            </button>
-          )}
-          <GhostButton
-            onClick={() => onRun(false)}
-            disabled={busy !== null || !note.trim()}
-          >
-            {busy === "new" ? <Spinner size={13} /> : null}
-            Save as new copy
-          </GhostButton>
-          <PrimaryButton
-            onClick={() => onRun(true)}
-            disabled={busy !== null || !note.trim()}
-          >
-            {busy === "replace" ? <Spinner size={13} /> : null}
-            Replace original
-          </PrimaryButton>
-        </div>
       </div>
     </Modal>
   );
@@ -1446,13 +1429,24 @@ function NameModal({
   const [title, setTitle] = useState(defaultTitle);
 
   return (
-    <Modal title="Name your output" onClose={onClose}>
+    <Modal
+      title="Name your output"
+      onClose={onClose}
+      footer={
+        <>
+          <GhostButton onClick={onClose}>Cancel</GhostButton>
+          <PrimaryButton type="submit" form="name-output">
+            Generate
+          </PrimaryButton>
+        </>
+      }
+    >
       <form
+        id="name-output"
         onSubmit={(e) => {
           e.preventDefault();
           onConfirm(title.trim() || defaultTitle);
         }}
-        className="flex flex-col gap-3.5"
       >
         <input
           value={title}
@@ -1460,11 +1454,9 @@ function NameModal({
           onFocus={(e) => e.target.select()}
           maxLength={80}
           autoFocus
-          className="w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13px] outline-none focus:border-ink-3"
+          aria-label="Name"
+          className={inputClass}
         />
-        <div className="flex justify-end gap-2">
-          <PrimaryButton type="submit">Generate</PrimaryButton>
-        </div>
       </form>
     </Modal>
   );

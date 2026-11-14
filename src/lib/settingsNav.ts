@@ -1,5 +1,5 @@
 /** Which Settings section opens next (Settings → SettingsPage reads it once as it opens). */
-export type SettingsSectionId = "appearance" | "ai" | "studio" | "audio" | "usage" | "data" | "phone" | "sync" | "sharing" | "about";
+export type SettingsSectionId = "appearance" | "ai" | "local" | "studio" | "audio" | "usage" | "data" | "phone" | "sync" | "sharing" | "about";
 
 let next: SettingsSectionId | null = null;
 

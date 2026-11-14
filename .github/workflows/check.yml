@@ -59,6 +59,13 @@ jobs:
         shell: bash
         run: bash scripts/fetch-sidecars.sh
 
+      # And the whisper.cpp sidecar, for this runner's architecture only.
+      - name: Build whisper.cpp sidecar
+        shell: bash
+        env:
+          WHISPER_ONLY_HOST: "1"
+        run: bash scripts/build-whisper.sh
+
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test

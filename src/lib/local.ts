@@ -61,8 +61,19 @@ export function isEmbeddingModel(id: string): boolean {
   return /embed|bge-|e5-|minilm|nomic-embed|gte-/i.test(id);
 }
 
+/**
+ * Likely able to read images, judging by the name (Ollama and LM Studio don't
+ * say over the OpenAI API). Only used to sort and pre-pick; the Test button
+ * in Settings → Local models is the real check.
+ */
+export function isVisionModel(id: string): boolean {
+  return /vision|[-_.:]vl\b|vl[-_.:]|llava|bakllava|gemma-?3|gemma-?4|minicpm-?v|pixtral|moondream|internvl|smolvlm|granite.*vision|llama-?4|mistral-small-?3\.[12]|qwen\d?(\.\d)?-?omni/i.test(
+    id
+  );
+}
+
 /** Model ids the server reports at GET {base}/models. Throws with a readable reason. */
-export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "key">): Promise<string[]> {
+export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "key">, connectTimeout = 4000): Promise<string[]> {
   const s = server ?? (await loadLocalServer());
   const base = normalizeBaseUrl(s.baseUrl);
   if (!base) return [];
@@ -70,7 +81,7 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   try {
     res = await platform.fetch(`${base}/models`, {
       headers: localHeaders(s.key),
-      connectTimeout: 4000,
+      connectTimeout,
     });
   } catch {
     throw new Error(`Couldn't reach ${base}. Is the server running?`);
@@ -81,6 +92,108 @@ export async function listLocalModels(server?: Pick<LocalServer, "baseUrl" | "ke
   const json = (await res.json().catch(() => null)) as { data?: { id?: unknown }[] } | null;
   const ids = (json?.data ?? []).map((m) => m?.id).filter((id): id is string => typeof id === "string");
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+}
+
+/* ------------------------------ local speech ------------------------------ */
+
+/** Starter voices for Local: Kokoro's (af_ = American female, bm_ = British male…). */
+export const LOCAL_TTS_VOICES = ["af_heart", "af_bella", "am_michael", "am_adam", "bf_emma", "bm_george"];
+
+/**
+ * The voices the two hosts use on a local server. Picks the server has are
+ * kept; a missing or unknown one (say "nova", left from OpenAI) is replaced by
+ * a server voice the other host isn't using, so the hosts never sound alike by
+ * accident. With no voice list from the server, the picks go as they are
+ * ("" = the server's default).
+ */
+export function localHostVoices(
+  picked: { Alex: string; Sam: string },
+  served: string[] | null
+): { Alex: string; Sam: string } {
+  if (!served?.length) return picked;
+  const ok = (v: string) => (v && served.includes(v) ? v : "");
+  const other = (avoid: string) =>
+    LOCAL_TTS_VOICES.find((v) => served.includes(v) && v !== avoid) ?? served.find((v) => v !== avoid) ?? served[0];
+  let alex = ok(picked.Alex);
+  let sam = ok(picked.Sam);
+  if (!alex) alex = other(sam);
+  if (!sam) sam = other(alex);
+  return { Alex: alex, Sam: sam };
+}
+
+/** Speech models among a server's models (Speaches also lists Whisper; LocalAI lists everything). */
+export function isSpeechModel(id: string): boolean {
+  return /kokoro|tts|piper|orpheus|xtts|chatterbox|melo|outetts|kitten|parler|bark|zonos|csm|dia-|f5|vits|sesame/i.test(id) && !isEmbeddingModel(id) && !/whisper|transcri|stt/i.test(id);
+}
+
+/** Speech-to-text models among a server's models (Speaches lists its TTS models too). */
+export function isTranscribeModel(id: string): boolean {
+  return /whisper|transcri|parakeet|canary|moonshine|sensevoice|stt|voxtral|distil/i.test(id) && !isEmbeddingModel(id);
+}
+
+/** Voice ids out of the shapes servers use: ["af_heart"], {voices: [...]}, {data: [{id}]}… */
+export function parseVoiceList(json: unknown): string[] {
+  const obj = json as { voices?: unknown; data?: unknown } | null;
+  const raw: unknown[] = Array.isArray(json) ? json : Array.isArray(obj?.voices) ? obj.voices : Array.isArray(obj?.data) ? obj.data : [];
+  const ids = raw
+    .map((v) => {
+      if (typeof v === "string") return v;
+      const o = v as { id?: unknown; voice_id?: unknown; name?: unknown } | null;
+      const id = o?.id ?? o?.voice_id ?? o?.name;
+      return typeof id === "string" ? id : "";
+    })
+    .filter((id) => id.trim());
+  return [...new Set(ids)];
+}
+
+/**
+ * Voices the speech server offers, or null when it doesn't say (not every
+ * server has a voice list: Kokoro-FastAPI does at /audio/voices).
+ */
+export async function listLocalVoices(server: { baseUrl: string; key: string }): Promise<string[] | null> {
+  const base = normalizeBaseUrl(server.baseUrl);
+  if (!base) return null;
+  for (const path of ["/audio/voices", "/audio/speech/voices"]) {
+    try {
+      const res = await platform.fetch(`${base}${path}`, { headers: localHeaders(server.key), connectTimeout: 4000 });
+      if (!res.ok) continue;
+      const voices = parseVoiceList(await res.json().catch(() => null));
+      if (voices.length) return voices;
+    } catch {
+      return null; // unreachable: no point trying the other path
+    }
+  }
+  return null;
+}
+
+/** Where the popular local runners listen by default. */
+const DETECT_TARGETS: { label: string; port: number }[] = [
+  { label: "Ollama", port: 11434 },
+  { label: "LM Studio", port: 1234 },
+  { label: "llama.cpp", port: 8080 },
+  { label: "Jan", port: 1337 },
+  { label: "vLLM or Speaches", port: 8000 },
+];
+
+export interface FoundServer {
+  label: string;
+  baseUrl: string;
+  models: string[];
+}
+
+/** Local servers answering on their usual ports, checked side by side. */
+export async function detectLocalServers(): Promise<FoundServer[]> {
+  const found = await Promise.all(
+    DETECT_TARGETS.map(async ({ label, port }) => {
+      const baseUrl = `http://localhost:${port}/v1`;
+      try {
+        return { label, baseUrl, models: await listLocalModels({ baseUrl, key: "" }, 1500) };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return found.filter((f): f is FoundServer => f !== null);
 }
 
 /* ------------------------------ context budget ------------------------------ */

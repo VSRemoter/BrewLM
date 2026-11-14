@@ -8,6 +8,8 @@ vi.mock("../components/ChatPanel", () => ({}));
 vi.mock("./rag", () => ({}));
 vi.mock("./local", () => ({}));
 vi.mock("./usage", () => ({}));
+vi.mock("./localImage", () => ({}));
+vi.mock("./settings", () => ({}));
 vi.mock("./brewlmAi", () => ({ aiConfigNow: () => ({ roles: { image: "img/brewlm" } }) }));
 
 const { cloneReply, constitutionTurn, groundReply, isImageTurn, parseClone, starReply, stripOuterQuotes } = await import(

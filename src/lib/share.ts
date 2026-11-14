@@ -351,6 +351,9 @@ export async function writeSharedSnapshot(snap: NotebookSnapshot, origin: ShareO
       );
     } else {
       try {
+        // Rows left by an open of this link that crashed part-way (its notebook
+        // row goes in last, so it never appeared) would collide with these.
+        await deleteRows(nbId);
         await insertRows(s, true);
         await insertNotebook({
           ...snap.notebook,

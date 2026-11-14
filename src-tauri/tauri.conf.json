@@ -36,7 +36,8 @@
     "shortDescription": "Your personal research copilot",
     "longDescription": "BrewLM is a local-first, NotebookLM-style research and study app. Add PDFs, web pages, YouTube videos, notes, images and audio, ask questions with cited answers, and turn your sources into flashcards, quizzes, mind maps, reports, deep research and podcast-style audio overviews — with the AI model of your choice. Everything stays on your computer.",
     "externalBin": [
-      "binaries/cloudflared"
+      "binaries/cloudflared",
+      "binaries/whisper-cli"
     ],
     "icon": [
       "icons/32x32.png",
