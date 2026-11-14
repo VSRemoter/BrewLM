@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { parseShareUrl, type Progress } from "../lib/shareLinks";
 import { notebookForShare, openSharedLink } from "../lib/shareView";
-import { Modal, PrimaryButton, Spinner } from "./ui";
+import { GhostButton, inputClass, Modal, PrimaryButton, Spinner } from "./ui";
 
 export default function OpenLinkDialog({
   initial,
@@ -45,10 +45,25 @@ export default function OpenLinkDialog({
 
   const parsed = parseShareUrl(text);
   return (
-    <Modal title="Open a shared notebook" onClose={busy ? () => {} : onClose}>
+    <Modal
+      title="Open a shared notebook"
+      onClose={busy ? () => {} : onClose}
+      footer={
+        !initial && (
+          <>
+            <GhostButton disabled={busy} onClick={onClose}>
+              Cancel
+            </GhostButton>
+            <PrimaryButton disabled={!parsed || busy} onClick={() => parsed && void open(parsed)}>
+              Open
+            </PrimaryButton>
+          </>
+        )
+      }
+    >
       {!initial && (
         <>
-          <p className="mb-2.5 text-[12.5px] leading-relaxed text-ink-3">
+          <p className="-mt-1 mb-3 text-[13px] leading-relaxed text-ink-3">
             Paste a BrewLM link someone sent you. The notebook opens read-only; save a copy to make it your own.
           </p>
           <input
@@ -58,7 +73,7 @@ export default function OpenLinkDialog({
             onKeyDown={(e) => e.key === "Enter" && parsed && !busy && void open(parsed)}
             placeholder="https://app.brewlm.com/s/…"
             disabled={busy}
-            className="w-full rounded-lg border border-edge bg-canvas px-3 py-2 font-mono text-[12px] outline-none focus:border-accent"
+            className={`${inputClass} font-mono text-[12px]`}
             aria-label="Shared link"
           />
           {text.trim() && !parsed && (
@@ -74,13 +89,6 @@ export default function OpenLinkDialog({
         </p>
       )}
       {error && <p className="mt-3 text-[12px] leading-relaxed text-danger">{error}</p>}
-      {!initial && (
-        <div className="mt-4 flex justify-end">
-          <PrimaryButton disabled={!parsed || busy} onClick={() => parsed && void open(parsed)}>
-            Open
-          </PrimaryButton>
-        </div>
-      )}
     </Modal>
   );
 }

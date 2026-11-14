@@ -62,23 +62,28 @@ export function ConfirmHost() {
 
   if (!req) return null;
   return (
-    <Modal title={req.title} onClose={() => close(false)}>
-      <div className="-mt-1 mb-4 text-[13px] leading-relaxed text-ink-2">{req.message}</div>
-      <div className="flex justify-end gap-2">
-        <button
-          ref={cancelRef}
-          onClick={() => close(false)}
-          className="rounded-full border border-edge bg-panel px-4 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-hover-soft"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => close(true)}
-          className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
-        >
-          {req.confirmLabel ?? "Delete"}
-        </button>
-      </div>
+    <Modal
+      title={req.title}
+      onClose={() => close(false)}
+      footer={
+        <>
+          <button
+            ref={cancelRef}
+            onClick={() => close(false)}
+            className="rounded-full border border-edge bg-panel px-4 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-hover"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => close(true)}
+            className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
+          >
+            {req.confirmLabel ?? "Delete"}
+          </button>
+        </>
+      }
+    >
+      <div className="-mt-1 text-[13px] leading-relaxed text-ink-2">{req.message}</div>
     </Modal>
   );
 }
