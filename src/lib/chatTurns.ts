@@ -22,7 +22,7 @@ import { detectImageServer, generateLocalImages, localImageCanEdit, ratioOf } fr
 import { patchSettings } from "./settings";
 import { buildSystemPrompt } from "../components/ChatPanel";
 import type { MentionItem } from "./mentions";
-import { contextBudget } from "./local";
+import { contextBudget, ensureServerContext } from "./local";
 import { ensureIndexed, rankChunks, type RetrievedChunk } from "./rag";
 import { recordUsage } from "./usage";
 import { aiConfigNow } from "./brewlmAi";
@@ -279,6 +279,7 @@ export async function searchTurn(opts: {
     return "What should I look up? e.g. `/search best budget e-ink tablets 2026`. For a deep multi-source dossier saved to Studio, use `/research <topic>` instead.";
   let retrieved: RetrievedChunk[] | undefined;
   // Through a search service the web pages share the model's window with the notebook: half each.
+  await ensureServerContext(settings, { load: true });
   const full = contextBudget(settings);
   const budget = settings.searchService !== "auto" ? { ...full, sources: Math.floor(full.sources / 2) } : full;
   if (opts.grounded) {

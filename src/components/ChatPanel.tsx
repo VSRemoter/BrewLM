@@ -71,7 +71,7 @@ import {
 import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { aiBlock, AI_TIERS, brewlmModelLabel, costLabel, costVsFast, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
 import { AiBlockedNotice } from "./settings/BrewLmAi";
-import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
+import { CLOUD_BUDGET, contextBudget, ensureServerContext, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
   libraryImageUrl,
@@ -126,6 +126,7 @@ import {
   saveResearchModelList,
   saveVoiceList,
   THINKING_LABELS,
+  thinkingLevels,
   TTS_PROVIDER_LABELS,
   voiceLabel,
   type Host,
@@ -1100,6 +1101,8 @@ export default function ChatPanel({
       document.removeEventListener("keydown", onKey);
     };
   }, [thinkingMenu]);
+  /** Off is a local-only level: cloud models treat it as Auto, so that's what the button shows. */
+  const shownThinking: Thinking = thinking === "off" && settings.provider !== "local" ? "auto" : thinking;
   const pickThinking = async (level: Thinking) => {
     setThinkingMenu(false);
     setThinking(level);
@@ -1508,7 +1511,7 @@ export default function ChatPanel({
           : "Reasoning now stays folded above each reply; click **Reasoning** to open one."
       );
     }
-    const effort = settings.provider === "local" ? "" : ` Thinking effort is **${THINKING_LABELS[thinking]}**; change it with the brain button beside Send.`;
+    const effort = ` Thinking effort is **${THINKING_LABELS[shownThinking]}**; change it with the brain button beside Send.`;
     return say(
       `Reasoning above replies is ${showReasoning ? "open (\`/thinking hide\` folds it)" : "folded (\`/thinking show\` opens it)"}.${effort}`
     );
@@ -2565,6 +2568,8 @@ export default function ChatPanel({
     // back to legacy truncation inside buildSystemParts.
     const t0 = performance.now();
     const groundedNow = (notebookGrounded ?? 1) !== 0;
+    // Size everything below to the window the local server really has.
+    await ensureServerContext(settings, { load: true });
     let retrieved: RetrievedChunk[] | undefined;
     let whole = false;
     if (groundedNow) {
@@ -3534,61 +3539,60 @@ export default function ChatPanel({
               }
               className="max-h-80 flex-1 resize-none overflow-hidden bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
-            {settings.provider !== "local" && (
-              <div ref={thinkingMenuRef} className="relative shrink-0">
-                <button
-                  onClick={() => setThinkingMenu((o) => !o)}
-                  className={`flex h-8 items-center gap-1 rounded-full transition-colors hover:bg-hover ${
-                    thinking === "auto" ? "w-8 justify-center text-ink-3 hover:text-ink" : "px-2.5 text-ink-2 hover:text-ink"
-                  } ${thinkingMenu ? "bg-hover text-ink" : ""}`}
-                  aria-label={`Thinking effort: ${THINKING_LABELS[thinking]}`}
-                  aria-haspopup="menu"
-                  aria-expanded={thinkingMenu}
-                  title={`Thinking effort: ${THINKING_LABELS[thinking]}`}
+            <div ref={thinkingMenuRef} className="relative shrink-0">
+              <button
+                onClick={() => setThinkingMenu((o) => !o)}
+                className={`flex h-8 items-center gap-1 rounded-full transition-colors hover:bg-hover ${
+                  shownThinking === "auto" ? "w-8 justify-center text-ink-3 hover:text-ink" : "px-2.5 text-ink-2 hover:text-ink"
+                } ${thinkingMenu ? "bg-hover text-ink" : ""}`}
+                aria-label={`Thinking effort: ${THINKING_LABELS[shownThinking]}`}
+                aria-haspopup="menu"
+                aria-expanded={thinkingMenu}
+                title={`Thinking effort: ${THINKING_LABELS[shownThinking]}`}
+              >
+                <Brain size={16} strokeWidth={1.9} />
+                {shownThinking !== "auto" && <span className="text-[12px] font-medium">{THINKING_LABELS[shownThinking]}</span>}
+              </button>
+              {thinkingMenu && (
+                <div
+                  role="menu"
+                  className="absolute bottom-full right-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-lg"
                 >
-                  <Brain size={16} strokeWidth={1.9} />
-                  {thinking !== "auto" && <span className="text-[12px] font-medium">{THINKING_LABELS[thinking]}</span>}
-                </button>
-                {thinkingMenu && (
-                  <div
-                    role="menu"
-                    className="absolute bottom-full right-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-lg"
-                  >
-                    <p className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
-                      Thinking effort
-                    </p>
-                    {(Object.keys(THINKING_LABELS) as Thinking[]).map((level) => (
-                      <button
-                        key={level}
-                        role="menuitemradio"
-                        aria-checked={thinking === level}
-                        onClick={() => pickThinking(level)}
-                        className={`flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover ${
-                          thinking === level ? "text-ink" : "text-ink-2"
-                        }`}
-                      >
-                        <span className="mt-0.5 flex w-3.5 shrink-0 justify-center">
-                          {thinking === level && <Check size={13} strokeWidth={2.4} />}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block text-[13px] font-medium">{THINKING_LABELS[level]}</span>
-                          <span className="block text-[11.5px] text-ink-3">
+                  <p className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
+                    Thinking effort
+                  </p>
+                  {thinkingLevels(settings.provider).map((level) => (
+                    <button
+                      key={level}
+                      role="menuitemradio"
+                      aria-checked={shownThinking === level}
+                      onClick={() => pickThinking(level)}
+                      className={`flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover ${
+                        shownThinking === level ? "text-ink" : "text-ink-2"
+                      }`}
+                    >
+                      <span className="mt-0.5 flex w-3.5 shrink-0 justify-center">
+                        {shownThinking === level && <Check size={13} strokeWidth={2.4} />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium">{THINKING_LABELS[level]}</span>
+                        <span className="block text-[11.5px] text-ink-3">
+                          {
                             {
-                              {
-                                auto: "Each model's own default",
-                                low: "Brief — faster and cheaper",
-                                medium: "Balanced",
-                                high: "Longest — best for hard questions",
-                              }[level]
-                            }
-                          </span>
+                              auto: "Each model's own default",
+                              off: "No thinking — fastest answers",
+                              low: settings.provider === "local" ? "Brief (some models only do on or off)" : "Brief — faster and cheaper",
+                              medium: "Balanced",
+                              high: "Longest — best for hard questions",
+                            }[level]
+                          }
                         </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={() => (streaming !== null ? stopGenerating() : send())}
               disabled={streaming === null && !draft.trim()}

@@ -17,11 +17,13 @@ import {
   whisperStatusNow,
   type WhisperStatus,
 } from "../../lib/builtinWhisper";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { planHasAi } from "../../lib/brewlmAi";
 import { CLOUD_PROVIDERS, imageRoute, LOCAL_CAPABLE, type MediaFeature, staysLocal } from "../../lib/featureRoute";
+import { parseWorkflow, planWorkflow, workflowProblems } from "../../lib/comfyui";
 import { detectImageServer, generateLocalImages, type ImageServer, imageServerRoot } from "../../lib/localImage";
 import {
+  clearServerContext,
   detectLocalServers,
   type FoundServer,
   isEmbeddingModel,
@@ -68,9 +70,13 @@ export function LocalServerRows({
   const [conn, setConn] = useState<Connection>({ state: "idle" });
   const [found, setFound] = useState<FoundServer[] | "looking" | null>(null);
   const activePreset = LOCAL_PRESETS.find((p) => p.url === settings.localBaseUrl)?.id ?? "custom";
+  // "Custom" has no address of its own — choosing it hands off to the Address field.
+  const addressRef = useRef<HTMLInputElement>(null);
 
   const test = async (baseUrl = settings.localBaseUrl, key = settings.localKey) => {
     setConn({ state: "testing" });
+    // The server may have been restarted with another window size: ask it again before the next question.
+    clearServerContext();
     try {
       const models = await listLocalModels({ baseUrl, key });
       setConn({ state: "ok", models });
@@ -161,18 +167,24 @@ export function LocalServerRows({
               {p.label}
             </button>
           ))}
-          <span
-            className={`rounded-md px-2 py-1.5 text-center text-[12.5px] font-medium ${
-              activePreset === "custom" ? "bg-panel text-ink shadow-sm" : "text-ink-3"
+          <button
+            onClick={() => {
+              addressRef.current?.focus();
+              addressRef.current?.select();
+            }}
+            title="Type your server's address in the Address field"
+            className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
+              activePreset === "custom" ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
             }`}
           >
             Custom
-          </span>
+          </button>
         </div>
       </Row>
       <Row label="Address" alignTop>
         <div className="w-72">
           <input
+            ref={addressRef}
             value={settings.localBaseUrl}
             onChange={(e) => patch({ localBaseUrl: e.target.value })}
             onBlur={(e) => {
@@ -800,7 +812,7 @@ function PicturesRows({ settings, patch }: { settings: Settings; patch: (p: Part
       </Row>
       {localWanted && (
         <>
-          <Row label="Image server" desc="Forge, Automatic1111 or SD.Next started with --api, Draw Things with its API server on, or LocalAI." alignTop>
+          <Row label="Image server" desc="Forge, Automatic1111 or SD.Next started with --api, Draw Things with its API server on, ComfyUI, or LocalAI." alignTop>
             <div className="flex w-72 flex-col gap-2">
               <div className="grid grid-cols-3 gap-1 rounded-lg border border-edge bg-canvas p-1">
                 {LOCAL_IMAGE_PRESETS.map((p) => (
@@ -848,14 +860,30 @@ function PicturesRows({ settings, patch }: { settings: Settings; patch: (p: Part
               {check?.state === "error" && <p className="text-right text-[12px] leading-relaxed text-danger">{check.message}</p>}
               {server && (
                 <p className="text-right text-[12px] leading-relaxed text-ok">
-                  Connected · {server.api === "a1111" ? "Automatic1111-style API: draws and edits" : "OpenAI-style API: draws new pictures only"}
+                  Connected ·{" "}
+                  {server.api === "a1111"
+                    ? "Automatic1111-style API: draws and edits"
+                    : server.api === "comfyui"
+                      ? "ComfyUI: runs a workflow to draw and edit"
+                      : "OpenAI-style API: draws new pictures only"}
                 </p>
               )}
             </div>
           </Row>
-          <Row label="Image model" desc="Leave empty to use whatever the server has loaded." alignTop>
+          {settings.localImageApi === "comfyui" && <ComfyWorkflowRow settings={settings} patch={patch} />}
+          <Row
+            label="Image model"
+            desc={
+              settings.localImageApi === "comfyui"
+                ? settings.localImageWorkflow
+                  ? "Your workflow picks the model."
+                  : "The checkpoint the built-in workflow loads."
+                : "Leave empty to use whatever the server has loaded."
+            }
+            alignTop
+          >
             <div className="flex w-72 flex-col items-end gap-1.5">
-              {server && server.models.length > 0 ? (
+              {settings.localImageApi === "comfyui" && settings.localImageWorkflow ? null : server && server.models.length > 0 ? (
                 <select
                   value={settings.localImageModel}
                   onChange={(e) => patch({ localImageModel: e.target.value })}
@@ -903,6 +931,93 @@ function PicturesRows({ settings, patch }: { settings: Settings; patch: (p: Part
   );
 }
 
+/**
+ * ComfyUI: the built-in checkpoint workflow, or the user's own exported with
+ * Workflow → Export (API) — what newer models like Flux need. Shows where
+ * BrewLM will put the prompt, so a workflow that can't work says so here.
+ */
+function ComfyWorkflowRow({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  const own = !!settings.localImageWorkflow.trim();
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  let summary: string | null = null;
+  let problem: string | null = null;
+  if (own) {
+    try {
+      const wf = parseWorkflow(settings.localImageWorkflow);
+      const plan = planWorkflow(wf);
+      problem = workflowProblems(plan)[0] ?? null;
+      if (!problem) {
+        const at = (ids: string[]) => ids.map((id) => wf[id].class_type).join(", ");
+        summary = [
+          `Prompt → ${at([...new Set(plan.prompt.map(([id]) => id))])}`,
+          plan.size.length ? `size → ${at(plan.size)}` : "size: as the workflow sets it",
+          plan.loadImage.length ? "edits pictures" : "draws new pictures only",
+        ].join(" · ");
+      }
+    } catch (e) {
+      problem = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const load = (text: string) => {
+    try {
+      parseWorkflow(text);
+      setError(null);
+      patch({ localImageWorkflow: text.trim() });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <Row
+      label="Workflow"
+      desc="Built in works with single-file checkpoints (SDXL and the like). For newer models such as Flux or Qwen-Image, build or open the model's workflow in ComfyUI, choose Workflow → Export (API), and import that file."
+      alignTop
+    >
+      <div className="flex w-72 flex-col items-end gap-1.5">
+        <div className="grid w-full grid-cols-2 gap-1 rounded-lg border border-edge bg-canvas p-1">
+          <button
+            onClick={() => {
+              setError(null);
+              patch({ localImageWorkflow: "" });
+            }}
+            className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${!own ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"}`}
+          >
+            Built in
+          </button>
+          <button
+            onClick={() => fileRef.current?.click()}
+            className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${own ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"}`}
+          >
+            {own ? "Your own" : "Import yours…"}
+          </button>
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void f.text().then(load);
+          }}
+        />
+        {own && (
+          <button onClick={() => fileRef.current?.click()} className="text-[12px] font-medium text-link hover:underline">
+            Import another…
+          </button>
+        )}
+        {summary && <p className="text-right text-[12px] leading-relaxed text-ok">{summary}</p>}
+        {(error ?? problem) && <p className="text-right text-[12px] leading-relaxed text-danger">{error ?? problem}</p>}
+      </div>
+    </Row>
+  );
+}
+
 /** A job that has no choice here: where it runs now, and where to change it. */
 function StatusRow({
   label,
@@ -932,6 +1047,87 @@ function StatusRow({
   );
 }
 
+/** One way to serve a kind of model: who it's for, and the command. */
+const HF_ROUTES: { kind: string; when: string; steps: { app: string; cmd?: string; note?: string }[] }[] = [
+  {
+    kind: "GGUF files",
+    when: "Most models people share for home computers — the repo name usually ends in GGUF (Unsloth, bartowski, ISTA-DASLab's GSQ builds…).",
+    steps: [
+      { app: "Ollama", cmd: "ollama run hf.co/<user>/<repo>:<quant>", note: "for example :Q4_K_M" },
+      { app: "LM Studio", note: "search the repo in Discover and download a size that fits" },
+      { app: "llama.cpp", cmd: "llama-server -hf <user>/<repo>:<quant> -c 32768" },
+    ],
+  },
+  {
+    kind: "MLX (Apple Silicon)",
+    when: "Repos from mlx-community and others built for Macs — often the fastest choice on one.",
+    steps: [
+      { app: "LM Studio", note: "picks MLX builds on a Mac" },
+      { app: "mlx-lm", cmd: "mlx_lm.server --model <user>/<repo> --port 8080" },
+    ],
+  },
+  {
+    kind: "Original weights (safetensors)",
+    when: "A model with no GGUF or MLX build yet, or a brand-new architecture. Usually needs Linux and an NVIDIA card.",
+    steps: [
+      { app: "vLLM", cmd: "vllm serve <user>/<repo> --max-model-len 32768" },
+      { app: "SGLang", cmd: "python -m sglang.launch_server --model-path <user>/<repo> --port 30000" },
+    ],
+  },
+  {
+    kind: "Very large models on a gaming PC",
+    when: "100B+ models that don't fit in graphics memory alone.",
+    steps: [{ app: "Strata", note: "spreads a model across the graphics card, memory and processor" }],
+  },
+];
+
+/**
+ * How to serve any Hugging Face model so BrewLM can use it: BrewLM talks to
+ * the server, so the question is which server runs which kind of file.
+ */
+function HuggingFaceGuide() {
+  return (
+    <details className="group border-t border-edge-soft py-3 text-[13px]">
+      <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-ink [&::-webkit-details-marker]:hidden">
+        <ArrowRight size={13} className="text-ink-3 transition-transform group-open:rotate-90" />
+        Run any Hugging Face model
+      </summary>
+      <div className="mt-2 space-y-3 pl-5 text-ink-2">
+        <p>
+          BrewLM uses whatever server runs the model, so pick the server that fits the kind of files the model comes as.
+          Then put its address in <strong>Server → Custom</strong> above (each one prints it when it starts) and press{" "}
+          <strong>Test</strong>.
+        </p>
+        {HF_ROUTES.map((r) => (
+          <div key={r.kind}>
+            <p className="font-medium text-ink">{r.kind}</p>
+            <p className="text-[12.5px] text-ink-3">{r.when}</p>
+            <ul className="mt-1 space-y-1">
+              {r.steps.map((st) => (
+                <li key={st.app} className="text-[12.5px]">
+                  <span className="font-medium text-ink-2">{st.app}</span>
+                  {st.note && <span className="text-ink-3"> — {st.note}</span>}
+                  {st.cmd && (
+                    <code className="mt-0.5 block w-fit max-w-full overflow-x-auto whitespace-nowrap rounded-md bg-canvas px-2 py-1 font-mono text-[11.5px] text-ink">
+                      {st.cmd}
+                    </code>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        <p className="text-[12.5px] text-ink-3">
+          Pick a size that fits: the model file plus a few GB for its context window should leave room for everything else
+          you have open. Reasoning models can be told how hard to think with the brain button beside Send, and chat
+          engines with no embedding models (Strata, for one) can borrow them from another server under{" "}
+          <strong>AI Model → Embedding server</strong>.
+        </p>
+      </div>
+    </details>
+  );
+}
+
 export default function LocalModelsSection({
   settings,
   patch,
@@ -951,6 +1147,7 @@ export default function LocalModelsSection({
 
       <Card>
         <LocalServerRows settings={settings} patch={patch} onModels={setServed} detect />
+        <HuggingFaceGuide />
       </Card>
 
       <Card>

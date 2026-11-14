@@ -3,7 +3,7 @@ import { openRouterPrefs, routingError } from "./routing";
 import { aiConfigNow, openRouterApi } from "./brewlmAi";
 import { activeKey, noKeyMessage, researchModelFor } from "./settings";
 import { buildFetchItems, FETCH_MAX, type FetchItem } from "./fetchList";
-import { contextBudget } from "./local";
+import { contextBudget, ensureServerContext } from "./local";
 import { fetchLinkContent } from "./source";
 import type { Provider, Settings } from "./types";
 import { recordUsage, type UsageSink } from "./usage";
@@ -460,6 +460,7 @@ async function answerWithService(
 ): Promise<WebAnswerOutcome> {
   const results = await searchWithService(question, settings, { count: 6, signal });
   if (results.length === 0) return { text: "", hits: [] };
+  await ensureServerContext(settings, { load: true });
   const share = Math.floor(contextBudget(settings).sources / 2);
   const read = await Promise.all(
     results.slice(0, ANSWER_PAGES).map((r) =>
@@ -600,6 +601,7 @@ export async function deepResearch(opts: {
   const blocked = searchUnavailable(settings);
   if (blocked) throw new Error(blocked);
   if (!activeKey(settings)) throw new Error(noKeyMessage(settings));
+  await ensureServerContext(settings, { load: true });
   const budget = contextBudget(settings);
 
   const ask = (prompt: string, system?: string): Promise<string> => askModel(settings, prompt, { system, signal, onUsage });

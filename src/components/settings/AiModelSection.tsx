@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
 import { acceptsAudio, AUTO_TRANSCRIBE_MODEL, transcribeProviders } from "../../lib/media";
 import { staysLocal } from "../../lib/featureRoute";
-import { budgetForContext, isEmbeddingModel } from "../../lib/local";
+import { AUTO_CONTEXT, budgetForContext, isEmbeddingModel, listLocalModels, normalizeBaseUrl, readServerContext, type ServerContext } from "../../lib/local";
 import { goToSettingsSection } from "../../lib/settingsNav";
 import {
   DEFAULT_IMAGE_MODEL,
@@ -12,6 +12,7 @@ import {
   LOCAL_PRESETS,
   MAX_OUTPUT_OPTIONS,
   THINKING_LABELS,
+  thinkingLevels,
   loadImageModelList,
   loadModelList,
   loadResearchModelList,
@@ -204,6 +205,21 @@ export default function AiModelSection({
   const [modelList, setModelList] = useState<string[]>([]);
   /** Everything the local server reports, embedding models included. */
   const [served, setServed] = useState<string[]>([]);
+  /** Models on the separate embedding server, when one is set. */
+  const [embedServed, setEmbedServed] = useState<string[]>([]);
+  useEffect(() => {
+    if (!isLocal || !settings.localEmbedBaseUrl.trim()) return setEmbedServed([]);
+    let cancelled = false;
+    const t = setTimeout(() => {
+      listLocalModels({ baseUrl: settings.localEmbedBaseUrl, key: settings.localEmbedKey })
+        .then((m) => !cancelled && setEmbedServed(m))
+        .catch(() => !cancelled && setEmbedServed([]));
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [isLocal, settings.localEmbedBaseUrl, settings.localEmbedKey]);
   const [listVersion, setListVersion] = useState(0);
 
   // (Re)load the editable chip list whenever the provider (or local server) changes.
@@ -296,10 +312,13 @@ export default function AiModelSection({
   };
 
   const temp = settings.temperature;
+  const serverCtx = useServerContext(settings);
+  const localWindow = windowFor(settings, serverCtx);
+  const tokens = (n: number) => n.toLocaleString();
 
   /* What the optional groups show while closed. */
   const behaviorSummary = [
-    !isLocal && `${THINKING_LABELS[settings.thinking]} thinking`,
+    `${THINKING_LABELS[settings.thinking === "off" && !isLocal ? "auto" : settings.thinking]} thinking`,
     temp == null ? "default temperature" : `temperature ${temp.toFixed(2)}`,
     settings.maxOutput == null ? "automatic length" : `up to ${settings.maxOutput / 1024}K tokens`,
   ]
@@ -388,25 +407,7 @@ export default function AiModelSection({
       {isLocal && (
         <>
           <Card>
-            <Row
-              label="Context window"
-              desc={`How much text the model can read at once. Match your server's setting. BrewLM will send up to about ${Math.round(budgetForContext(settings.localContext).sources / 1000)}k characters of your sources per question.`}
-              alignTop
-            >
-              <div className="grid grid-cols-5 gap-1 rounded-lg border border-edge bg-canvas p-1">
-                {LOCAL_CONTEXT_OPTIONS.map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => patch({ localContext: n })}
-                    className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
-                      settings.localContext === n ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
-                    }`}
-                  >
-                    {n >= 1024 ? `${Math.round(n / 1024)}K` : n}
-                  </button>
-                ))}
-              </div>
-            </Row>
+            <LocalContextRow settings={settings} patch={patch} />
             <Row
               label="Embedding model"
               desc="Finds the passages most related to your question. Leave empty to use keyword search instead."
@@ -421,16 +422,43 @@ export default function AiModelSection({
                   className={inputClass}
                 />
                 <datalist id="local-embed-models">
-                  {served.filter(isEmbeddingModel).map((m) => (
+                  {(settings.localEmbedBaseUrl ? embedServed : served).filter(isEmbeddingModel).map((m) => (
                     <option key={m} value={m} />
                   ))}
                 </datalist>
               </div>
             </Row>
+            <Row
+              label="Embedding server"
+              desc="Leave empty to use the chat server. Set one when your chat engine has no embedding models (Strata, for one) — for example Ollama with nomic-embed-text."
+              alignTop
+            >
+              <div className="flex w-72 flex-col gap-1.5">
+                <input
+                  value={settings.localEmbedBaseUrl}
+                  onChange={(e) => patch({ localEmbedBaseUrl: e.target.value })}
+                  onBlur={(e) => {
+                    const url = e.target.value.trim() ? normalizeBaseUrl(e.target.value) : "";
+                    if (url !== e.target.value) patch({ localEmbedBaseUrl: url });
+                  }}
+                  placeholder="Same as chat server"
+                  className={inputClass}
+                />
+                {settings.localEmbedBaseUrl && (
+                  <input
+                    type="password"
+                    value={settings.localEmbedKey}
+                    onChange={(e) => patch({ localEmbedKey: e.target.value })}
+                    placeholder="API key (optional)"
+                    className={inputClass}
+                  />
+                )}
+              </div>
+            </Row>
           </Card>
           <Footnote>
-            Ollama starts with a small context window; raise it with the{" "}
-            <code>OLLAMA_CONTEXT_LENGTH</code> setting, then pick the same size here. Image reading,
+            BrewLM never sends more than the window your server loaded the model with. Ollama starts
+            models with a small one; raise it with the <code>OLLAMA_CONTEXT_LENGTH</code> setting. Image reading,
             transcription and other jobs each have their own setting in{" "}
             <button
               onClick={() => goToSettingsSection("local")}
@@ -539,24 +567,26 @@ export default function AiModelSection({
 
         {/* Thinking effort + output limit */}
         <Card>
-          {!isLocal && (
-            <Row
-              label="Thinking effort"
-              desc="How long reasoning models think before answering. Lower is faster and cheaper, and leaves more room for long outputs. Auto uses each model's default; models that don't think ignore it."
-              alignTop
-            >
-              <Segmented<Thinking>
-                options={(Object.keys(THINKING_LABELS) as Thinking[]).map((t) => ({ id: t, label: THINKING_LABELS[t] }))}
-                value={settings.thinking}
-                onChange={(t) => patch({ thinking: t })}
-              />
-            </Row>
-          )}
+          <Row
+            label="Thinking effort"
+            desc={
+              isLocal
+                ? "How long reasoning models think before answering. Off answers straight away and leaves the small window for the reply. Auto uses each model's default; some models only switch thinking on or off, and models that don't think ignore it."
+                : "How long reasoning models think before answering. Lower is faster and cheaper, and leaves more room for long outputs. Auto uses each model's default; models that don't think ignore it."
+            }
+            alignTop
+          >
+            <Segmented<Thinking>
+              options={thinkingLevels(provider).map((t) => ({ id: t, label: THINKING_LABELS[t] }))}
+              value={settings.thinking === "off" && !isLocal ? "auto" : settings.thinking}
+              onChange={(t) => patch({ thinking: t })}
+            />
+          </Row>
           <Row
             label="Custom output limit"
             desc={
               isLocal
-                ? "The most a reply can be. Off sizes it to your context window."
+                ? `The most a reply can be. Off gives replies about ${tokens(budgetForContext(localWindow).maxOutput)} tokens, a quarter of the ${tokens(localWindow)}-token window. A custom limit can use more, up to what the window has left after your sources.`
                 : `The most a reply can be, thinking included. Off uses up to ${AUTO_OUTPUT_TOKENS / 1000}K tokens, within what each model allows. You only pay for what's written.`
             }
           >
@@ -567,7 +597,14 @@ export default function AiModelSection({
             />
           </Row>
           {settings.maxOutput != null && (
-            <Row label="Limit" desc="Lowered automatically when a model allows less.">
+            <Row
+              label="Limit"
+              desc={
+                isLocal
+                  ? `Lowered automatically to fit: with a ${tokens(localWindow)}-token window, a reply can't be longer than what's left after the prompt${settings.maxOutput > localWindow ? ", so anything above that acts the same" : ""}.`
+                  : "Lowered automatically when a model allows less."
+              }
+            >
               <div className="flex items-center gap-3">
                 <Slider
                   label="Output limit"
@@ -672,5 +709,106 @@ export default function AiModelSection({
       )}
       <div className="border-t border-edge-soft" />
     </div>
+  );
+}
+
+/** "32K" for 32768, "4K" for 4096. */
+const tokensLabel = (n: number) => (n >= 1024 ? `${Math.round(n / 1024)}K` : String(n));
+
+/** How each server's window is made bigger. */
+const RAISE_HINT: Record<ServerContext["server"], string> = {
+  Ollama: "To give it more, set OLLAMA_CONTEXT_LENGTH (for example to 32768) and restart Ollama.",
+  "LM Studio": "To give it more, raise Context Length in the model's load settings in LM Studio and load it again.",
+  "llama.cpp": "To give it more, start llama-server with a larger -c.",
+  vLLM: "To give it more, start vLLM with a larger --max-model-len.",
+  SGLang: "To give it more, start SGLang with a larger --context-length.",
+  Strata: "To give it more, start Strata with a larger --context (32k, 64k or 128k).",
+  KoboldCpp: "To give it more, start KoboldCpp with a larger --contextsize.",
+  TabbyAPI: "To give it more, raise max_seq_len in TabbyAPI's config.yml and load the model again.",
+};
+
+/**
+ * Settings → AI Model → Context window, for local models: Automatic (the size
+ * the server loaded the model with) or a fixed size, shown against what the
+ * server reports. Only reads the server — viewing Settings never loads a model.
+ */
+/**
+ * What the local server says about the chat model's window, read when the
+ * address or model changes ("checking" meanwhile). Only reads: viewing
+ * Settings never loads a model.
+ */
+function useServerContext(settings: Settings): ServerContext | null | "checking" {
+  const [ctx, setCtx] = useState<ServerContext | null | "checking">("checking");
+  const { localBaseUrl, localKey, model } = settings;
+  const local = settings.provider === "local";
+  useEffect(() => {
+    if (!local) return;
+    let cancelled = false;
+    setCtx("checking");
+    const t = setTimeout(() => {
+      readServerContext({ baseUrl: localBaseUrl, key: localKey }, model)
+        .then((c) => !cancelled && setCtx(c))
+        .catch(() => !cancelled && setCtx(null));
+    }, 400); // typing an address or model id: ask once it settles
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [local, localBaseUrl, localKey, model]);
+  return ctx;
+}
+
+/** The window local requests are sized for: what the server loaded (never more than a picked size), else the pick or 8K. */
+function windowFor(settings: Settings, ctx: ServerContext | null | "checking"): number {
+  const loaded = ctx !== "checking" ? (ctx?.loaded ?? null) : null;
+  const picked = settings.localContext;
+  return loaded ? (picked ? Math.min(picked, loaded) : loaded) : picked || 8192;
+}
+
+function LocalContextRow({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  const ctx = useServerContext(settings);
+  const { model } = settings;
+  const known = ctx !== "checking" ? ctx : null;
+  const loaded = known?.loaded ?? null;
+  const picked = settings.localContext;
+  const used = windowFor(settings, ctx);
+  const name = model.trim() || "the model";
+  const fmt = (n: number) => n.toLocaleString();
+
+  let status: string;
+  if (ctx === "checking") status = "Checking your server…";
+  else if (!known)
+    status = picked
+      ? "Your server doesn't say how much it holds, so BrewLM goes by the size picked here — match your server's setting."
+      : "Your server doesn't say how much it holds, so Automatic uses 8K. Pick your server's size if it's different.";
+  else if (!loaded)
+    status = `${known.server} hasn't loaded ${name} yet. BrewLM reads its window right before your first question and sends no more than fits.`;
+  else {
+    status = `${known.server} has ${name} loaded with ${fmt(loaded)} tokens${known.max && known.max > loaded ? ` (the model can take ${fmt(known.max)})` : ""}.`;
+    if (picked && picked > loaded) status += " BrewLM uses that, not the larger size picked here.";
+    if (loaded < 32768 && (!known.max || known.max > loaded)) status += ` ${RAISE_HINT[known.server]}`;
+  }
+
+  return (
+    <Row
+      label="Context window"
+      desc={`How much text the model can read at once. ${status} Each question carries up to about ${Math.round(budgetForContext(used).sources / 1000)}k characters of your sources.`}
+      alignTop
+    >
+      <div className="grid grid-cols-6 gap-1 rounded-lg border border-edge bg-canvas p-1">
+        {LOCAL_CONTEXT_OPTIONS.map((n) => (
+          <button
+            key={n}
+            onClick={() => patch({ localContext: n })}
+            title={n === AUTO_CONTEXT ? "Use the window your server loaded the model with" : undefined}
+            className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
+              picked === n ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+            }`}
+          >
+            {n === AUTO_CONTEXT ? "Auto" : tokensLabel(n)}
+          </button>
+        ))}
+      </div>
+    </Row>
   );
 }

@@ -2,7 +2,7 @@ import { platform } from "../platform";
 import { getSetting, hasSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
-import { isEmbeddingModel, listLocalModels, LOCAL_TTS_VOICES } from "./local";
+import { isEmbeddingModel, listLocalModels, LOCAL_TTS_VOICES, parseLocalContext } from "./local";
 import { DEFAULT_THEME, RETIRED_THEMES, THEMES } from "./themes";
 import { normalizeHex } from "./color";
 import { DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
@@ -105,6 +105,7 @@ export const LOCAL_PRESETS: { id: string; label: string; url: string }[] = [
 
 export const THINKING_LABELS: Record<Thinking, string> = {
   auto: "Auto",
+  off: "Off",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -113,9 +114,8 @@ export const THINKING_LABELS: Record<Thinking, string> = {
 /** Stops on the output-limit slider in Settings → AI Model, in tokens: 4K to 512K, about ×1.5 apart. */
 export const MAX_OUTPUT_OPTIONS = [4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512].map((k) => k * 1024);
 
-/** Context-window choices for local models, in tokens. */
-export const LOCAL_CONTEXT_OPTIONS = [4096, 8192, 16384, 32768, 131072];
-const DEFAULT_LOCAL_CONTEXT = 8192;
+/** Context-window choices for local models, in tokens (0 = Automatic: the size the server reports). */
+export const LOCAL_CONTEXT_OPTIONS = [0, 4096, 8192, 16384, 32768, 131072];
 
 export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   system: "System voices",
@@ -168,6 +168,7 @@ export const LOCAL_STT_PRESETS: { id: string; label: string; url: string }[] = [
 /** One-click addresses for local image servers. Forge, SD.Next and Draw Things all serve A1111's API on 7860. */
 export const LOCAL_IMAGE_PRESETS: { id: string; label: string; url: string }[] = [
   { id: "a1111", label: "Forge / A1111 / Draw Things", url: "http://localhost:7860" },
+  { id: "comfyui", label: "ComfyUI", url: "http://localhost:8188" },
   { id: "localai", label: "LocalAI", url: "http://localhost:8080/v1" },
 ];
 
@@ -244,6 +245,8 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localBaseUrl: (s) => s.localBaseUrl,
   localKey: (s) => s.localKey,
   localEmbedModel: (s) => s.localEmbedModel,
+  localEmbedBaseUrl: (s) => s.localEmbedBaseUrl,
+  localEmbedKey: (s) => s.localEmbedKey,
   localContext: (s) => String(s.localContext),
   localVisionModel: (s) => s.localVisionModel,
   visionRunsOn: (s) => (s.visionRunsOn === "auto" ? "" : s.visionRunsOn),
@@ -264,6 +267,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   openrouterTtsKey: (s) => s.openrouterTtsKey,
   elevenlabsKey: (s) => s.elevenlabsKey,
   localTtsBaseUrl: (s) => s.localTtsBaseUrl,
+  localTtsEngine: (s) => s.localTtsEngine,
   localTtsKey: (s) => s.localTtsKey,
   ttsModel: (s) => s.ttsModel,
   ttsVoiceAlex: (s) => s.ttsVoiceAlex,
@@ -279,6 +283,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localImageKey: (s) => s.localImageKey,
   localImageModel: (s) => s.localImageModel,
   localImageApi: (s) => s.localImageApi,
+  localImageWorkflow: (s) => s.localImageWorkflow,
   searxngUrl: (s) => s.searxngUrl,
   braveKey: (s) => s.braveKey,
   tavilyKey: (s) => s.tavilyKey,
@@ -316,7 +321,7 @@ export async function loadSettings(): Promise<Settings> {
     localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
     localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
     imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
-    localSttEngine, builtinWhisperModel,
+    localSttEngine, builtinWhisperModel, localEmbedBaseUrl, localEmbedKey, localImageWorkflow, localTtsEngine,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -379,6 +384,10 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localImageApi"),
     getSetting("localSttEngine"),
     getSetting("builtinWhisperModel"),
+    getSetting("localEmbedBaseUrl"),
+    getSetting("localEmbedKey"),
+    getSetting("localImageWorkflow"),
+    getSetting("localTtsEngine"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -417,8 +426,6 @@ export async function loadSettings(): Promise<Settings> {
     : DEFAULT_BEHAVIOR.temperature;
   const parsedMaxOutput = Number.parseInt(maxOutput, 10);
   const safeMaxOutput = MAX_OUTPUT_OPTIONS.includes(parsedMaxOutput) ? parsedMaxOutput : DEFAULT_BEHAVIOR.maxOutput;
-  const parsedContext = Number.parseInt(localContext, 10);
-  const safeContext = Number.isFinite(parsedContext) && parsedContext >= 2048 ? parsedContext : DEFAULT_LOCAL_CONTEXT;
   const parsedRetention = Number.parseInt(trashRetentionDays, 10);
   const safeRetention = [0, 7, 30, 90].includes(parsedRetention)
     ? parsedRetention
@@ -431,7 +438,9 @@ export async function loadSettings(): Promise<Settings> {
     localBaseUrl,
     localKey,
     localEmbedModel,
-    localContext: safeContext,
+    localEmbedBaseUrl: localEmbedBaseUrl.trim(),
+    localEmbedKey,
+    localContext: parseLocalContext(localContext),
     localVisionModel: localVisionModel.trim(),
     visionRunsOn: parseRunsOn(visionRunsOn),
     transcribeRunsOn: parseRunsOn(transcribeRunsOn),
@@ -452,6 +461,8 @@ export async function loadSettings(): Promise<Settings> {
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,
     elevenlabsKey: elevenlabsKey || DEFAULT_TTS.elevenlabsKey,
     localTtsBaseUrl,
+    // Unset: a speech server someone already set up keeps working; otherwise the built-in voice.
+    localTtsEngine: localTtsEngine === "builtin" || localTtsEngine === "server" ? localTtsEngine : localTtsBaseUrl ? "server" : "builtin",
     localTtsKey,
     ttsModel: safeTtsModel,
     ttsVoiceAlex: scrubVoice(ttsVoiceAlex) || DEFAULT_TTS.ttsVoiceAlex,
@@ -471,7 +482,8 @@ export async function loadSettings(): Promise<Settings> {
     localImageBaseUrl,
     localImageKey,
     localImageModel: localImageModel.trim(),
-    localImageApi: localImageApi === "a1111" || localImageApi === "openai" ? localImageApi : "",
+    localImageApi: localImageApi === "a1111" || localImageApi === "openai" || localImageApi === "comfyui" ? localImageApi : "",
+    localImageWorkflow,
     researchModels: parseProviderModels(researchModels),
     transcribeModels: parseProviderModels(transcribeModels),
     openrouterRouting: parseRouting(openrouterRouting),
@@ -809,4 +821,9 @@ function closeIds(id: string, ids: string[]): string[] {
     .sort((a, b) => b.score - a.score || a.m.length - b.m.length)
     .slice(0, 3)
     .map((x) => x.m);
+}
+
+/** The thinking levels the composer offers: Off only where it can be honored (local servers). */
+export function thinkingLevels(provider: Provider): Thinking[] {
+  return (Object.keys(THINKING_LABELS) as Thinking[]).filter((l) => l !== "off" || provider === "local");
 }

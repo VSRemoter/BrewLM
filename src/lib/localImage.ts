@@ -1,8 +1,10 @@
 /**
- * /image on this computer. Two kinds of local image server:
+ * /image on this computer. Three kinds of local image server:
  *  - Automatic1111's API (/sdapi/v1/…), which Forge, SD.Next and Draw Things
  *    also serve: draws (txt2img) and edits (img2img from the picture);
- *  - OpenAI's /v1/images/generations (LocalAI and others): draws only.
+ *  - OpenAI's /v1/images/generations (LocalAI and others): draws only;
+ *  - ComfyUI, which runs a workflow (comfyui.ts): draws, and edits when the
+ *    workflow loads a picture.
  * Which one a server speaks is found by asking it (detectImageServer) and
  * saved, so later pictures skip the check.
  *
@@ -11,6 +13,7 @@
  * client, so servers need no CORS setup.
  */
 import { platform } from "../platform";
+import { comfyCheckpoints, isComfyUI, parseWorkflow, planWorkflow, runComfyWorkflow } from "./comfyui";
 import { localHeaders } from "./local";
 import type { LocalImageApi, Settings } from "./types";
 
@@ -84,6 +87,8 @@ export async function detectImageServer(s: Pick<Settings, "localImageBaseUrl" | 
   const root = imageServerRoot(s.localImageBaseUrl);
   if (!root) throw new Error("Set the image server's address first.");
   const headers = localHeaders(s.localImageKey);
+  if (await isComfyUI({ root, key: s.localImageKey }))
+    return { api: "comfyui", models: await comfyCheckpoints({ root, key: s.localImageKey }) };
   const sd = await call(`${root}/sdapi/v1/sd-models`, { headers }, "image server");
   if (sd.ok) {
     const list = (await sd.json().catch(() => [])) as { title?: string; model_name?: string }[];
@@ -105,9 +110,20 @@ export async function detectImageServer(s: Pick<Settings, "localImageBaseUrl" | 
   );
 }
 
-/** Whether pictures made on this server can be edited (A1111-style servers can; OpenAI-style ones only draw). */
-export function localImageCanEdit(s: Pick<Settings, "localImageApi">): boolean {
-  return s.localImageApi === "a1111";
+/**
+ * Whether pictures made on this server can be edited: A1111-style servers
+ * can, OpenAI-style ones only draw, and ComfyUI can when its workflow loads a
+ * picture (the built-in one does).
+ */
+export function localImageCanEdit(s: Pick<Settings, "localImageApi" | "localImageWorkflow">): boolean {
+  if (s.localImageApi === "a1111") return true;
+  if (s.localImageApi !== "comfyui") return false;
+  if (!s.localImageWorkflow?.trim()) return true;
+  try {
+    return planWorkflow(parseWorkflow(s.localImageWorkflow)).loadImage.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export interface LocalImageOptions {
@@ -123,7 +139,7 @@ export interface LocalImageOptions {
 
 /** Images (data URIs) drawn on the local image server. */
 export async function generateLocalImages(
-  s: Pick<Settings, "localImageBaseUrl" | "localImageKey" | "localImageModel" | "localImageApi">,
+  s: Pick<Settings, "localImageBaseUrl" | "localImageKey" | "localImageModel" | "localImageApi" | "localImageWorkflow">,
   opts: LocalImageOptions,
   /** Called with the API once it's been found, so it can be saved. */
   onDetected?: (api: LocalImageApi) => void
@@ -138,6 +154,24 @@ export async function generateLocalImages(
   const headers = localHeaders(s.localImageKey);
   const n = Math.max(1, Math.min(4, opts.n ?? 1));
   const what = "image server";
+
+  if (api === "comfyui") {
+    const images = await runComfyWorkflow(
+      { root: imageServerRoot(s.localImageBaseUrl), key: s.localImageKey },
+      {
+        prompt: opts.prompt,
+        width,
+        height,
+        n,
+        reference: opts.reference,
+        strength: opts.strength,
+        model,
+        workflow: s.localImageWorkflow ?? "",
+        signal: opts.signal,
+      }
+    );
+    return { images, aspectRatio: opts.aspectRatio };
+  }
 
   if (api === "a1111") {
     const root = imageServerRoot(s.localImageBaseUrl);

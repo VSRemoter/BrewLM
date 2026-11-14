@@ -135,14 +135,17 @@ export type RunsOn = "auto" | Provider;
 /** How transcription runs on this computer: whisper.cpp built into the app, or a transcription server. */
 export type LocalSttEngine = "builtin" | "server";
 
+/** Local voices: the built-in Kokoro voice, or a speech server the user runs. */
+export type LocalTtsEngine = "builtin" | "server";
+
 /** The built-in speech model: Whisper base, or large-v3 turbo. */
 export type BuiltinWhisperModel = "fast" | "accurate";
 
 /** Where /image draws: "auto" = BrewLM AI or OpenRouter as before, or this computer with a local chat model. */
 export type ImageRunsOn = "auto" | "local" | "openrouter";
 
-/** Which API a local image server speaks: Automatic1111-style (Forge, SD.Next, Draw Things) or OpenAI-style (LocalAI). */
-export type LocalImageApi = "a1111" | "openai";
+/** Which API a local image server speaks: Automatic1111-style (Forge, SD.Next, Draw Things), OpenAI-style (LocalAI), or ComfyUI's workflows. */
+export type LocalImageApi = "a1111" | "openai" | "comfyui";
 
 /**
  * Where web search runs for research, /search and /fetch. "auto" = the cloud
@@ -150,8 +153,11 @@ export type LocalImageApi = "a1111" | "openai";
  */
 export type SearchService = "auto" | "searxng" | "brave" | "tavily";
 
-/** How hard reasoning models think. "auto" = each model's default (nothing is sent). */
-export type Thinking = "auto" | "low" | "medium" | "high";
+/**
+ * How hard reasoning models think. "auto" = each model's default (nothing is
+ * sent). "off" is offered for local models only; cloud requests treat it as auto.
+ */
+export type Thinking = "auto" | "off" | "low" | "medium" | "high";
 
 /** Where Audio overviews get their voices from. */
 /** "local" = a speech server the user runs (Kokoro-FastAPI, Speaches, LocalAI…) via /audio/speech. */
@@ -177,7 +183,11 @@ export interface Settings {
   localKey: string;
   /** Embedding model on the local server ("" = keyword search only, nothing leaves the machine). */
   localEmbedModel: string;
-  /** The local model's context window in tokens; sizes how much source text is sent. */
+  /** A separate server for embeddings, for chat engines without them (Strata…); "" = the chat server. */
+  localEmbedBaseUrl: string;
+  /** Optional bearer token for that embedding server. */
+  localEmbedKey: string;
+  /** The local model's context window in tokens (0 = Automatic: what the server reports); sizes how much source text is sent. */
   localContext: number;
   /** Model on the local server that reads images ("" = none picked). */
   localVisionModel: string;
@@ -213,6 +223,8 @@ export interface Settings {
   elevenlabsKey: string;
   /** Local speech server base URL including /v1 ("" = not set up). */
   localTtsBaseUrl: string;
+  /** The built-in voice or a speech server, when the voices are Local. */
+  localTtsEngine: LocalTtsEngine;
   /** Optional bearer token for the local speech server. */
   localTtsKey: string;
   /** Empty → provider default. */
@@ -238,6 +250,8 @@ export interface Settings {
   localImageModel: string;
   /** The API it was found to speak; "" = not checked yet (found on first use). */
   localImageApi: LocalImageApi | "";
+  /** ComfyUI: the user's workflow in API format ("" = the built-in checkpoint workflow). */
+  localImageWorkflow: string;
   /** Web search service (Settings → AI Model → Web search). */
   searchService: SearchService;
   /** Self-hosted SearXNG address, e.g. http://localhost:8888 ("" = not set up). */

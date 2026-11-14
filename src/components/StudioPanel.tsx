@@ -34,7 +34,7 @@ import { deepResearch } from "../lib/research";
 import { activeKey, noKeyMessage } from "../lib/settings";
 import { aiBlock } from "../lib/brewlmAi";
 import { AiBlockedNotice } from "./settings/BrewLmAi";
-import { contextBudget } from "../lib/local";
+import { contextBudget, ensureServerContext } from "../lib/local";
 import {
   addOutputUsage,
   meterTotal,
@@ -250,6 +250,7 @@ const StudioPanel = forwardRef<
       const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase, opts.signal);
       return condensedSystemPrompt(notes);
     }
+    await ensureServerContext(settings, { load: true });
     const budget = contextBudget(settings);
     const retrieved = await rankChunks(scoped, query, settings, budget.sources);
     return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget });
@@ -577,7 +578,7 @@ const StudioPanel = forwardRef<
         job.setPhase
       );
       if (turns.length < 4)
-        throw new Error("Couldn't produce a usable script — try again.");
+        throw new Error("The model didn't write a usable script (it needs lines starting “Host:” and “Co-Host:”). Try again — small local models sometimes lose the format; a larger model is more reliable.");
 
       let audio: string | null = null;
       let note: string | undefined;

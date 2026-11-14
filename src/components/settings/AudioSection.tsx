@@ -1,6 +1,7 @@
 import { ArrowLeftRight, ExternalLink, Play, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isSpeechModel, listLocalModels, listLocalVoices, LOCAL_TTS_VOICES, localHostVoices, normalizeBaseUrl } from "../../lib/local";
+import { deleteKokoro, downloadKokoro, KOKORO_DOWNLOAD_MB, KOKORO_VOICES, kokoroReady } from "../../lib/builtinKokoro";
 import { speakLocalSample } from "../../lib/tts";
 import { platform } from "../../platform";
 import { Spinner } from "../ui";
@@ -446,6 +447,104 @@ function LocalSpeechServer({
   );
 }
 
+/**
+ * The built-in voice (Kokoro-82M inside BrewLM): download it once, then hear
+ * each host. Shown when local voices come from the built-in voice.
+ */
+function BuiltinVoice({ settings }: { settings: Settings }) {
+  const [ready, setReady] = useState<boolean | null>(null);
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [sample, setSample] = useState<{ host: Host; state: "playing" | "loading" } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void kokoroReady().then((r) => !cancelled && setReady(r));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const download = async () => {
+    setError(null);
+    setProgress({ loaded: 0, total: 0 });
+    try {
+      await downloadKokoro((loaded, total) => setProgress({ loaded, total }));
+      setReady(await kokoroReady());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const remove = async () => {
+    await deleteKokoro();
+    setReady(false);
+  };
+
+  const play = async (host: Host) => {
+    setError(null);
+    setSample({ host, state: "loading" });
+    try {
+      const audio = new Audio(await speakLocalSample(settings, host));
+      setSample({ host, state: "playing" });
+      audio.onended = () => setSample(null);
+      await audio.play();
+    } catch (e) {
+      setSample(null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const mb = (n: number) => Math.round(n / 1024 / 1024);
+  const buttonClass =
+    "flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover disabled:opacity-40";
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="text-[11.5px] leading-relaxed text-ink-3">
+        Kokoro, a small open voice model, runs inside BrewLM: no speech server to install, and nothing leaves your
+        computer. English voices. On a recent computer an overview takes about as long to make as to listen to — a speech
+        server on a graphics card is faster.
+      </p>
+      {ready === false && !progress && (
+        <button onClick={() => void download()} className={`${buttonClass} self-start`}>
+          Download the voice (about {KOKORO_DOWNLOAD_MB} MB)
+        </button>
+      )}
+      {progress && (
+        <div className="flex flex-col gap-1">
+          <div className="h-1.5 overflow-hidden rounded-full bg-canvas">
+            <div
+              className="h-full bg-accent transition-[width]"
+              style={{ width: `${progress.total ? Math.min(100, (progress.loaded / progress.total) * 100) : 2}%` }}
+            />
+          </div>
+          <p className="text-[11.5px] text-ink-3">
+            Downloading… {mb(progress.loaded)} MB{progress.total ? ` of ${mb(progress.total)} MB` : ""}
+          </p>
+        </div>
+      )}
+      {ready && (
+        <div className="flex flex-wrap items-center gap-2">
+          {(["Alex", "Sam"] as Host[]).map((h) => (
+            <button key={h} onClick={() => void play(h)} disabled={!!sample} className={buttonClass}>
+              {sample?.host === h && sample.state === "loading" ? <Spinner size={12} /> : <Play size={12} />}
+              Hear the {HOST_LABEL[h].toLowerCase()}
+            </button>
+          ))}
+          <button onClick={() => void remove()} className="text-[12px] font-medium text-ink-3 hover:text-danger">
+            Delete
+          </button>
+        </div>
+      )}
+      {ready && <p className="-mt-1 text-[12px] text-ok">Downloaded · kept on this computer only.</p>}
+      {error && <p className="text-[12px] leading-relaxed text-danger">{error}</p>}
+    </div>
+  );
+}
+
 function KeyRow({
   label,
   link,
@@ -598,20 +697,56 @@ export default function AudioSection({
 
           {settings.ttsProvider === "local" && (
             <div className="mt-3.5 flex flex-col gap-3.5">
-              <LocalSpeechServer
-                key="local-speech"
-                settings={settings}
-                patch={patch}
-                onLoaded={(voices) => setLoaded((l) => ({ version: l.version + 1, voices }))}
-              />
-              <TtsModelPicker key={`m${loaded.version}`} provider="local" settings={settings} patch={patch} />
-              <VoiceLibrary
-                key={`v${loaded.version}`}
-                provider="local"
-                settings={settings}
-                patch={patch}
-                suggest={loaded.voices ?? undefined}
-              />
+              <div>
+                <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Voices from</label>
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-edge bg-canvas p-1">
+                  {(
+                    [
+                      ["builtin", "Built-in voice"],
+                      ["server", "Speech server"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      onClick={() => patch({ localTtsEngine: id })}
+                      className={`rounded-md px-2 py-1.5 text-[12.5px] font-medium transition-colors ${
+                        settings.localTtsEngine === id ? "bg-panel text-ink shadow-sm" : "text-ink-3 hover:text-ink-2"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {settings.localTtsEngine === "builtin" ? (
+                <>
+                  <BuiltinVoice settings={settings} />
+                  <VoiceLibrary
+                    key="v-builtin"
+                    provider="local"
+                    settings={settings}
+                    patch={patch}
+                    suggest={KOKORO_VOICES.map((v) => v.id)}
+                  />
+                </>
+              ) : (
+                <>
+                  <LocalSpeechServer
+                    key="local-speech"
+                    settings={settings}
+                    patch={patch}
+                    onLoaded={(voices) => setLoaded((l) => ({ version: l.version + 1, voices }))}
+                  />
+                  <TtsModelPicker key={`m${loaded.version}`} provider="local" settings={settings} patch={patch} />
+                  <VoiceLibrary
+                    key={`v${loaded.version}`}
+                    provider="local"
+                    settings={settings}
+                    patch={patch}
+                    suggest={loaded.voices ?? undefined}
+                  />
+                </>
+              )}
             </div>
           )}
 

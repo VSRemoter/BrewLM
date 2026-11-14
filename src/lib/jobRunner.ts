@@ -82,7 +82,7 @@ import {
 import { ensureMediaText } from "./media";
 import { fetchLinkContent, fileToCoverDataUrl } from "./source";
 import { deepResearch } from "./research";
-import { contextBudget } from "./local";
+import { contextBudget, ensureServerContext } from "./local";
 import { activeKey, loadSettings, noKeyMessage } from "./settings";
 import {
   buildFlashcardsPrompt,
@@ -544,6 +544,7 @@ async function runChatCommand(
   }
 ): Promise<string | null> {
   const settings = await loadSettings();
+  await ensureServerContext(settings, { load: true });
   const d = await getDb();
   const [nb] = await d.select<{ title: string; folder_id: string; starred: number }[]>(
     "SELECT title, folder_id, starred FROM notebooks WHERE id = $1",
@@ -685,6 +686,7 @@ async function runChatJob(p: {
   image_id?: string | null;
 }, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
+  await ensureServerContext(settings, { load: true });
 
   let chatId: string | null = p.chat_id ?? null;
   if (!chatId && !p.new_chat) {
@@ -866,6 +868,7 @@ async function runReviseJob(
   signal: AbortSignal
 ): Promise<string> {
   const settings = await loadSettings();
+  await ensureServerContext(settings, { load: true });
   const key = activeKey(settings);
   if (!key) throw new Error(noKeyMessage(settings));
   const a = await getArtifact(p.artifact_id);
@@ -937,6 +940,7 @@ async function runGenerateJob(p: {
   options: GenOpts;
 }, signal: AbortSignal): Promise<string> {
   const settings = await loadSettings();
+  await ensureServerContext(settings, { load: true });
   const key = activeKey(settings);
   if (!key) throw new Error(noKeyMessage(settings));
 
@@ -1120,7 +1124,7 @@ async function runGenerateJob(p: {
         (prompt, focus) => ask(prompt, { exhaustive: true, query: focus }),
         (phase) => void setJobProgress(phase)
       );
-      if (turns.length < 4) throw new Error("Couldn't produce a usable script — try again.");
+      if (turns.length < 4) throw new Error("The model didn't write a usable script (it needs lines starting “Host:” and “Co-Host:”). Try again — small local models sometimes lose the format; a larger model is more reliable.");
       let audio: string | null = null;
       let note: string | undefined;
       try {

@@ -112,7 +112,7 @@ export async function reviseOutput(opts: {
   } else if (a.kind === "audio") {
     const turns = parseScript(raw);
     if (turns.length < 4)
-      throw new Error("Couldn't produce a usable script — try again.");
+      throw new Error("The model didn't write a usable script (it needs lines starting “Host:” and “Co-Host:”). Try again — small local models sometimes lose the format; a larger model is more reliable.");
     let audio: string | null = null;
     let ttsNote: string | undefined;
     if (reAudio) {

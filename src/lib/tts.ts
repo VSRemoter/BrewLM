@@ -288,7 +288,9 @@ async function localSpeech(
     });
   } catch (e) {
     if (isAbortError(e) || signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    throw new Error(`Couldn't reach your local speech server at ${base}. Is it running?`);
+    throw new Error(
+      `Couldn't reach your local speech server at ${base}. Start it, or choose the Built-in voice in Settings → Audio Voices (no server needed).`
+    );
   }
   if (!resp.ok) {
     const raw = await resp.text().catch(() => "");
@@ -311,8 +313,43 @@ async function localSpeech(
   return new Uint8Array(await resp.arrayBuffer());
 }
 
-/** A script's lines spoken on the local speech server, joined into one file. */
+/** A script spoken in the built-in voice (Kokoro, inside the app), joined into one file. */
+async function synthesizeBuiltin(turns: ScriptTurn[], settings: Settings, opts: SynthesizeOptions): Promise<TtsResult> {
+  const { signal, onProgress } = opts;
+  const { kokoroLanes, kokoroReady, kokoroSpeak, KOKORO_VOICES } = await import("./builtinKokoro");
+  if (!(await kokoroReady()))
+    return { audio: null, note: "Download the built-in voice in Settings → Audio Voices to synthesize audio." };
+  const voices = localHostVoices(
+    { Alex: hostVoice(settings, "Alex"), Sam: hostVoice(settings, "Sam") },
+    KOKORO_VOICES.map((v) => v.id)
+  );
+  // Lines are spoken side by side on the voice's workers, then joined in script order.
+  const pcm: Float32Array[] = new Array(turns.length);
+  let rate = 24000;
+  let next = 0;
+  let done = 0;
+  onProgress?.(0, turns.length);
+  await Promise.all(
+    Array.from({ length: Math.min(kokoroLanes(), turns.length) }, async () => {
+      while (next < turns.length) {
+        const i = next++;
+        throwIfAborted(signal);
+        const clip = await kokoroSpeak(turns[i].text, voices[turns[i].speaker], signal);
+        rate = clip.rate;
+        pcm[i] = clip.samples;
+        onProgress?.(++done, turns.length);
+      }
+    })
+  );
+  const merged = joinSamples(pcm);
+  const m4a = await encodeM4a(merged, rate).catch(() => null);
+  if (m4a) return { audio: `data:audio/mp4;base64,${chunksToBase64([m4a])}` };
+  return { audio: `data:audio/wav;base64,${chunksToBase64([encodeWav(merged, rate)])}` };
+}
+
+/** A script's lines spoken on the local speech server (or the built-in voice), joined into one file. */
 async function synthesizeLocal(turns: ScriptTurn[], settings: Settings, opts: SynthesizeOptions): Promise<TtsResult> {
+  if (settings.localTtsEngine === "builtin") return synthesizeBuiltin(turns, settings, opts);
   const { signal, onProgress } = opts;
   if (!normalizeBaseUrl(settings.localTtsBaseUrl))
     return { audio: null, note: "Set your local speech server's address in Settings → Audio Voices to synthesize audio." };
@@ -363,17 +400,55 @@ export async function speakLocalSample(settings: Settings, host: Host): Promise<
  */
 export function parseScript(raw: string): ScriptTurn[] {
   const turns: ScriptTurn[] = [];
+  /** The speaker whose turn later lines continue (null after a heading or before the first label). */
+  let current: ScriptTurn | null = null;
   for (const line of raw.split("\n")) {
-    const m = line.match(/^\s*[*-]?\s*\**\s*(co-?\s?host|host|alex|sam)\s*\**\s*:\s*\**\s*(.+?)\s*$/i);
-    if (m && m[2].trim()) {
-      const who = m[1].toLowerCase().replace(/[\s-]/g, "");
-      turns.push({
-        speaker: who === "cohost" || who === "sam" ? "Sam" : "Alex",
-        text: m[2].replace(/\*\*/g, "").trim(),
-      });
+    const label = SPEAKER_LINE.exec(line);
+    if (label) {
+      const speaker = speakerOf(label[1]);
+      const text = cleanLine(label[2]);
+      current = { speaker, text };
+      turns.push(current);
+      continue;
     }
+    // The model talking to the reader, not a host ("I hope this helps!"): the script is over.
+    if (META_LINE.test(line)) {
+      current = null;
+      continue;
+    }
+    // Small local models wrap a turn over several lines, or put the name on a line of its own.
+    if (current && !NOT_SPOKEN.test(line)) {
+      const more = cleanLine(line);
+      if (more) current.text = current.text ? `${current.text} ${more}` : more;
+    } else if (NOT_SPOKEN.test(line) && /^\s*(#|\*\*[^*]+\*\*\s*$|-{3,})/.test(line)) current = null;
   }
-  return turns.slice(0, 600);
+  return turns.filter((t) => t.text).slice(0, 600);
+}
+
+/**
+ * A line that starts a turn: the speaker's label (Host, Co-Host, the older
+ * Alex/Sam, or Speaker/Host/Person 1·2·A·B, as small models write it), in
+ * bold or not, maybe with a name in brackets, then a colon and the words.
+ */
+const SPEAKER_LINE =
+  /^\s*(?:[-*>#]\s*)*(?:\*\*|__)?\s*(?:the\s+)?(co-?\s?host|host\s*[12ab]?|alex|sam|speaker\s*[12ab]|person\s*[12ab])\s*(?:\([^)]*\))?\s*(?:\*\*|__)?\s*[:：]\s*(?:\*\*|__)?\s*(.*)$/i;
+/** The model's own notes around a script: an intro, a sign-off, an offer to change it. */
+const META_LINE =
+  /^\s*(?:\*\*)?\s*(?:i hope|hope this|let me know|feel free|would you like|do you want|want me to|note:|notes:|here(?:'|’)?s (?:the|a|your)|okay,? here|sure,? here|this (?:script|podcast|episode) (?:is|was|covers)|word count|\(?approx(?:imately)?\.? \d)/i;
+/** Lines that aren't speech: blank, headings, rules, stage directions like [music] or (laughs). */
+const NOT_SPOKEN = /^\s*$|^\s*#|^\s*-{3,}\s*$|^\s*\*\*[^*]+\*\*\s*$|^\s*[[(][^\])]*[\])]\s*$/;
+
+function speakerOf(label: string): ScriptTurn["speaker"] {
+  const l = label.toLowerCase().replace(/[\s-]/g, "");
+  return l === "cohost" || l === "sam" || /^(host|speaker|person)(2|b)$/.test(l) ? "Sam" : "Alex";
+}
+
+/** The spoken words: no bold, no wrapping quotes, no stage directions. */
+function cleanLine(text: string): string {
+  let t = text.replace(/\*\*|__/g, "").replace(/\[[^\]]*\]/g, "").trim();
+  const q = /^["“”'‘](.*)["“”'’]$/.exec(t);
+  if (q) t = q[1].trim();
+  return t.replace(/\s+/g, " ");
 }
 
 export function chunksToBase64(chunks: Uint8Array[]): string {

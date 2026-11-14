@@ -52,6 +52,8 @@ export default defineConfig(async ({ mode, command }) => {
           //
           // 1. prevent Vite from obscuring rust errors
           clearScreen: false,
+          // The built-in voice runs in a module worker (kokoroWorker.ts), which code-splits.
+          worker: { format: "es" as const },
           // 2. tauri expects a fixed port, fail if that port is not available
           server: {
             port: 1420,

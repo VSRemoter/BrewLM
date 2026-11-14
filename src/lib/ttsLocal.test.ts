@@ -29,6 +29,20 @@ vi.mock("../platform", () => ({
   },
 }));
 
+/** The built-in voice, faked: is it downloaded, and what it was asked to say. */
+const kokoro = vi.hoisted(() => ({ ready: true, said: [] as { text: string; voice: string }[] }));
+vi.mock("./builtinKokoro", () => ({
+  KOKORO_VOICES: [{ id: "af_heart" }, { id: "am_michael" }, { id: "bf_emma" }],
+  kokoroReady: async () => kokoro.ready,
+  kokoroLanes: () => 2,
+  kokoroSpeak: async (text: string, voice: string) => {
+    kokoro.said.push({ text, voice });
+    // The first line finishes last: the joined file must still follow the script.
+    await new Promise((r) => setTimeout(r, text.startsWith("Welcome") ? 20 : 0));
+    return { samples: new Float32Array([text.startsWith("Welcome") ? 0.5 : -0.5]), rate: 24000 };
+  },
+}));
+
 import { synthesizeScript } from "./tts";
 import type { Settings } from "./types";
 
@@ -111,5 +125,39 @@ describe("local voices", () => {
     const out = await synthesizeScript(script, settings({ localTtsBaseUrl: "" }));
     expect(out.audio).toBeNull();
     expect(out.note).toMatch(/address/);
+  });
+});
+
+describe("the built-in voice", () => {
+  beforeEach(() => {
+    kokoro.ready = true;
+    kokoro.said = [];
+  });
+  const turns = [
+    { speaker: "Alex" as const, text: "Welcome back." },
+    { speaker: "Sam" as const, text: "Glad to be here." },
+  ];
+
+  it("speaks each line in the hosts' voices, replacing one it doesn't have, with no server", async () => {
+    server.requests = [];
+    const { audio } = await synthesizeScript(turns, settings({ localTtsEngine: "builtin", localTtsBaseUrl: "" }));
+    expect(kokoro.said).toEqual([
+      { text: "Welcome back.", voice: "af_heart" },
+      { text: "Glad to be here.", voice: "am_michael" },
+    ]);
+    expect(audio?.startsWith("data:audio/wav;base64,")).toBe(true);
+    expect(server.requests).toHaveLength(0);
+    // In script order though spoken side by side: Host's sample (positive) before the Co-Host's.
+    const wav = Uint8Array.from(atob(audio!.slice(audio!.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+    const view = new DataView(wav.buffer);
+    expect(view.getInt16(44, true)).toBeGreaterThan(0);
+    expect(view.getInt16(46, true)).toBeLessThan(0);
+  });
+
+  it("asks for the download when the voice isn't on this computer", async () => {
+    kokoro.ready = false;
+    const r = await synthesizeScript(turns, settings({ localTtsEngine: "builtin" }));
+    expect(r.audio).toBeNull();
+    expect(r.note).toMatch(/Download the built-in voice/);
   });
 });
