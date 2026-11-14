@@ -8,7 +8,6 @@ import {
   FolderInput,
   FolderPlus,
   House,
-  ImagePlus,
   LayoutGrid,
   LayoutTemplate,
   Link2,
@@ -23,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Folder, Notebook } from "../lib/types";
 import { mediaSrc } from "../lib/blobs";
 import type { UpdateInfo } from "../lib/updates";
@@ -32,9 +31,7 @@ import { usePhone } from "../lib/usePhone";
 import { BrewIcon } from "./BrewIcon";
 import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
 import UpdateAction from "./UpdateAction";
-
-const inputClass =
-  "w-full rounded-lg border border-edge bg-panel px-3 py-2 text-[13.5px] outline-none placeholder:text-ink-3 focus:border-ink-3";
+import NotebookFormDialog from "./NotebookFormDialog";
 
 /** Custom DnD payload so folder drop targets ignore OS files and other drags. */
 const DND_NOTEBOOK = "application/x-notebook-id";
@@ -54,7 +51,7 @@ const toolbarBtn =
   "flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-40";
 /** Quiet standalone toolbar button (32px tall, matches the bordered controls). */
 const toolbarBtnLg =
-  "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink";
+  "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-[12.5px] sm:px-3 font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink";
 
 const SORT_LABELS: Record<SortKey, string> = {
   "date-desc": "Most recent",
@@ -150,7 +147,7 @@ export default function Home({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [createCover, setCreateCover] = useState("");
-  const createCoverInputRef = useRef<HTMLInputElement>(null);
+  const [createFolderId, setCreateFolderId] = useState("");
   const phone = usePhone();
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Notebook | null>(null);
@@ -158,12 +155,10 @@ export default function Home({
   const [editDescription, setEditDescription] = useState("");
   const [editCover, setEditCover] = useState("");
   const [editFolderId, setEditFolderId] = useState("");
-  const coverInputRef = useRef<HTMLInputElement>(null);
   const [folderModal, setFolderModal] = useState<{ folder: Folder | null } | null>(null);
   const [folderName, setFolderName] = useState("");
   const [folderDescription, setFolderDescription] = useState("");
   const [folderCover, setFolderCover] = useState("");
-  const folderCoverInputRef = useRef<HTMLInputElement>(null);
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
   /** Trash view open (recycle-bin list) vs. normal notebooks view. */
   const [trashOpen, setTrashOpen] = useState(false);
@@ -261,10 +256,16 @@ export default function Home({
 
   /* ------------------------------ actions ------------------------------ */
 
+  /** New notebook starts in the folder being viewed, if any. */
+  const openCreate = () => {
+    setCreateFolderId(viewing?.id ?? "");
+    setCreating(true);
+  };
+
   const submit = () => {
     const t = title.trim();
     if (!t) return;
-    onCreate(t, description.trim(), viewing?.id ?? "", createCover);
+    onCreate(t, description.trim(), createFolderId, createCover);
     setTitle("");
     setDescription("");
     setCreateCover("");
@@ -326,15 +327,6 @@ export default function Home({
       onCreateFolder(n, d, folderCover);
     }
     setFolderModal(null);
-  };
-
-  const pickFolderCoverFile = async (file: File | undefined) => {
-    if (!file) return;
-    try {
-      setFolderCover(await fileToCoverDataUrl(file));
-    } catch {
-      /* non-image or unreadable — ignore */
-    }
   };
 
   /* ------------------------------ drag & drop ------------------------------ */
@@ -678,7 +670,7 @@ export default function Home({
   const newNotebookCard = (
     <button
       key="new"
-      onClick={() => setCreating(true)}
+      onClick={openCreate}
       className="lift group flex h-[136px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge bg-transparent text-ink-3 hover:border-ink-3 hover:bg-panel hover:text-ink"
     >
       <span className="flex h-8 w-8 items-center justify-center rounded-full border border-edge bg-panel transition-colors group-hover:border-ink-3">
@@ -736,7 +728,7 @@ export default function Home({
   const listActions = (
     <div className="mb-3 flex flex-wrap items-center gap-1">
       <button
-        onClick={() => setCreating(true)}
+        onClick={openCreate}
         className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover-soft hover:text-ink"
       >
         <Plus size={14} strokeWidth={2} />
@@ -1000,8 +992,8 @@ export default function Home({
           </div>
         ) : (
         <div className="mx-auto max-w-5xl">
-          <div className="mb-6 flex items-end justify-between">
-            <div className="flex items-center gap-3">
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-x-3 gap-y-3">
+            <div className="flex min-w-0 items-center gap-3">
               {viewing && (
                 <button
                   onClick={() => {
@@ -1035,7 +1027,7 @@ export default function Home({
               </div>
             </div>
             {/* One height (32px), one radius (pill), one icon size (14px) across the bar. */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               {selecting ? (
                 <>
                   <div className="flex h-8 items-center rounded-full border border-edge bg-panel p-0.5 shadow-sm">
@@ -1156,7 +1148,7 @@ export default function Home({
                   <div className="relative">
                     <button
                       onClick={() => setSortMenuOpen((v) => !v)}
-                      className={`flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-edge bg-panel pl-3 pr-2.5 text-[12.5px] font-medium text-ink-2 shadow-sm transition-colors hover:bg-hover-soft hover:text-ink ${
+                      className={`flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-edge bg-panel pl-2.5 pr-2 text-[12.5px] sm:pl-3 sm:pr-2.5 font-medium text-ink-2 shadow-sm transition-colors hover:bg-hover-soft hover:text-ink ${
                         sortMenuOpen ? "bg-hover-soft text-ink" : ""
                       }`}
                       aria-label="Sort notebooks"
@@ -1220,7 +1212,7 @@ export default function Home({
                         aria-label={label}
                         title={label}
                         onClick={() => setView(v)}
-                        className={`flex h-7 w-8 items-center justify-center rounded-full transition-colors ${
+                        className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors sm:w-8 ${
                           view === v ? "bg-hover text-ink" : "text-ink-3 hover:text-ink"
                         }`}
                       >
@@ -1400,293 +1392,56 @@ export default function Home({
       )}
 
       {creating && (
-        <Modal
-          title={viewing ? `New notebook in ${viewing.name}` : "New notebook"}
+        <NotebookFormDialog
+          dialogTitle="New notebook"
+          kind="notebook"
+          name={title}
+          onNameChange={setTitle}
+          description={description}
+          onDescriptionChange={setDescription}
+          cover={createCover}
+          onPickCover={(f) => void pickCoverFile(setCreateCover, f)}
+          onRemoveCover={() => setCreateCover("")}
+          folder={{ value: createFolderId, options: folders, onChange: setCreateFolderId }}
+          submitLabel="Create notebook"
+          onSubmit={submit}
           onClose={() => setCreating(false)}
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit();
-            }}
-            className="flex flex-col gap-4"
-          >
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Title</label>
-              <input
-                autoFocus
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Cognitive Science — Week 4"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Description <span className="font-normal text-ink-3">(optional)</span>
-              </label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="What is this notebook about?"
-                rows={2}
-                className={`${inputClass} resize-none`}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Cover image{" "}
-                <span className="font-normal text-ink-3">(optional — grid view only)</span>
-              </label>
-              {createCover ? (
-                <div className="flex items-start gap-3">
-                  <img
-                    src={mediaSrc(createCover)}
-                    alt="Cover preview"
-                    className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
-                  />
-                  <div className="flex flex-col gap-1.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => createCoverInputRef.current?.click()}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
-                    >
-                      Replace
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCreateCover("")}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-danger hover:text-danger"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => createCoverInputRef.current?.click()}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge px-3 py-3 text-[12.5px] font-medium text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
-                >
-                  <ImagePlus size={14} strokeWidth={1.8} />
-                  Choose a JPEG or PNG…
-                </button>
-              )}
-              <input
-                ref={createCoverInputRef}
-                type="file"
-                accept="image/png,image/jpeg"
-                className="hidden"
-                onChange={(e) => {
-                  void pickCoverFile(setCreateCover, e.target.files?.[0]);
-                  e.target.value = ""; // allow picking the same file twice in a row
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <PrimaryButton type="submit" disabled={!title.trim()}>
-                Create notebook
-              </PrimaryButton>
-            </div>
-          </form>
-        </Modal>
+        />
       )}
 
       {editing && (
-        <Modal title="Edit notebook" onClose={() => setEditing(null)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitEdit();
-            }}
-            className="flex flex-col gap-4"
-          >
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Title</label>
-              <input
-                autoFocus
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Description <span className="font-normal text-ink-3">(optional)</span>
-              </label>
-              <textarea
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="What is this notebook about?"
-                rows={2}
-                className={`${inputClass} resize-none`}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Folder</label>
-              <select
-                value={editFolderId}
-                onChange={(e) => setEditFolderId(e.target.value)}
-                className={`${inputClass} appearance-none`}
-              >
-                <option value="">No folder (Brewery)</option>
-                {folders.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Cover image{" "}
-                <span className="font-normal text-ink-3">(optional — grid view only)</span>
-              </label>
-              {editCover ? (
-                <div className="flex items-start gap-3">
-                  <img
-                    src={mediaSrc(editCover)}
-                    alt="Cover preview"
-                    className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
-                  />
-                  <div className="flex flex-col gap-1.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => coverInputRef.current?.click()}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
-                    >
-                      Replace
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditCover("")}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-danger hover:text-danger"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => coverInputRef.current?.click()}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge px-3 py-3 text-[12.5px] font-medium text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
-                >
-                  <ImagePlus size={14} strokeWidth={1.8} />
-                  Choose a JPEG or PNG…
-                </button>
-              )}
-              <input
-                ref={coverInputRef}
-                type="file"
-                accept="image/png,image/jpeg"
-                className="hidden"
-                onChange={(e) => {
-                  void pickCoverFile(setEditCover, e.target.files?.[0]);
-                  e.target.value = ""; // allow picking the same file twice in a row
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <PrimaryButton type="submit" disabled={!editTitle.trim()}>
-                Save changes
-              </PrimaryButton>
-            </div>
-          </form>
-        </Modal>
+        <NotebookFormDialog
+          dialogTitle="Edit notebook"
+          kind="notebook"
+          name={editTitle}
+          onNameChange={setEditTitle}
+          description={editDescription}
+          onDescriptionChange={setEditDescription}
+          cover={editCover}
+          onPickCover={(f) => void pickCoverFile(setEditCover, f)}
+          onRemoveCover={() => setEditCover("")}
+          folder={{ value: editFolderId, options: folders, onChange: setEditFolderId }}
+          submitLabel="Save changes"
+          onSubmit={submitEdit}
+          onClose={() => setEditing(null)}
+        />
       )}
 
       {folderModal && (
-        <Modal
-          title={folderModal.folder ? "Edit folder" : "New folder"}
+        <NotebookFormDialog
+          dialogTitle={folderModal.folder ? "Edit folder" : "New folder"}
+          kind="folder"
+          name={folderName}
+          onNameChange={setFolderName}
+          description={folderDescription}
+          onDescriptionChange={setFolderDescription}
+          cover={folderCover}
+          onPickCover={(f) => void pickCoverFile(setFolderCover, f)}
+          onRemoveCover={() => setFolderCover("")}
+          submitLabel={folderModal.folder ? "Save changes" : "Create folder"}
+          onSubmit={submitFolder}
           onClose={() => setFolderModal(null)}
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitFolder();
-            }}
-            className="flex flex-col gap-4"
-          >
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Name</label>
-              <input
-                autoFocus
-                value={folderName}
-                onChange={(e) => setFolderName(e.target.value)}
-                placeholder="e.g. Math Courses"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Description <span className="font-normal text-ink-3">(optional)</span>
-              </label>
-              <textarea
-                value={folderDescription}
-                onChange={(e) => setFolderDescription(e.target.value)}
-                placeholder="What belongs in this folder?"
-                rows={2}
-                className={`${inputClass} resize-none`}
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-ink-2">
-                Cover image{" "}
-                <span className="font-normal text-ink-3">(optional — grid view only)</span>
-              </label>
-              {folderCover ? (
-                <div className="flex items-start gap-3">
-                  <img
-                    src={mediaSrc(folderCover)}
-                    alt="Cover preview"
-                    className="h-[72px] w-[128px] rounded-lg border border-edge object-cover"
-                  />
-                  <div className="flex flex-col gap-1.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => folderCoverInputRef.current?.click()}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
-                    >
-                      Replace
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFolderCover("")}
-                      className="rounded-lg border border-edge bg-panel px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-danger hover:text-danger"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => folderCoverInputRef.current?.click()}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge px-3 py-3 text-[12.5px] font-medium text-ink-3 transition-colors hover:border-ink-3 hover:bg-panel hover:text-ink"
-                >
-                  <ImagePlus size={14} strokeWidth={1.8} />
-                  Choose a JPEG or PNG…
-                </button>
-              )}
-              <input
-                ref={folderCoverInputRef}
-                type="file"
-                accept="image/png,image/jpeg"
-                className="hidden"
-                onChange={(e) => {
-                  void pickFolderCoverFile(e.target.files?.[0]);
-                  e.target.value = ""; // allow picking the same file twice in a row
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <PrimaryButton type="submit" disabled={!folderName.trim()}>
-                {folderModal.folder ? "Save changes" : "Create folder"}
-              </PrimaryButton>
-            </div>
-          </form>
-        </Modal>
+        />
       )}
     </div>
   );

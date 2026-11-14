@@ -1,5 +1,6 @@
-import { X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { Check, ChevronDown, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { BrewIcon } from "./BrewIcon";
 
 export function Modal({
@@ -65,17 +66,28 @@ export function PropertyRow({
   label,
   icon,
   hint,
+  inline,
   children,
 }: {
   label: string;
   icon?: ReactNode;
   /** Muted helper text under the control. */
   hint?: ReactNode;
+  /** Keep label and control side by side on phones too (for narrow controls). */
+  inline?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-3">
-      <span className="flex shrink-0 items-center gap-2 text-[13px] text-ink-3 sm:h-8 sm:w-28">
+    <div
+      className={
+        inline
+          ? "flex flex-row items-start gap-3"
+          : "flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-3"
+      }
+    >
+      <span
+        className={`flex shrink-0 items-center gap-2 text-[13px] text-ink-3 ${inline ? "h-8 w-24 sm:w-28" : "sm:h-8 sm:w-28"}`}
+      >
         {icon && <span className="flex w-4 justify-center text-ink-3">{icon}</span>}
         {label}
       </span>
@@ -112,6 +124,170 @@ export function FormField({
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * A dropdown in the app's own style, for places a native <select> would show
+ * the system's menu. The menu is drawn above everything (so a dialog's edges
+ * can't clip it), opens below the button or above it when there's no room,
+ * and works from the keyboard: arrows move, Enter picks, Escape closes.
+ */
+export function SelectMenu<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T;
+  options: { id: T; label: string; icon?: ReactNode }[];
+  onChange: (id: T) => void;
+  /** Accessible name for the button. */
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  /** The click-away layer: fixed over the whole window, so it measures the viewport. */
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.id === value) ?? options[0];
+
+  const place = () => {
+    const b = buttonRef.current;
+    const o = overlayRef.current;
+    if (!b || !o) return;
+    const r = b.getBoundingClientRect();
+    const v = o.getBoundingClientRect();
+    // The app zooms the whole page (Settings → Text size). Depending on the
+    // engine, measured positions may already include that zoom while the
+    // menu's own left/top get zoomed again, so convert by the scale actually
+    // seen: measured width over layout width.
+    const k = b.offsetWidth ? r.width / b.offsetWidth : 1;
+    const menuHeight = Math.min(options.length * 32 + 10, 264) * k;
+    const below = v.bottom - r.bottom;
+    const above = r.top - v.top;
+    const width = r.width / k;
+    // Keep the menu (at least 200px wide) inside the window on narrow screens.
+    const viewWidth = v.width / k;
+    const left = Math.max(8, Math.min((r.left - v.left) / k, viewWidth - Math.max(width, 200) - 8));
+    setPos(
+      below >= menuHeight + 8 * k || below >= above
+        ? { left, width, top: (r.bottom - v.top) / k + 4 }
+        : { left, width, bottom: (v.bottom - r.top) / k + 4 }
+    );
+  };
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    place();
+    setActive(Math.max(0, options.findIndex((o) => o.id === value)));
+    const close = () => setOpen(false);
+    window.addEventListener("resize", close);
+    // Scrolling the dialog would leave the menu behind: close it instead.
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const pick = (id: T) => {
+    onChange(id);
+    setOpen(false);
+    buttonRef.current?.focus();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!open) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      // Close the menu, not the dialog around it.
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (i + 1) % options.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (i - 1 + options.length) % options.length);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      pick(options[active].id);
+    } else if (e.key === "Tab") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={onKeyDown}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={label}
+        className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13.5px] text-ink outline-none transition-colors hover:bg-hover focus-visible:bg-hover ${
+          open ? "bg-hover" : ""
+        }`}
+      >
+        {current?.icon && <span className="flex shrink-0 text-ink-3">{current.icon}</span>}
+        <span className="min-w-0 flex-1 truncate">{current?.label}</span>
+        <ChevronDown
+          size={13}
+          strokeWidth={2}
+          className={`shrink-0 text-ink-3 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open &&
+        createPortal(
+          <>
+            <div ref={overlayRef} className="fixed inset-0 z-[60]" onMouseDown={() => setOpen(false)} />
+            {pos && (
+            <div
+              role="listbox"
+              aria-label={label}
+              className="anim-menu fixed z-[61] max-h-[264px] overflow-y-auto rounded-xl border border-edge bg-panel p-1 shadow-lg"
+              style={{ left: pos.left, top: pos.top, bottom: pos.bottom, minWidth: Math.max(pos.width, 200), maxWidth: "calc(100vw - 16px)" }}
+            >
+              {options.map((o, i) => {
+                const selected = o.id === value;
+                return (
+                  <div
+                    key={o.id}
+                    role="option"
+                    aria-selected={selected}
+                    onMouseEnter={() => setActive(i)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => pick(o.id)}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors ${
+                      i === active ? "bg-hover text-ink" : "text-ink-2"
+                    }`}
+                  >
+                    {o.icon && <span className="flex shrink-0 text-ink-3">{o.icon}</span>}
+                    <span className={`min-w-0 flex-1 truncate ${selected ? "font-medium text-ink" : ""}`}>{o.label}</span>
+                    {selected && <Check size={13} strokeWidth={2.2} className="shrink-0 text-ink" />}
+                  </div>
+                );
+              })}
+            </div>
+            )}
+          </>,
+          document.body
+        )}
+    </>
   );
 }
 

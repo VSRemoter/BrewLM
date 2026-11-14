@@ -224,7 +224,7 @@ export default function ShareDialog({
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13.5px] font-medium text-ink">{name}</p>
-                      <p className="truncate text-[12px] text-ink-3">
+                      <p className="line-clamp-2 text-[12px] leading-snug text-ink-3">
                         {r.version === 0 ? "Not published yet" : `Updated ${when(r.updated_at || r.created_at)}`} · {contents(r)}
                         {meta && ` · ${meta.views} ${meta.views === 1 ? "view" : "views"}`}
                         {r.expires_at ? ` · until ${when(r.expires_at)}` : ""}
@@ -237,9 +237,10 @@ export default function ShareDialog({
                         onClick={() => run(r.id, "Updating…", () => publishShare(notebookId, rowOptions(r), r, setProgress))}
                         className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-40"
                         title="Publish the notebook as it is now to this link"
+                        aria-label={`Update ${name}`}
                       >
                         <RefreshCw size={13} strokeWidth={1.8} />
-                        Update
+                        <span className="hidden sm:inline">Update</span>
                       </button>
                       <button
                         disabled={!!busy}
@@ -261,14 +262,15 @@ export default function ShareDialog({
                   </div>
 
                   {/* The address and Copy as one control. */}
-                  <div className="mt-3 flex h-9 items-center overflow-hidden rounded-lg border border-edge bg-canvas/60 focus-within:border-accent/70">
-                    <input
-                      readOnly
-                      value={shareUrl(r)}
-                      onFocus={(e) => e.target.select()}
-                      className="min-w-0 flex-1 bg-transparent px-3 font-mono text-[11.5px] text-ink-2 outline-none"
+                  <div className="mt-3 flex h-9 items-center overflow-hidden rounded-lg border border-edge bg-canvas/60">
+                    {/* Text, not an input: phones enlarge text fields to 16px, which hid most of the address. */}
+                    <span
+                      className="min-w-0 flex-1 cursor-text truncate px-3 font-mono text-[11.5px] text-ink-2 select-all"
                       aria-label={`${name} address`}
-                    />
+                      title={shareUrl(r)}
+                    >
+                      {shareUrl(r)}
+                    </span>
                     <button
                       onClick={() => void copy(r)}
                       className={`flex h-full shrink-0 items-center gap-1.5 border-l border-edge px-3 text-[12.5px] font-medium transition-colors ${
@@ -319,17 +321,20 @@ export default function ShareDialog({
                       >
                         New address
                       </button>
-                      <GhostButton disabled={!!busy} onClick={() => setEditing(null)}>
-                        Cancel
-                      </GhostButton>
-                      <PrimaryButton
-                        disabled={!!busy || !paid}
-                        onClick={() =>
-                          run(r.id, "Updating…", () => publishShare(notebookId, optionsOf(draft, r.expires_at), r, setProgress))
-                        }
-                      >
-                        Save and update
-                      </PrimaryButton>
+                      {/* Kept together so on a phone they wrap as a pair, right-aligned. */}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <GhostButton disabled={!!busy} onClick={() => setEditing(null)}>
+                          Cancel
+                        </GhostButton>
+                        <PrimaryButton
+                          disabled={!!busy || !paid}
+                          onClick={() =>
+                            run(r.id, "Updating…", () => publishShare(notebookId, optionsOf(draft, r.expires_at), r, setProgress))
+                          }
+                        >
+                          Save and update
+                        </PrimaryButton>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -479,7 +484,7 @@ function LinkSettings({
         <input
           value={draft.sharedBy}
           onChange={(e) => set({ sharedBy: e.target.value.slice(0, 60) })}
-          placeholder="Your name, shown to people who open the link"
+          placeholder="Your name, shown to viewers"
           className={inputClass}
         />
       </label>
