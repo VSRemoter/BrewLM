@@ -43,6 +43,7 @@ import {
   PrimaryButton,
   PropertyRow,
   Segmented,
+  inputClass,
   textareaClass,
 } from "./ui";
 
@@ -91,6 +92,11 @@ function SourcePicker({
         )
       }
     >
+      {sources.length === 0 && (
+        <p className="rounded-lg border border-dashed border-edge px-3 py-3 text-[12.5px] text-ink-3">
+          No sources yet. Add some in the Sources panel first.
+        </p>
+      )}
       <div className="-mx-2 flex flex-col">
         {sources.map((s) => {
           const checked = selected.includes(s.id);
@@ -189,8 +195,7 @@ function CustomizeFrame({
               onChange={(e) => onNameChange(e.target.value)}
               maxLength={80}
               aria-label="Name"
-              // Reads as text until hovered or focused, like a Notion property.
-              className="-mx-2 h-8 w-[calc(100%+1rem)] rounded-md border border-transparent bg-transparent px-2 text-[13.5px] font-medium text-ink outline-none transition-colors hover:bg-hover focus:border-accent/70 focus:bg-panel focus:ring-3 focus:ring-accent/15"
+              className={`${inputClass} h-8 py-0 font-medium`}
             />
           </PropertyRow>
           {rows}

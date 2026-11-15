@@ -98,7 +98,6 @@ export default function NotebookFormDialog({
               <ImagePlus size={14} strokeWidth={1.8} />
               Add cover
             </button>
-            <span className="text-[12px] text-ink-3/70">Shown in grid view</span>
           </div>
         )}
         <input
@@ -113,14 +112,14 @@ export default function NotebookFormDialog({
           }}
         />
 
-        {/* Title and description read as page text, not boxed form fields. */}
+        {/* Title and description keep their page-like type, in light boxes so they read as editable. */}
         <input
           autoFocus
           value={name}
           onChange={(e) => onNameChange(e.target.value)}
           placeholder={kind === "folder" ? "Untitled folder" : "Untitled notebook"}
           aria-label={kind === "folder" ? "Name" : "Title"}
-          className="w-full bg-transparent text-[22px]! font-semibold tracking-tight text-ink outline-none placeholder:text-ink-3/60"
+          className="w-full rounded-lg border border-edge bg-canvas/50 px-3 py-1.5 text-[20px]! font-semibold tracking-tight text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3/60 hover:border-ink-3/40 focus:border-accent/70 focus:ring-3 focus:ring-accent/15"
         />
         <textarea
           value={description}
@@ -128,7 +127,7 @@ export default function NotebookFormDialog({
           placeholder={kind === "folder" ? "Add a description of what belongs here…" : "Add a description…"}
           aria-label="Description"
           rows={2}
-          className="mt-1 w-full resize-none bg-transparent text-[13.5px] leading-relaxed text-ink-2 outline-none placeholder:text-ink-3/70"
+          className="mt-2 w-full resize-none rounded-lg border border-edge bg-canvas/50 px-3 py-2 text-[13.5px] leading-relaxed text-ink-2 outline-none transition-[border-color,box-shadow] placeholder:text-ink-3/70 hover:border-ink-3/40 focus:border-accent/70 focus:ring-3 focus:ring-accent/15"
         />
 
         {folder && (
