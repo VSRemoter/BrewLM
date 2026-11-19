@@ -1,6 +1,6 @@
 /** Shared building blocks for the settings page sections. */
-import { Check, Plus, X } from "lucide-react";
-import type { ReactNode } from "react";
+import { Check, ChevronRight, Plus, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 export function SectionTitle({ title, desc }: { title: string; desc?: string }) {
   return (
@@ -18,6 +18,75 @@ export function Card({ children }: { children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+/**
+ * A collapsed group of optional settings: a toggle row showing a one-line
+ * summary of the current values, opening to the cards inside. Open/closed is
+ * remembered per group on this device.
+ */
+export function Disclosure({
+  id,
+  title,
+  summary,
+  children,
+}: {
+  /** Stable key for remembering whether it's open. */
+  id: string;
+  title: string;
+  /** Current values in a few words, shown while closed. */
+  summary?: string;
+  children: ReactNode;
+}) {
+  const key = `brewlm.settings.open.${id}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = () => {
+    setOpen((v) => {
+      try {
+        localStorage.setItem(key, v ? "0" : "1");
+      } catch {
+        /* storage blocked: still toggles for this visit */
+      }
+      return !v;
+    });
+  };
+  return (
+    <div className="border-t border-edge-soft">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="group -mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-lg px-2 py-3 text-left transition-colors hover:bg-hover/60"
+      >
+        <ChevronRight
+          size={15}
+          strokeWidth={2}
+          className={`shrink-0 self-start text-ink-3 transition-transform max-sm:mt-[3px] sm:self-center ${open ? "rotate-90" : ""}`}
+        />
+        {/* Phones: the summary goes under the title, where it has room to be read. */}
+        <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-center">
+          <span className="shrink-0 text-[13.5px] font-medium text-ink">{title}</span>
+          {summary && !open && (
+            <span className="min-w-0 text-[12.5px] leading-snug text-ink-3 max-sm:mt-0.5 sm:ml-auto sm:truncate sm:pl-4">
+              {summary}
+            </span>
+          )}
+        </span>
+      </button>
+      {open && <div className="anim-menu pt-1 pb-2">{children}</div>}
+    </div>
+  );
+}
+
+/** Small heading above a group of Disclosures. */
+export function GroupLabel({ children }: { children: ReactNode }) {
+  return <p className="mt-8 mb-1 px-0.5 text-[12.5px] font-medium text-ink-3">{children}</p>;
 }
 
 /** Label (+ optional description) on the left, control on the right. */
@@ -139,7 +208,7 @@ export function SavedModelList({
   return (
     <div className="py-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
+        <span className="text-[12px] font-medium text-ink-3">{title}</span>
         <span className="text-[11px] text-ink-3">{models.length}</span>
       </div>
       <div className="max-h-56 divide-y divide-edge-soft overflow-y-auto rounded-lg border border-edge">

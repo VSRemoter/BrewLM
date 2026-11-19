@@ -1,5 +1,5 @@
 import { platform } from "../platform";
-import { budgetForContext, loadLocalServer, localHeaders } from "./local";
+import { budgetForContext, effectiveContext, ensureServerContext, loadLocalServer, localHeaders } from "./local";
 import { modelLimits, STANDARD_EFFORTS, type ModelLimits } from "./modelLimits";
 import { noteServedBy, openRouterPrefs, routingError } from "./routing";
 import { openRouterApi, speaksOpenRouter } from "./brewlmAi";
@@ -204,6 +204,21 @@ function effortFor(opts: StreamOptions, limits: ModelLimits | null, level = opts
 }
 
 /**
+ * The thinking fields for a local server, or null on Auto (the model's own
+ * default). Engines read different ones and ignore the rest, so both go:
+ * `reasoning_effort` (Ollama, LM Studio, llama.cpp, Strata, vLLM for gpt-oss;
+ * "none" turns thinking off on all of them — checked live on the first three)
+ * and, for Off, `chat_template_kwargs.enable_thinking` (llama.cpp, vLLM,
+ * SGLang, Strata: the Qwen-style switch). Models that only think on or off
+ * take Low/Medium/High as on.
+ */
+export function localThinkingFields(level: Thinking | undefined): Record<string, unknown> | null {
+  if (!level || level === "auto") return null;
+  if (level === "off") return { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } };
+  return { reasoning_effort: level };
+}
+
+/**
  * An output limit a provider's error says the request went over, so it can be
  * retried under it: low OpenRouter credit, OpenAI's and Anthropic's per-model
  * caps, or a prompt plus cap that overflows the context window.
@@ -385,10 +400,17 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   if (opts.cacheKey && or) body.session_id = opts.cacheKey;
   if (opts.cacheKey && opts.provider === "openai") body.prompt_cache_key = opts.cacheKey;
   const limits = local ? null : await modelLimits(opts.provider, opts.apiKey, opts.model);
-  // Local windows are small: the budget keeps room for the answer. OpenAI
-  // publishes no limits, so automatic sends no cap and it allows the model's maximum.
+  // Local windows are small: the budget keeps room for the answer, sized to
+  // what the server really loaded (usually known already; this is the backstop).
+  // OpenAI publishes no limits, so automatic sends no cap and it allows the model's maximum.
+  let localCtx = 0;
+  if (local) {
+    const s = { provider: "local" as const, localBaseUrl: local.baseUrl, localKey: local.key, model: opts.model, localContext: local.context };
+    await ensureServerContext(s, { load: true });
+    localCtx = effectiveContext(s);
+  }
   const maxTokens = local
-    ? outputCap(opts.maxOutput ?? budgetForContext(local.context).maxOutput, opts, undefined, local.context)
+    ? outputCap(opts.maxOutput ?? budgetForContext(localCtx).maxOutput, opts, undefined, localCtx)
     : outputCap(opts.maxOutput ?? (opts.provider === "openai" ? undefined : AUTO_OUTPUT_TOKENS), opts, limits?.maxOutput, limits?.context);
   // o1/o3/gpt-5-class models reject `max_tokens` outright — the request fails.
   const capField = isReasoningModel(opts.model) ? "max_completion_tokens" : "max_tokens";
@@ -399,6 +421,8 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   };
   const effort = local ? undefined : effortFor(opts, limits);
   if (effort) setEffort(effort);
+  const localThinking = local ? localThinkingFields(opts.thinking) : null;
+  if (localThinking) Object.assign(body, localThinking);
   if (opts.jsonMode && opts.provider === "openai") {
     body.response_format = { type: "json_object" };
   }
@@ -416,7 +440,7 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   }
   const temperature = temperatureFor(opts, limits, effort);
   if (temperature != null) body.temperature = temperature;
-  return { local, base, headers, body, capField, limits, effort, setEffort };
+  return { local, base, headers, body, capField, limits, effort, setEffort, localThinking };
 }
 
 /**
@@ -483,13 +507,15 @@ export function canPrewarm(provider: Provider, model: string): boolean {
 }
 
 async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<string> {
-  const { local, base, headers, body, capField, limits, effort, setEffort } = await openAICompatibleRequest(opts);
+  const { local, base, headers, body, capField, limits, effort, setEffort, localThinking } = await openAICompatibleRequest(opts);
 
   // A reasoning model can spend the whole output allowance thinking and stop
   // ("length") before writing a word. Nothing has been shown yet then, so try
   // once more with more room (within the model's limit) and its thinking turned down.
   let retriedThinking = false;
   let shrinks = 0;
+  /** A local server refused the thinking fields: asked again without them. */
+  let droppedThinking = false;
   for (;;) {
     const res = await (local ? platform.fetch : fetch)(base, {
       method: "POST",
@@ -502,6 +528,12 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     });
     if (!res.ok) {
       const message = await apiError(res);
+      // A strict local server that doesn't know the thinking fields: the answer matters more than the setting.
+      if (local && localThinking && !droppedThinking && (res.status === 400 || res.status === 422)) {
+        for (const k of Object.keys(localThinking)) delete body[k];
+        droppedThinking = true;
+        continue;
+      }
       // Asked for more output than the model, the context window or the credit allows: retry under that.
       const allowed = allowedOutput(message);
       const current = body[capField] as number | undefined;
@@ -591,6 +623,12 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     const ranOut = finishReason === "length" && !wroteText && images.length === 0;
     if (!ranOut) return;
     const room = body[capField] as number | undefined;
+    // Local: a reasoning model filled a small window with thinking. Once more with it off.
+    if (!retriedThinking && local && body.reasoning_effort !== "none" && !droppedThinking) {
+      retriedThinking = true;
+      Object.assign(body, localThinkingFields("off"));
+      continue;
+    }
     if (!retriedThinking && !local) {
       retriedThinking = true;
       const more = room && outputCap(room * 2, { ...opts, maxTokens: undefined }, limits?.maxOutput, limits?.context);

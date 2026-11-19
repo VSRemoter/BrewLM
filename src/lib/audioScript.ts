@@ -33,6 +33,10 @@ function parseOutline(raw: string, parts: number): string[] {
     .slice(0, parts);
 }
 
+/** Added on a retry: the one thing a reply with no usable lines got wrong. */
+const FORMAT_REMINDER =
+  "Important: write ONLY the spoken lines, each starting with “Host:” or “Co-Host:” and the words on the same line. No title, no headings, no notes.";
+
 export async function writeAudioScript(
   opts: AudioOptions,
   ask: ScriptAsk,
@@ -41,9 +45,20 @@ export async function writeAudioScript(
   const parts = AUDIO_LENGTH_PARTS[opts.length];
   const overview = opts.description || "an overview of the most important ideas in all the sources";
 
+  /**
+   * One request's lines; asked once more, with the format spelled out again,
+   * when the reply had almost none (small local models drift from it).
+   */
+  const lines = async (prompt: string, focus: string, enough: number): Promise<ScriptTurn[]> => {
+    const first = parseScript(await ask(prompt, focus));
+    if (first.length >= enough) return first;
+    const again = parseScript(await ask(`${prompt}\n\n${FORMAT_REMINDER}`, focus));
+    return again.length > first.length ? again : first;
+  };
+
   const single = async () => {
     onPhase("Writing script…");
-    return parseScript(await ask(buildAudioPrompt(opts), overview));
+    return lines(buildAudioPrompt(opts), overview, 4);
   };
   if (parts <= 1) return single();
 
@@ -56,7 +71,7 @@ export async function writeAudioScript(
   for (let i = 0; i < outline.length; i++) {
     onPhase(`Writing script — part ${i + 1} of ${outline.length}…`);
     const previous = turns.slice(-3).map(scriptLine).join("\n");
-    turns.push(...parseScript(await ask(buildAudioSectionPrompt(opts, outline, i, previous), outline[i])));
+    turns.push(...(await lines(buildAudioSectionPrompt(opts, outline, i, previous), outline[i], 2)));
   }
   return turns;
 }

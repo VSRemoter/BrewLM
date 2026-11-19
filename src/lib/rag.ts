@@ -28,7 +28,7 @@ import {
 } from "./db";
 import { complete } from "./llm";
 import { ensureMediaText } from "./media";
-import { contextBudget, loadLocalServer, localHeaders } from "./local";
+import { contextBudget, localHeaders, normalizeBaseUrl } from "./local";
 import { activeKey, loadSettings } from "./settings";
 import { aiConfigNow, brewlmSession, openRouterApi, planHasAi } from "./brewlmAi";
 import type { ChunkRow } from "./db";
@@ -129,12 +129,15 @@ interface EmbedTarget {
 }
 
 /** Candidate embeddings providers, best first; returns null when none work. */
-function embedTargets(s: Settings): EmbedTarget[] {
+export function embedTargets(s: Settings): EmbedTarget[] {
   // Local provider: embed on the user's own server or not at all — source text
   // never goes to a cloud API just because a cloud key happens to be saved.
   if (s.provider === "local") {
-    return s.localBaseUrl && s.localEmbedModel
-      ? [{ url: "", key: s.localKey, model: s.localEmbedModel, local: true }]
+    // Its own embedding server when one is set (chat engines like Strata serve none), else the chat server.
+    const own = !!s.localEmbedBaseUrl?.trim();
+    const base = normalizeBaseUrl(own ? s.localEmbedBaseUrl : s.localBaseUrl);
+    return base && s.localEmbedModel
+      ? [{ url: `${base}/embeddings`, key: own ? s.localEmbedKey : s.localKey, model: s.localEmbedModel, local: true }]
       : [];
   }
   const targets: EmbedTarget[] = [];
@@ -173,7 +176,7 @@ function embedTargets(s: Settings): EmbedTarget[] {
 async function embedBatch(texts: string[], targets: EmbedTarget[]): Promise<number[][] | null> {
   for (const t of targets) {
     try {
-      const url = t.local ? `${(await loadLocalServer()).baseUrl}/embeddings` : t.url;
+      const url = t.url;
       const res = await platform.fetch(url, {
         method: "POST",
         headers: t.local ? localHeaders(t.key) : { "Content-Type": "application/json", Authorization: `Bearer ${t.key}` },

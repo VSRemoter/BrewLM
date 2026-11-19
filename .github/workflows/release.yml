@@ -105,6 +105,12 @@ jobs:
       - name: Fetch sidecar binaries
         run: bash scripts/fetch-sidecars.sh
 
+      # Bundles whisper.cpp's whisper-cli for built-in transcription; macOS
+      # builds both arches and the universal binary.
+      - name: Build whisper.cpp sidecar
+        shell: bash
+        run: bash scripts/build-whisper.sh
+
       # Signs the updater bundles and uploads latest.json, which the app's
       # in-place updater reads (plugins.updater in tauri.conf.json).
       - name: Build app and upload release assets

@@ -56,6 +56,8 @@ export interface ShareRow {
   include_chats: number;
   include_media: number;
   shared_by: string;
+  /** The owner's own name for this link ("Class", "7-day"…); never leaves their devices. */
+  label: string;
   expires_at: number | null;
   created_at: number;
   updated_at: number;
@@ -72,6 +74,8 @@ export interface ShareManifest {
 }
 
 export interface ShareOptions {
+  /** The owner's name for the link ("" = none). */
+  label: string;
   includeChats: boolean;
   includeMedia: boolean;
   sharedBy: string;
@@ -166,10 +170,10 @@ export async function listShares(notebookId?: string): Promise<ShareRow[]> {
 async function saveRow(r: ShareRow): Promise<void> {
   const d = await getDb();
   await d.execute(
-    `INSERT INTO shares (id, notebook_id, share_key, version, include_chats, include_media, shared_by, expires_at, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (id) DO UPDATE SET version = $4, include_chats = $5, include_media = $6, shared_by = $7, expires_at = $8, updated_at = $10`,
-    [r.id, r.notebook_id, r.share_key, r.version, r.include_chats, r.include_media, r.shared_by, r.expires_at, r.created_at, r.updated_at]
+    `INSERT INTO shares (id, notebook_id, share_key, version, include_chats, include_media, shared_by, label, expires_at, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (id) DO UPDATE SET version = $4, include_chats = $5, include_media = $6, shared_by = $7, label = $8, expires_at = $9, updated_at = $11`,
+    [r.id, r.notebook_id, r.share_key, r.version, r.include_chats, r.include_media, r.shared_by, r.label, r.expires_at, r.created_at, r.updated_at]
   );
 }
 
@@ -207,6 +211,7 @@ export async function publishShare(
         include_chats: 0,
         include_media: 1,
         shared_by: "",
+        label: opts.label.trim(),
         expires_at: null,
         created_at: Date.now(),
         updated_at: 0,
@@ -280,6 +285,7 @@ export async function publishShare(
     include_chats: opts.includeChats ? 1 : 0,
     include_media: opts.includeMedia ? 1 : 0,
     shared_by: manifest.sharedBy,
+    label: opts.label.trim(),
     expires_at: opts.expiresAt,
     updated_at: Date.now(),
   };
@@ -300,16 +306,21 @@ export async function stopSharing(row: Pick<ShareRow, "id">): Promise<void> {
   await dropRow(row.id);
 }
 
-/** A new address for the same notebook; the old link stops working. */
-export async function resetShare(row: ShareRow, onProgress?: (p: Progress) => void): Promise<ShareRow> {
-  const opts: ShareOptions = {
+/** A link's current settings, to update it as it is. */
+export function rowOptions(row: ShareRow): ShareOptions {
+  return {
+    label: row.label ?? "",
     includeChats: !!row.include_chats,
     includeMedia: !!row.include_media,
     sharedBy: row.shared_by,
     expiresAt: row.expires_at,
   };
+}
+
+/** A new address for the same notebook; the old link stops working. */
+export async function resetShare(row: ShareRow, onProgress?: (p: Progress) => void): Promise<ShareRow> {
   await stopSharing(row);
-  return publishShare(row.notebook_id, opts, undefined, onProgress);
+  return publishShare(row.notebook_id, rowOptions(row), undefined, onProgress);
 }
 
 /** From the server: views, size and whether a link was taken down. */

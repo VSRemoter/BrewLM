@@ -34,6 +34,15 @@ function open() {
 }
 
 describe("shared notebook guards", () => {
+  it("are back on at startup after a crash left them switched off", async () => {
+    const db = open();
+    await db.execute("INSERT INTO sync_state VALUES ('share_writing', '1')");
+    await ensureShareGuards(db);
+    await expect(db.execute("INSERT INTO sources (id, notebook_id, title) VALUES ('t9', 'theirs', 'X')")).rejects.toThrow(
+      SHARED_READ_ONLY
+    );
+  });
+
   it("refuses changes to a shared notebook's sources and outputs, and allows the rest", async () => {
     const db = open();
     await ensureShareGuards(db);

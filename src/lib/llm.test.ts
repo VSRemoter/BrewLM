@@ -4,13 +4,27 @@ vi.mock("../platform", () => ({ platform: { fetch: vi.fn() } }));
 /** Saved settings rows (Provider routing lives under "openrouterRouting"). */
 const settingsRows = vi.hoisted(() => new Map<string, string>());
 vi.mock("./db", () => ({ getSetting: async (key: string) => settingsRows.get(key) ?? "" }));
+/** The local server the next requests go to (null = none set up). */
+const localServer = vi.hoisted(() => ({ value: null as null | { baseUrl: string; key: string; context: number } }));
 vi.mock("./local", () => ({
   budgetForContext: () => ({ maxOutput: 4096 }),
-  loadLocalServer: async () => null,
+  loadLocalServer: async () => localServer.value,
   localHeaders: () => ({}),
+  ensureServerContext: async () => {},
+  effectiveContext: () => 8192,
 }));
 
-import { AUTO_OUTPUT_TOKENS, complete, extractJson, prewarmCache, supportsTemperature, takesThinking, ThinkSplitter } from "./llm";
+import { platform } from "../platform";
+import {
+  AUTO_OUTPUT_TOKENS,
+  complete,
+  extractJson,
+  localThinkingFields,
+  prewarmCache,
+  supportsTemperature,
+  takesThinking,
+  ThinkSplitter,
+} from "./llm";
 
 /** A streamed reply made of SSE `data:` lines. */
 function sse(...events: unknown[]): Response {
@@ -98,6 +112,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   settingsRows.clear();
+  localServer.value = null;
 });
 
 const ask = (over: Partial<Parameters<typeof complete>[0]>) =>
@@ -478,5 +493,43 @@ describe("Prompt caching", () => {
   it("a failed pre-warm is swallowed", async () => {
     replies.push(errorResponse(400, "nope"));
     expect(await prewarmCache({ provider: "anthropic", apiKey: "k", model: "claude-opus-5-5", messages: chat })).toBeNull();
+  });
+});
+
+describe("thinking on local servers", () => {
+  const askLocal = (thinking?: Parameters<typeof complete>[0]["thinking"]) => {
+    localServer.value = { baseUrl: "http://localhost:11434/v1", key: "", context: 0 };
+    // Local requests go through the app's own HTTP client; here it's the same stub.
+    vi.mocked(platform.fetch).mockImplementation((url, init) => fetch(url, init));
+    return ask({ provider: "local", apiKey: "", model: "qwen3:0.6b", thinking });
+  };
+
+  it("maps each level to the fields engines read", () => {
+    expect(localThinkingFields(undefined)).toBeNull();
+    expect(localThinkingFields("auto")).toBeNull();
+    expect(localThinkingFields("off")).toEqual({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } });
+    expect(localThinkingFields("high")).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("sends nothing on Auto, and the level otherwise", async () => {
+    replies.push(openAiText("ok"), openAiText("ok"));
+    await askLocal("auto");
+    await askLocal("off");
+    expect(sent[0].reasoning_effort).toBeUndefined();
+    expect(sent[0].chat_template_kwargs).toBeUndefined();
+    expect(sent[1]).toMatchObject({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it("asks again without the fields when a strict server refuses them", async () => {
+    replies.push(errorResponse(400, "Unrecognized request argument: reasoning_effort"), openAiText("four"));
+    expect(await askLocal("low")).toBe("four");
+    expect(sent[0].reasoning_effort).toBe("low");
+    expect(sent[1].reasoning_effort).toBeUndefined();
+  });
+
+  it("turns thinking off and tries once more when it filled the window", async () => {
+    replies.push(openAiRanOut(), openAiText("four"));
+    expect(await askLocal("high")).toBe("four");
+    expect(sent[1]).toMatchObject({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } });
   });
 });

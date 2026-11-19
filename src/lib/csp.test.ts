@@ -9,11 +9,21 @@
  * read and write files anywhere on the computer.
  */
 import { describe, expect, it } from "vitest";
-import headersFile from "../../public/_headers?raw";
-import indexHtml from "../../index.html?raw";
+import headersRaw from "../../public/_headers?raw";
+import indexRaw from "../../index.html?raw";
 import tauriConf from "../../src-tauri/tauri.conf.json?raw";
 import capabilities from "../../src-tauri/capabilities/default.json?raw";
-import sandboxRs from "../../src-tauri/src/sandbox.rs?raw";
+import sandboxRaw from "../../src-tauri/src/sandbox.rs?raw";
+
+/**
+ * Git on Windows checks files out with CRLF line endings; the deployed site
+ * is built from LF ones. Read the files as deployed, so the line-by-line
+ * parsing below and the script hashes come out the same on every platform.
+ */
+const lf = (text: string) => text.replace(/\r\n/g, "\n");
+const headersFile = lf(headersRaw);
+const indexHtml = lf(indexRaw);
+const sandboxRs = lf(sandboxRaw);
 
 async function sha256(text: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
@@ -31,6 +41,14 @@ function policies(headers: string): Map<string, string> {
   }
   return out;
 }
+
+describe("reading _headers", () => {
+  it("finds the same policies whatever the line endings", () => {
+    const text = "/\n  Content-Security-Policy: default-src 'self'\n/sandbox\n  Content-Security-Policy: connect-src 'none'\n";
+    expect(policies(lf(text.replace(/\n/g, "\r\n")))).toEqual(policies(text));
+    expect(policies(text).get("/sandbox")).toBe("connect-src 'none'");
+  });
+});
 
 describe("web app CSP", () => {
   const csp = policies(headersFile);

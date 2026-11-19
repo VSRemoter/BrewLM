@@ -163,7 +163,7 @@ vi.mock("./rag", () => ({
 vi.mock("./media", () => ({}));
 vi.mock("./source", () => ({}));
 vi.mock("./research", () => ({}));
-vi.mock("./local", () => ({ contextBudget: () => ({ sources: 1000, history: 1000 }) }));
+vi.mock("./local", () => ({ contextBudget: () => ({ sources: 1000, history: 1000 }), ensureServerContext: async () => {} }));
 vi.mock("./settings", () => ({
   activeKey: () => "key",
   loadSettings: async () => ({ provider: "openrouter", model: "m" }),

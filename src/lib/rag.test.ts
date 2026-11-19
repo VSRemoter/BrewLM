@@ -20,6 +20,7 @@ vi.mock("./local", () => ({
   contextBudget: () => ({ condenseGroup: 20_000, sources: 28_000 }),
   loadLocalServer: async () => null,
   localHeaders: () => ({}),
+  normalizeBaseUrl: (u: string) => u.trim().replace(/\/+$/, ""),
 }));
 vi.mock("./usage", () => ({
   addUsage: () => {},
@@ -42,7 +43,7 @@ vi.mock("./llm", () => ({
   },
 }));
 
-const { condenseNotebook } = await import("./rag");
+const { condenseNotebook, embedTargets } = await import("./rag");
 
 let n = 0;
 /** Three 20k-char sources: over the condense target, so the model is called. */
@@ -105,5 +106,26 @@ describe("condenseNotebook cancel", () => {
     await tick();
     release();
     await expect(again).resolves.toContain("notes");
+  });
+});
+
+describe("local embeddings", () => {
+  const local = (over: object) =>
+    ({ provider: "local", localBaseUrl: "http://127.0.0.1:8080/v1", localKey: "chat-key", localEmbedModel: "nomic-embed-text", localEmbedBaseUrl: "", localEmbedKey: "", ...over }) as never;
+
+  it("embed on the chat server by default", () => {
+    expect(embedTargets(local({}))).toEqual([
+      { url: "http://127.0.0.1:8080/v1/embeddings", key: "chat-key", model: "nomic-embed-text", local: true },
+    ]);
+  });
+
+  it("embed on their own server when one is set (a chat engine without embeddings)", () => {
+    expect(embedTargets(local({ localEmbedBaseUrl: "http://localhost:11434/v1", localEmbedKey: "" }))).toEqual([
+      { url: "http://localhost:11434/v1/embeddings", key: "", model: "nomic-embed-text", local: true },
+    ]);
+  });
+
+  it("use keyword search with no embedding model, and never a cloud key", () => {
+    expect(embedTargets(local({ localEmbedModel: "", openrouterKey: "or-key" }))).toEqual([]);
   });
 });

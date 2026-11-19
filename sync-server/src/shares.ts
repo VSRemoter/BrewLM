@@ -11,7 +11,8 @@
  *   POST   /v1/shares                     → { id }
  *   GET    /v1/shares                     → { shares: [...] }
  *   PATCH  /v1/shares/:id                 { expiresAt: ms | null }
- *   DELETE /v1/shares/:id                 the link stops working at once
+ *   DELETE /v1/shares/:id                 the link stops working at once (its files go; a
+ *                                         record stays, so it answers 410 rather than 404)
  *   POST   /v1/shares/:id/blobs/missing   { ids } → { missing }
  *   PUT    /v1/shares/:id/blobs/:blob     (raw bytes)
  *   PUT    /v1/shares/:id/manifest?expect=<version>  (raw bytes) → { version }  (409 if stale)
@@ -29,8 +30,9 @@
  * Admin (ADMIN_TOKEN):
  *   POST /v1/admin/shares/:id             { disabled: boolean }  take a link down / bring it back
  *
- * `sweepShares` (hourly cron) deletes expired links and abandoned ones that
- * were never published, freeing their owners' storage, and old reports.
+ * `sweepShares` (hourly cron) stops expired links and deletes abandoned ones
+ * that were never published, freeing their owners' storage, plus old reports
+ * and stopped links' records after STOPPED_KEPT_MS.
  *
  * Storage: a share's bytes count against its owner's plan, together with the
  * vault (index.ts lowers the vault's limit by them). Each manifest version is
@@ -60,6 +62,8 @@ const MAX_REASON = 2000;
 /** A link created but never published is dropped after this. */
 const ABANDONED_MS = 24 * 60 * 60 * 1000;
 const REPORTS_KEPT_MS = 180 * 24 * 60 * 60 * 1000;
+/** How long a stopped link still answers "no longer available" before it's forgotten (then: not found). */
+const STOPPED_KEPT_MS = 365 * 24 * 60 * 60 * 1000;
 /** Links deleted per sweep run: each costs a few storage calls. */
 const SWEEP_BATCH = 25;
 
@@ -79,6 +83,8 @@ interface ShareRow {
   updated_at: number;
   expires_at: number | null;
   disabled_at: number | null;
+  /** Stopped by its owner or expired: files gone, record kept. */
+  stopped_at: number | null;
 }
 
 function json(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
@@ -117,7 +123,8 @@ async function shareBytes(env: Env, id: string): Promise<number> {
 
 const getShare = (env: Env, id: string) => env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first<ShareRow>();
 
-const live = (s: ShareRow, now = Date.now()) => s.disabled_at === null && (s.expires_at === null || s.expires_at > now);
+const live = (s: ShareRow, now = Date.now()) =>
+  s.stopped_at === null && s.disabled_at === null && (s.expires_at === null || s.expires_at > now);
 
 /** Room for `size` more bytes under the owner's plan, counting the vault too? */
 async function fits(env: Env, user: User, limitBytes: number, shareId: string, size: number): Promise<boolean> {
@@ -126,8 +133,11 @@ async function fits(env: Env, user: User, limitBytes: number, shareId: string, s
   return vault.total + (await sharedBytes(env, user.id)) + size <= limitBytes;
 }
 
-/** Remove a share's files and rows. */
-async function destroy(env: Env, id: string): Promise<void> {
+/**
+ * Remove a share's files. With `keepRecord` (a link that was published) its
+ * row stays, marked stopped, so the link answers 410; otherwise it goes too.
+ */
+async function destroy(env: Env, id: string, keepRecord: boolean): Promise<void> {
   let cursor: string | undefined;
   do {
     const page = await env.BLOBS.list({ prefix: PREFIX(id), cursor });
@@ -136,7 +146,11 @@ async function destroy(env: Env, id: string): Promise<void> {
   } while (cursor);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM share_blobs WHERE share_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id),
+    keepRecord
+      ? env.DB.prepare(
+          "UPDATE shares SET stopped_at = coalesce(stopped_at, ?), manifest_key = '', manifest_bytes = 0 WHERE id = ?"
+        ).bind(Date.now(), id)
+      : env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id),
   ]);
 }
 
@@ -219,17 +233,23 @@ async function adminRoute(req: Request, env: Env, id: string): Promise<Response>
   return res.meta.changes === 1 ? json({ disabled: body.disabled }) : fail(404, "no such share");
 }
 
-/** Hourly: delete expired and abandoned links (their files too) and old reports. */
+/**
+ * Hourly: stop expired links (their files go, their record stays), delete
+ * abandoned ones, and forget old reports and old stopped links' records.
+ */
 export async function sweepShares(env: Env, now = Date.now()): Promise<{ removed: number }> {
   const { results } = await env.DB.prepare(
-    `SELECT id FROM shares
-     WHERE (expires_at IS NOT NULL AND expires_at < ?1) OR (version = 0 AND created_at < ?2)
+    `SELECT id, version FROM shares
+     WHERE stopped_at IS NULL AND ((expires_at IS NOT NULL AND expires_at < ?1) OR (version = 0 AND created_at < ?2))
      LIMIT ${SWEEP_BATCH}`
   )
     .bind(now, now - ABANDONED_MS)
-    .all<{ id: string }>();
-  for (const r of results) await destroy(env, r.id);
-  await env.DB.prepare("DELETE FROM share_reports WHERE created_at < ?").bind(now - REPORTS_KEPT_MS).run();
+    .all<{ id: string; version: number }>();
+  for (const r of results) await destroy(env, r.id, r.version > 0);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM share_reports WHERE created_at < ?").bind(now - REPORTS_KEPT_MS),
+    env.DB.prepare("DELETE FROM shares WHERE stopped_at IS NOT NULL AND stopped_at < ?").bind(now - STOPPED_KEPT_MS),
+  ]);
   return { removed: results.length };
 }
 
@@ -272,7 +292,9 @@ async function ownerRoutes(req: Request, env: Env, id: string | null, op: string
 
   if (id === null) {
     if (req.method === "GET") {
-      const { results } = await env.DB.prepare("SELECT * FROM shares WHERE owner_id = ? ORDER BY created_at DESC")
+      const { results } = await env.DB.prepare(
+        "SELECT * FROM shares WHERE owner_id = ? AND stopped_at IS NULL ORDER BY created_at DESC"
+      )
         .bind(user.id)
         .all<ShareRow>();
       const shares = await Promise.all(
@@ -292,7 +314,9 @@ async function ownerRoutes(req: Request, env: Env, id: string | null, op: string
     if (req.method !== "POST") return fail(405, "method not allowed");
     const ent = await entitlement(env, user);
     if (!ent.canSync || ent.plan === "trial") return fail(402, "Sharing links come with a BrewLM Sync plan.");
-    const count = await env.DB.prepare("SELECT count(*) AS n FROM shares WHERE owner_id = ?").bind(user.id).first<{ n: number }>();
+    const count = await env.DB.prepare("SELECT count(*) AS n FROM shares WHERE owner_id = ? AND stopped_at IS NULL")
+      .bind(user.id)
+      .first<{ n: number }>();
     if ((count?.n ?? 0) >= MAX_SHARES) return fail(429, `You can have up to ${MAX_SHARES} shared links. Stop sharing one to make another.`);
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     const newId = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -307,11 +331,14 @@ async function ownerRoutes(req: Request, env: Env, id: string | null, op: string
   // Someone else's link looks the same as no link.
   if (!share || share.owner_id !== user.id) return fail(404, "no such share");
 
+  if (op === null && req.method === "DELETE") {
+    await destroy(env, id, share.version > 0);
+    return new Response(null, { status: 204 });
+  }
+  // A stopped link can't be changed or brought back; its owner makes a new one.
+  if (share.stopped_at !== null) return fail(404, "no such share");
+
   if (op === null) {
-    if (req.method === "DELETE") {
-      await destroy(env, id);
-      return new Response(null, { status: 204 });
-    }
     if (req.method !== "PATCH") return fail(405, "method not allowed");
     const body = await req.json<{ expiresAt?: unknown }>().catch(() => ({}) as { expiresAt?: unknown });
     const exp = body.expiresAt;

@@ -71,7 +71,7 @@ import {
 import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { aiBlock, AI_TIERS, brewlmModelLabel, costLabel, costVsFast, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
 import { AiBlockedNotice } from "./settings/BrewLmAi";
-import { CLOUD_BUDGET, contextBudget, type ContextBudget } from "../lib/local";
+import { CLOUD_BUDGET, contextBudget, ensureServerContext, type ContextBudget } from "../lib/local";
 import {
   imageAlt,
   libraryImageUrl,
@@ -82,7 +82,8 @@ import {
 } from "../lib/genImage";
 import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
-import { ensureMediaText } from "../lib/media";
+import { imageRoute } from "../lib/featureRoute";
+import { cloudJobs, ensureMediaText } from "../lib/media";
 import {
   cloneReply,
   constitutionTurn,
@@ -125,6 +126,7 @@ import {
   saveResearchModelList,
   saveVoiceList,
   THINKING_LABELS,
+  thinkingLevels,
   TTS_PROVIDER_LABELS,
   voiceLabel,
   type Host,
@@ -1099,6 +1101,8 @@ export default function ChatPanel({
       document.removeEventListener("keydown", onKey);
     };
   }, [thinkingMenu]);
+  /** Off is a local-only level: cloud models treat it as Auto, so that's what the button shows. */
+  const shownThinking: Thinking = thinking === "off" && settings.provider !== "local" ? "auto" : thinking;
   const pickThinking = async (level: Thinking) => {
     setThinkingMenu(false);
     setThinking(level);
@@ -1507,7 +1511,7 @@ export default function ChatPanel({
           : "Reasoning now stays folded above each reply; click **Reasoning** to open one."
       );
     }
-    const effort = settings.provider === "local" ? "" : ` Thinking effort is **${THINKING_LABELS[thinking]}**; change it with the brain button beside Send.`;
+    const effort = ` Thinking effort is **${THINKING_LABELS[shownThinking]}**; change it with the brain button beside Send.`;
     return say(
       `Reasoning above replies is ${showReasoning ? "open (\`/thinking hide\` folds it)" : "folded (\`/thinking show\` opens it)"}.${effort}`
     );
@@ -1557,6 +1561,17 @@ export default function ChatPanel({
 
   /** /imagemodel — show, switch or edit the model /image draws with (no LLM). */
   const runImageModelCommand = async (text: string): Promise<void> => {
+    const route = imageRoute(settings);
+    if ("via" in route && route.via === "local") {
+      const id = text.replace(/^\/imagemodel\s*/i, "").trim();
+      if (!id || /^(add|remove)\b/i.test(id))
+        return say(
+          `Pictures are drawn on this computer with \`${settings.localImageModel || "whatever your image server has loaded"}\`. Switch with \`/imagemodel <name>\`, or pick from your server's models in **Settings → Local Models → Pictures**.`
+        );
+      await patchSettings({ localImageModel: id });
+      onSettingsChanged();
+      return say(`Local image model set to \`${id}\`. If your image server doesn't have it, \`/image\` will say so.`);
+    }
     if (settings.provider === "brewlm")
       return say("BrewLM AI draws pictures with its own image model. To pick one yourself, use your own OpenRouter key in **Settings → AI Model**.");
     const sub = /^\/imagemodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
@@ -1582,8 +1597,6 @@ export default function ChatPanel({
     const provider = settings.provider;
     if (provider === "brewlm")
       return say("BrewLM AI runs research on its own research model, whatever chat uses. To pick one yourself, use your own key in **Settings → AI Model**.");
-    if (provider === "local")
-      return say("Research and `/search` need web search, which local models can't do — switch to OpenRouter, OpenAI or Anthropic in Settings → AI Model to pick a research model.");
     const sub = /^\/researchmodel\s+(add|remove)(?:\s+([\s\S]*))?$/i.exec(text);
     if (sub) return say(await runModelListCommand("research", sub[1].toLowerCase() as "add" | "remove", sub[2] ?? ""));
     const raw = normalizeModelId(text.replace(/^\/researchmodel\s*/i, ""));
@@ -1608,7 +1621,7 @@ export default function ChatPanel({
   /** /voice, /voice add|remove|swap, /voicehost, /voicecohost — no LLM. */
   const runVoiceCommand = async (text: string): Promise<void> => {
     if (!voiceProvider)
-      return say("Your audio uses **System voices**, which your computer picks automatically. Choose OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
+      return say("Your audio uses **System voices**, which your computer picks automatically. Choose Local, OpenAI, OpenRouter or ElevenLabs in Settings → Audio Voices to pick the hosts' voices.");
     const p = voiceProvider;
     const providerLabel = TTS_PROVIDER_LABELS[p];
     const builtIn = builtInVoices(p);
@@ -1647,8 +1660,13 @@ export default function ChatPanel({
         return say(`${role} now speaks with **${match}** (added back to your voices).`);
       }
       if (!voicesNeedIds(p)) {
-        // OpenRouter: voices belong to the TTS model, so any name is taken as-is.
-        if (/\s/.test(raw)) return say(`Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`);
+        // OpenRouter and Local: voices belong to the TTS model or server, so any name is taken as-is.
+        if (/\s/.test(raw))
+          return say(
+            p === "local"
+              ? `Voice names have no spaces — use the exact name your speech server gives, e.g. \`${cmd} af_heart\`.`
+              : `Voice names have no spaces — use the exact value from the model's OpenRouter page, e.g. \`${cmd} voice_3150\`.`
+          );
         await saveList([...list, { name: raw, id: raw }]);
         await setHost(host, raw);
         return say(`${role} now speaks with **${raw}** (added to your voices). If the TTS model doesn't know that voice, the audio overview will say so.`);
@@ -1697,13 +1715,17 @@ export default function ChatPanel({
       return say(`Added **${match}** to your voices. Use it with \`/voicehost ${match}\` or \`/voicecohost ${match}\`.`);
     }
     if (!voicesNeedIds(p)) {
-      // OpenRouter: the voice's own name is what the model expects.
+      // OpenRouter and Local: the voice's own name is what the model expects.
       const name = stripOuterQuotes(arg);
       if (!name || /\s/.test(name))
-        return say("Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page.");
+        return say(
+          p === "local"
+            ? "Give the voice exactly as your speech server names it, e.g. `/voice add af_heart` for Kokoro. Test connection in Settings → Audio Voices adds the server's voices for you."
+            : "Give the voice exactly as the TTS model names it, e.g. `/voice add voice_3150` for Voxtral TTS 3 or `/voice add nova` for gpt-audio. The names are on the model's OpenRouter page."
+        );
       if (findVoice(list, name)) return say(`**${name}** is already in your voices. Use it with \`/voicehost ${name}\`.`);
       await saveList([...list, { name, id: name }]);
-      return say(`Added **${name}** to your OpenRouter voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
+      return say(`Added **${name}** to your ${providerLabel} voices. Use it with \`/voicehost ${name}\` or \`/voicecohost ${name}\`.`);
     }
     // ElevenLabs: a name (quote it if it has spaces) then the voice ID.
     const parsed = /^(?:"([^"]+)"|(.+?))\s+(\S+)$/.exec(arg);
@@ -2546,6 +2568,8 @@ export default function ChatPanel({
     // back to legacy truncation inside buildSystemParts.
     const t0 = performance.now();
     const groundedNow = (notebookGrounded ?? 1) !== 0;
+    // Size everything below to the window the local server really has.
+    await ensureServerContext(settings, { load: true });
     let retrieved: RetrievedChunk[] | undefined;
     let whole = false;
     if (groundedNow) {
@@ -3515,61 +3539,60 @@ export default function ChatPanel({
               }
               className="max-h-80 flex-1 resize-none overflow-hidden bg-transparent py-1.5 text-[14px] outline-none placeholder:text-ink-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
-            {settings.provider !== "local" && (
-              <div ref={thinkingMenuRef} className="relative shrink-0">
-                <button
-                  onClick={() => setThinkingMenu((o) => !o)}
-                  className={`flex h-8 items-center gap-1 rounded-full transition-colors hover:bg-hover ${
-                    thinking === "auto" ? "w-8 justify-center text-ink-3 hover:text-ink" : "px-2.5 text-ink-2 hover:text-ink"
-                  } ${thinkingMenu ? "bg-hover text-ink" : ""}`}
-                  aria-label={`Thinking effort: ${THINKING_LABELS[thinking]}`}
-                  aria-haspopup="menu"
-                  aria-expanded={thinkingMenu}
-                  title={`Thinking effort: ${THINKING_LABELS[thinking]}`}
+            <div ref={thinkingMenuRef} className="relative shrink-0">
+              <button
+                onClick={() => setThinkingMenu((o) => !o)}
+                className={`flex h-8 items-center gap-1 rounded-full transition-colors hover:bg-hover ${
+                  shownThinking === "auto" ? "w-8 justify-center text-ink-3 hover:text-ink" : "px-2.5 text-ink-2 hover:text-ink"
+                } ${thinkingMenu ? "bg-hover text-ink" : ""}`}
+                aria-label={`Thinking effort: ${THINKING_LABELS[shownThinking]}`}
+                aria-haspopup="menu"
+                aria-expanded={thinkingMenu}
+                title={`Thinking effort: ${THINKING_LABELS[shownThinking]}`}
+              >
+                <Brain size={16} strokeWidth={1.9} />
+                {shownThinking !== "auto" && <span className="text-[12px] font-medium">{THINKING_LABELS[shownThinking]}</span>}
+              </button>
+              {thinkingMenu && (
+                <div
+                  role="menu"
+                  className="absolute bottom-full right-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-lg"
                 >
-                  <Brain size={16} strokeWidth={1.9} />
-                  {thinking !== "auto" && <span className="text-[12px] font-medium">{THINKING_LABELS[thinking]}</span>}
-                </button>
-                {thinkingMenu && (
-                  <div
-                    role="menu"
-                    className="absolute bottom-full right-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-lg"
-                  >
-                    <p className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
-                      Thinking effort
-                    </p>
-                    {(Object.keys(THINKING_LABELS) as Thinking[]).map((level) => (
-                      <button
-                        key={level}
-                        role="menuitemradio"
-                        aria-checked={thinking === level}
-                        onClick={() => pickThinking(level)}
-                        className={`flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover ${
-                          thinking === level ? "text-ink" : "text-ink-2"
-                        }`}
-                      >
-                        <span className="mt-0.5 flex w-3.5 shrink-0 justify-center">
-                          {thinking === level && <Check size={13} strokeWidth={2.4} />}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block text-[13px] font-medium">{THINKING_LABELS[level]}</span>
-                          <span className="block text-[11.5px] text-ink-3">
+                  <p className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
+                    Thinking effort
+                  </p>
+                  {thinkingLevels(settings.provider).map((level) => (
+                    <button
+                      key={level}
+                      role="menuitemradio"
+                      aria-checked={shownThinking === level}
+                      onClick={() => pickThinking(level)}
+                      className={`flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-hover ${
+                        shownThinking === level ? "text-ink" : "text-ink-2"
+                      }`}
+                    >
+                      <span className="mt-0.5 flex w-3.5 shrink-0 justify-center">
+                        {shownThinking === level && <Check size={13} strokeWidth={2.4} />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium">{THINKING_LABELS[level]}</span>
+                        <span className="block text-[11.5px] text-ink-3">
+                          {
                             {
-                              {
-                                auto: "Each model's own default",
-                                low: "Brief — faster and cheaper",
-                                medium: "Balanced",
-                                high: "Longest — best for hard questions",
-                              }[level]
-                            }
-                          </span>
+                              auto: "Each model's own default",
+                              off: "No thinking — fastest answers",
+                              low: settings.provider === "local" ? "Brief (some models only do on or off)" : "Brief — faster and cheaper",
+                              medium: "Balanced",
+                              high: "Longest — best for hard questions",
+                            }[level]
+                          }
                         </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={() => (streaming !== null ? stopGenerating() : send())}
               disabled={streaming === null && !draft.trim()}
@@ -3588,6 +3611,12 @@ export default function ChatPanel({
             {settings.provider === "brewlm"
               ? `BrewLM AI · ${brewlmModelLabel(model)}`
               : `${model || "no model picked"} · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
+            {settings.provider === "local" && cloudJobs(settings).length > 0 && (
+              <span title={`These still use a cloud service: ${cloudJobs(settings).join(", ")}. Change them in Settings → Local Models.`}>
+                {" "}
+                · some jobs use the cloud
+              </span>
+            )}
             {(notebookGrounded ?? 1) === 0 && (
               <span className="text-warn"> · grounding off</span>
             )}

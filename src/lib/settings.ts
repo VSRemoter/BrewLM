@@ -2,7 +2,7 @@ import { platform } from "../platform";
 import { getSetting, hasSetting, setSetting } from "./db";
 import { DEFAULT_FONT, FONTS } from "./fonts";
 import { isImageApiModel, listImageModels } from "./imageApi";
-import { isEmbeddingModel, listLocalModels } from "./local";
+import { isEmbeddingModel, listLocalModels, LOCAL_TTS_VOICES, parseLocalContext } from "./local";
 import { DEFAULT_THEME, RETIRED_THEMES, THEMES } from "./themes";
 import { normalizeHex } from "./color";
 import { DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
@@ -14,6 +14,9 @@ import type {
   Difficulty,
   Provider,
   ReportType,
+  ImageRunsOn,
+  RunsOn,
+  SearchService,
   Settings,
   Thinking,
   TtsProvider,
@@ -102,6 +105,7 @@ export const LOCAL_PRESETS: { id: string; label: string; url: string }[] = [
 
 export const THINKING_LABELS: Record<Thinking, string> = {
   auto: "Auto",
+  off: "Off",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -110,9 +114,8 @@ export const THINKING_LABELS: Record<Thinking, string> = {
 /** Stops on the output-limit slider in Settings → AI Model, in tokens: 4K to 512K, about ×1.5 apart. */
 export const MAX_OUTPUT_OPTIONS = [4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512].map((k) => k * 1024);
 
-/** Context-window choices for local models, in tokens. */
-export const LOCAL_CONTEXT_OPTIONS = [4096, 8192, 16384, 32768, 131072];
-const DEFAULT_LOCAL_CONTEXT = 8192;
+/** Context-window choices for local models, in tokens (0 = Automatic: the size the server reports). */
+export const LOCAL_CONTEXT_OPTIONS = [0, 4096, 8192, 16384, 32768, 131072];
 
 export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   system: "System voices",
@@ -120,6 +123,7 @@ export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
   elevenlabs: "ElevenLabs",
+  local: "Local",
 };
 
 export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> = {
@@ -127,6 +131,8 @@ export const DEFAULT_TTS_MODELS: Record<Exclude<TtsProvider, "system">, string> 
   openai: "gpt-4o-mini-tts",
   openrouter: "openai/gpt-audio-mini",
   elevenlabs: "eleven_multilingual_v2",
+  // Kokoro-FastAPI's name; Speaches and others list theirs at /models (picked on Test).
+  local: "kokoro",
 };
 
 export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]> = {
@@ -135,6 +141,7 @@ export const TTS_MODEL_PRESETS: Record<Exclude<TtsProvider, "system">, string[]>
   // Any OpenRouter speech model works; gpt-audio models go through chat completions.
   openrouter: ["openai/gpt-audio-mini", "openai/gpt-audio", "mistralai/voxtral-mini-tts-3-0"],
   elevenlabs: ["eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"],
+  local: [],
 };
 
 export const OPENAI_TTS_VOICES = [
@@ -147,6 +154,30 @@ export const OPENAI_TTS_VOICES = [
  * name their own voices (e.g. voice_3150 for Voxtral TTS 3), so any name is accepted.
  */
 export const OPENROUTER_TTS_VOICES = OPENAI_TTS_VOICES;
+
+/**
+ * One-click addresses for local transcription servers (both serve
+ * /v1/audio/transcriptions; whisper.cpp needs --inference-path for that).
+ * LocalAI also listens on 8080, so the whisper.cpp address covers it.
+ */
+export const LOCAL_STT_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "speaches", label: "Speaches", url: "http://localhost:8000/v1" },
+  { id: "whispercpp", label: "whisper.cpp / LocalAI", url: "http://localhost:8080/v1" },
+];
+
+/** One-click addresses for local image servers. Forge, SD.Next and Draw Things all serve A1111's API on 7860. */
+export const LOCAL_IMAGE_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "a1111", label: "Forge / A1111 / Draw Things", url: "http://localhost:7860" },
+  { id: "comfyui", label: "ComfyUI", url: "http://localhost:8188" },
+  { id: "localai", label: "LocalAI", url: "http://localhost:8080/v1" },
+];
+
+/** One-click addresses for popular local speech servers (all serve /v1/audio/speech). */
+export const LOCAL_TTS_PRESETS: { id: string; label: string; url: string }[] = [
+  { id: "kokoro", label: "Kokoro", url: "http://localhost:8880/v1" },
+  { id: "speaches", label: "Speaches", url: "http://localhost:8000/v1" },
+  { id: "localai", label: "LocalAI", url: "http://localhost:8080/v1" },
+];
 
 /** A few ElevenLabs premade voices so users don't have to hunt IDs down. */
 export const ELEVENLABS_VOICE_PRESETS: { name: string; id: string }[] = [
@@ -163,6 +194,8 @@ const DEFAULT_TTS = {
   openaiTtsKey: "",
   openrouterTtsKey: "",
   elevenlabsKey: "",
+  localTtsBaseUrl: "",
+  localTtsKey: "",
   ttsModel: "",
   ttsVoiceAlex: "",
   ttsVoiceSam: "",
@@ -193,6 +226,8 @@ const AUDIO_MODES: AudioMode[] = ["conversation", "solo"];
 const AUDIO_FORMATS: AudioFormat[] = ["deep-dive", "brief", "debate", "critique"];
 const AUDIO_LENGTHS: AudioLength[] = ["short", "standard", "long"];
 const REPORT_TYPES: ReportType[] = ["study-guide", "briefing-doc", "analysis", "custom"];
+const SEARCH_SERVICES: SearchService[] = ["auto", "searxng", "brave", "tavily"];
+const IMAGE_RUNS_ON: ImageRunsOn[] = ["auto", "local", "openrouter"];
 
 function pick<T extends string>(raw: string, vocab: T[], fallback: T): T {
   return (vocab as string[]).includes(raw) ? (raw as T) : fallback;
@@ -210,7 +245,17 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   localBaseUrl: (s) => s.localBaseUrl,
   localKey: (s) => s.localKey,
   localEmbedModel: (s) => s.localEmbedModel,
+  localEmbedBaseUrl: (s) => s.localEmbedBaseUrl,
+  localEmbedKey: (s) => s.localEmbedKey,
   localContext: (s) => String(s.localContext),
+  localVisionModel: (s) => s.localVisionModel,
+  visionRunsOn: (s) => (s.visionRunsOn === "auto" ? "" : s.visionRunsOn),
+  transcribeRunsOn: (s) => (s.transcribeRunsOn === "auto" ? "" : s.transcribeRunsOn),
+  localSttEngine: (s) => s.localSttEngine,
+  builtinWhisperModel: (s) => s.builtinWhisperModel,
+  localSttBaseUrl: (s) => s.localSttBaseUrl,
+  localSttKey: (s) => s.localSttKey,
+  localSttModel: (s) => s.localSttModel,
   model: (s) => s.model,
   theme: (s) => s.theme,
   font: (s) => s.font,
@@ -221,6 +266,9 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   openaiTtsKey: (s) => s.openaiTtsKey,
   openrouterTtsKey: (s) => s.openrouterTtsKey,
   elevenlabsKey: (s) => s.elevenlabsKey,
+  localTtsBaseUrl: (s) => s.localTtsBaseUrl,
+  localTtsEngine: (s) => s.localTtsEngine,
+  localTtsKey: (s) => s.localTtsKey,
   ttsModel: (s) => s.ttsModel,
   ttsVoiceAlex: (s) => s.ttsVoiceAlex,
   ttsVoiceSam: (s) => s.ttsVoiceSam,
@@ -229,6 +277,16 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   thinking: (s) => s.thinking,
   maxOutput: (s) => (s.maxOutput == null ? "" : String(s.maxOutput)),
   imageModel: (s) => s.imageModel,
+  searchService: (s) => (s.searchService === "auto" ? "" : s.searchService),
+  imageRunsOn: (s) => (s.imageRunsOn === "auto" ? "" : s.imageRunsOn),
+  localImageBaseUrl: (s) => s.localImageBaseUrl,
+  localImageKey: (s) => s.localImageKey,
+  localImageModel: (s) => s.localImageModel,
+  localImageApi: (s) => s.localImageApi,
+  localImageWorkflow: (s) => s.localImageWorkflow,
+  searxngUrl: (s) => s.searxngUrl,
+  braveKey: (s) => s.braveKey,
+  tavilyKey: (s) => s.tavilyKey,
   researchModels: (s) => JSON.stringify(s.researchModels ?? {}),
   transcribeModels: (s) => JSON.stringify(s.transcribeModels ?? {}),
   openrouterRouting: (s) => serializeRouting(s.openrouterRouting),
@@ -260,6 +318,10 @@ export async function loadSettings(): Promise<Settings> {
     localBaseUrl, localKey, localEmbedModel, localContext, researchModels, thinking, maxOutput,
     openrouterRouting,
     keepRecordings, transcribeModels, customBg, customText, customAccent, showReasoning,
+    localVisionModel, visionRunsOn, transcribeRunsOn, localTtsBaseUrl, localTtsKey,
+    localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
+    imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
+    localSttEngine, builtinWhisperModel, localEmbedBaseUrl, localEmbedKey, localImageWorkflow, localTtsEngine,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -303,6 +365,29 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("customText"),
     getSetting("customAccent"),
     getSetting("showReasoning"),
+    getSetting("localVisionModel"),
+    getSetting("visionRunsOn"),
+    getSetting("transcribeRunsOn"),
+    getSetting("localTtsBaseUrl"),
+    getSetting("localTtsKey"),
+    getSetting("localSttBaseUrl"),
+    getSetting("localSttKey"),
+    getSetting("localSttModel"),
+    getSetting("searchService"),
+    getSetting("searxngUrl"),
+    getSetting("braveKey"),
+    getSetting("tavilyKey"),
+    getSetting("imageRunsOn"),
+    getSetting("localImageBaseUrl"),
+    getSetting("localImageKey"),
+    getSetting("localImageModel"),
+    getSetting("localImageApi"),
+    getSetting("localSttEngine"),
+    getSetting("builtinWhisperModel"),
+    getSetting("localEmbedBaseUrl"),
+    getSetting("localEmbedKey"),
+    getSetting("localImageWorkflow"),
+    getSetting("localTtsEngine"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -341,8 +426,6 @@ export async function loadSettings(): Promise<Settings> {
     : DEFAULT_BEHAVIOR.temperature;
   const parsedMaxOutput = Number.parseInt(maxOutput, 10);
   const safeMaxOutput = MAX_OUTPUT_OPTIONS.includes(parsedMaxOutput) ? parsedMaxOutput : DEFAULT_BEHAVIOR.maxOutput;
-  const parsedContext = Number.parseInt(localContext, 10);
-  const safeContext = Number.isFinite(parsedContext) && parsedContext >= 2048 ? parsedContext : DEFAULT_LOCAL_CONTEXT;
   const parsedRetention = Number.parseInt(trashRetentionDays, 10);
   const safeRetention = [0, 7, 30, 90].includes(parsedRetention)
     ? parsedRetention
@@ -355,7 +438,18 @@ export async function loadSettings(): Promise<Settings> {
     localBaseUrl,
     localKey,
     localEmbedModel,
-    localContext: safeContext,
+    localEmbedBaseUrl: localEmbedBaseUrl.trim(),
+    localEmbedKey,
+    localContext: parseLocalContext(localContext),
+    localVisionModel: localVisionModel.trim(),
+    visionRunsOn: parseRunsOn(visionRunsOn),
+    transcribeRunsOn: parseRunsOn(transcribeRunsOn),
+    // Unset: a server someone already set up keeps working; otherwise built in.
+    localSttEngine: localSttEngine === "builtin" || localSttEngine === "server" ? localSttEngine : localSttBaseUrl ? "server" : "builtin",
+    builtinWhisperModel: builtinWhisperModel === "accurate" ? "accurate" : "fast",
+    localSttBaseUrl,
+    localSttKey,
+    localSttModel: localSttModel.trim(),
     model: safeModel,
     theme: safeTheme,
     font: safeFont,
@@ -366,6 +460,10 @@ export async function loadSettings(): Promise<Settings> {
     openaiTtsKey: openaiTtsKey || DEFAULT_TTS.openaiTtsKey,
     openrouterTtsKey: openrouterTtsKey || DEFAULT_TTS.openrouterTtsKey,
     elevenlabsKey: elevenlabsKey || DEFAULT_TTS.elevenlabsKey,
+    localTtsBaseUrl,
+    // Unset: a speech server someone already set up keeps working; otherwise the built-in voice.
+    localTtsEngine: localTtsEngine === "builtin" || localTtsEngine === "server" ? localTtsEngine : localTtsBaseUrl ? "server" : "builtin",
+    localTtsKey,
     ttsModel: safeTtsModel,
     ttsVoiceAlex: scrubVoice(ttsVoiceAlex) || DEFAULT_TTS.ttsVoiceAlex,
     ttsVoiceSam: scrubVoice(ttsVoiceSam) || DEFAULT_TTS.ttsVoiceSam,
@@ -374,6 +472,18 @@ export async function loadSettings(): Promise<Settings> {
     thinking: pick(thinking, Object.keys(THINKING_LABELS) as Thinking[], DEFAULT_BEHAVIOR.thinking),
     maxOutput: safeMaxOutput,
     imageModel: imageModel.trim() || DEFAULT_IMAGE_MODEL,
+    // The web app can't reach a SearXNG on the computer, and Brave refuses browser requests.
+    searchService: platform.kind === "web" ? "auto" : pick(searchService, SEARCH_SERVICES, "auto"),
+    searxngUrl,
+    braveKey,
+    tavilyKey,
+    // The web app can't reach an image server on the computer.
+    imageRunsOn: pick(imageRunsOn, IMAGE_RUNS_ON, "auto") === "local" && platform.kind === "web" ? "auto" : pick(imageRunsOn, IMAGE_RUNS_ON, "auto"),
+    localImageBaseUrl,
+    localImageKey,
+    localImageModel: localImageModel.trim(),
+    localImageApi: localImageApi === "a1111" || localImageApi === "openai" || localImageApi === "comfyui" ? localImageApi : "",
+    localImageWorkflow,
     researchModels: parseProviderModels(researchModels),
     transcribeModels: parseProviderModels(transcribeModels),
     openrouterRouting: parseRouting(openrouterRouting),
@@ -403,12 +513,20 @@ export async function loadSettings(): Promise<Settings> {
  * changing the stored choice: the computer keeps its local model.
  */
 function cloudProviderOnWeb(s: Settings): Settings {
-  if (platform.kind !== "web" || s.provider !== "local") return s;
+  if (platform.kind !== "web") return s;
+  // Local voices run on the computer too: the web app reads the script aloud with system voices.
+  if (s.ttsProvider === "local") s = { ...s, ttsProvider: "system" };
+  if (s.provider !== "local") return s;
   const aiPlan = ["pro", "max"].includes(getSyncStatus().account?.plan ?? "");
   const provider =
     (["brewlm", "openrouter", "openai", "anthropic"] as const).find((p) => (p !== "brewlm" || aiPlan) && activeKey({ ...s, provider: p })) ??
     "openrouter";
   return { ...s, provider, model: defaultModelFor(provider) };
+}
+
+/** Stored "Runs on" choice; "" or anything unknown → Automatic. */
+function parseRunsOn(raw: string): RunsOn {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, raw) ? (raw as Provider) : "auto";
 }
 
 /** Stored JSON {provider: id} → only string entries for known providers. */
@@ -556,6 +674,8 @@ const VOICE_PRESETS: Record<VoiceProvider, SavedVoice[]> = {
   openai: OPENAI_TTS_VOICES.map((v) => ({ name: v, id: v })),
   openrouter: OPENROUTER_TTS_VOICES.map((v) => ({ name: v, id: v })),
   elevenlabs: ELEVENLABS_VOICE_PRESETS,
+  // Kokoro's voices, the most common local server; "Load from server" brings in the rest.
+  local: LOCAL_TTS_VOICES.map((v) => ({ name: v, id: v })),
 };
 
 /** The only voices a provider accepts, or null when any voice works (OpenRouter, ElevenLabs). */
@@ -603,7 +723,8 @@ export type Host = keyof typeof DEFAULT_HOST_VOICES;
  */
 export function hostVoice(s: Settings, host: Host): string {
   const v = (host === "Alex" ? s.ttsVoiceAlex : s.ttsVoiceSam).trim();
-  if (s.ttsProvider === "system") return v;
+  // Local: whatever was picked; tts.ts checks it against the server's voices.
+  if (s.ttsProvider === "system" || s.ttsProvider === "local") return v;
   if (s.ttsProvider === "elevenlabs") return OPENAI_TTS_VOICES.includes(v.toLowerCase()) ? "" : v;
   // ElevenLabs IDs are 20 mixed-case letters/digits; OpenAI voices are lowercase words.
   const looksLikeElevenLabsId = /^[A-Za-z0-9]{20}$/.test(v) && /[A-Z0-9]/.test(v);
@@ -700,4 +821,9 @@ function closeIds(id: string, ids: string[]): string[] {
     .sort((a, b) => b.score - a.score || a.m.length - b.m.length)
     .slice(0, 3)
     .map((x) => x.m);
+}
+
+/** The thinking levels the composer offers: Off only where it can be honored (local servers). */
+export function thinkingLevels(provider: Provider): Thinking[] {
+  return (Object.keys(THINKING_LABELS) as Thinking[]).filter((l) => l !== "off" || provider === "local");
 }

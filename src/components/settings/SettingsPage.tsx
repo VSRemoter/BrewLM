@@ -3,6 +3,7 @@ import {
   BarChart3,
   ChevronLeft,
   ChevronRight,
+  Cpu,
   Database,
   Info,
   Palette,
@@ -25,6 +26,7 @@ import AiModelSection from "./AiModelSection";
 import AppearanceSection from "./AppearanceSection";
 import AudioSection from "./AudioSection";
 import DataSection from "./DataSection";
+import LocalModelsSection from "./LocalModelsSection";
 import SharingSection from "./SharingSection";
 import StudioSection from "./StudioSection";
 import SyncSection, { useSyncStatus } from "./SyncSection";
@@ -33,6 +35,7 @@ import UsageSection from "./UsageSection";
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette, group: 0 },
   { id: "ai", label: "AI Model", icon: Sparkles, group: 1 },
+  { id: "local", label: "Local Models", icon: Cpu, group: 1 },
   { id: "studio", label: "Studio Defaults", icon: Wand2, group: 1 },
   { id: "audio", label: "Audio Voices", icon: AudioLines, group: 1 },
   { id: "usage", label: "Usage & Cost", icon: BarChart3, group: 1 },
@@ -115,8 +118,11 @@ export default function SettingsPage({
             }`}
           >
             {SECTIONS.filter(
-              // Phone Pairing serves the library from this computer: desktop only.
-              (s) => ((s.id !== "sync" && s.id !== "sharing") || syncAvailable) && (s.id !== "phone" || platform.kind === "desktop")
+              // Phone Pairing serves the library from this computer, and local models
+              // run on it: desktop only.
+              (s) =>
+                ((s.id !== "sync" && s.id !== "sharing") || syncAvailable) &&
+                ((s.id !== "phone" && s.id !== "local") || platform.kind === "desktop")
             ).map((s, i, list) => {
               const Icon = s.icon;
               const active = section === s.id;
@@ -155,6 +161,7 @@ export default function SettingsPage({
               <div key={section} className="anim-screen mx-auto max-w-4xl px-4 py-5 md:px-6 md:py-6">
                 {section === "appearance" && <AppearanceSection settings={settings} patch={patch} />}
                 {section === "ai" && <AiModelSection settings={settings} patch={patch} />}
+                {section === "local" && <LocalModelsSection settings={settings} patch={patch} />}
                 {section === "studio" && <StudioSection settings={settings} patch={patch} />}
                 {section === "audio" && <AudioSection settings={settings} patch={patch} />}
                 {section === "usage" && <UsageSection />}

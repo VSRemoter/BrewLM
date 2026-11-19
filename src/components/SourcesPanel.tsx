@@ -3,11 +3,9 @@ import {
   CircleAlert,
   FileText,
   File as FileIcon,
-  Image as ImageIcon,
   Landmark,
   Link2,
   Loader2,
-  Music,
   Pencil,
   Pin,
   Plus,
@@ -26,17 +24,10 @@ import { ACCEPT_STRING, fetchLinkContent, sourcePreview } from "../lib/source";
 import type { Source } from "../lib/types";
 import { confirmAction } from "./ConfirmDialog";
 import SourceViewModal from "./SourceViewModal";
+import { SOURCE_TYPE_ICON } from "./sourceIcons";
 import { IconButton, Modal, PrimaryButton } from "./ui";
 
-const TYPE_ICON = {
-  context: Landmark,
-  pdf: FileText,
-  text: Type,
-  link: Link2,
-  image: ImageIcon,
-  audio: Music,
-  file: FileIcon,
-} as const;
+const TYPE_ICON = SOURCE_TYPE_ICON;
 
 export default function SourcesPanel({
   notebookId,
