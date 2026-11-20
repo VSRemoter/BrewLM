@@ -52,9 +52,17 @@
     // BrewLM AI's whole OpenRouter spend per UTC day (src/aiGuard.ts): an email
     // at the alert, BrewLM AI paused until the next day at the ceiling, and an
     // email when the OpenRouter credit left drops below the low balance. US dollars.
+    // The alert and ceiling grow with subscribers: each is the larger of its
+    // fixed amount and its share of all subscribers' monthly allowances.
     "AI_DAILY_ALERT_USD": "20",
     "AI_DAILY_CEILING_USD": "60",
     "AI_LOW_BALANCE_USD": "25",
+    "AI_DAILY_ALERT_SHARE": "0.04",
+    "AI_DAILY_CEILING_SHARE": "0.1",
+    // Synced data of accounts without a plan is deleted this many days after
+    // the plan or trial ended, with warning emails 30 and 7 days before
+    // (src/retention.ts). "0" turns deletion off.
+    "LAPSED_DELETE_DAYS": "180",
     // Cloudflare Turnstile on the sign-in confirm page (empty = off). The secret
     // is TURNSTILE_SECRET.
     "TURNSTILE_SITE_KEY": ""

@@ -14,11 +14,22 @@
  *   charges the prorated difference first), downgrades at the next renewal.
  * - Without an active plan or trial, sync is read-only: devices can still
  *   download their library but not upload.
+ * - Refund abuse: top-ups open AI_TOPUP_WAIT_DAYS after the first paid AI
+ *   plan, AI_TOPUPS_PER_MONTH at most; accounts BrewLM AI is turned off for
+ *   (aiGuard.ts blocks) can't buy Pro, Max or top-ups. Paid plan orders are
+ *   kept (plan_orders) so GET /v1/admin/billing/refund-quote?email= can say
+ *   what to refund: the payment minus the larger of the time used and the AI
+ *   used (valued at the top-up's price). Polar sends no webhook for disputes:
+ *   block the account by hand (POST /v1/admin/ai/block).
  */
-import { applyTopup, monthlyAllowance, reconcile, refundPlanOrder, refundTopup } from "./ai";
-import { AI_TOPUP_CREDIT } from "./aiConfig";
-import { page, type User } from "./auth";
+import { applyTopup, monthlyAllowance, planSpentSince, reconcile, refundPlanOrder, refundTopup } from "./ai";
+import { AI_TOPUP_CREDIT, AI_TOPUP_PRICE, AI_TOPUP_WAIT_DAYS, AI_TOPUPS_PER_MONTH } from "./aiConfig";
+import { BLOCKED_MESSAGE, isBlocked } from "./aiGuard";
+import { isAdmin, page, type User } from "./auth";
 import { sendAdminEmail } from "./email";
+
+const DAY = 86_400_000;
+const longDate = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 /** Pro and Max are Sync and Sync Plus with BrewLM AI included (ai.ts). */
 export type Plan = "trial" | "sync" | "plus" | "pro" | "max" | "none";
@@ -164,6 +175,27 @@ export function aiForSale(env: Env, user: Pick<User, "email"> | null): boolean {
 const NOT_FOR_SALE = "BrewLM AI plans aren't available yet.";
 const isAiPlan = (p: string) => p === "pro" || p === "max";
 
+/** Why this account can't buy a top-up now (a response to send), or null when it can. */
+async function topupRefused(env: Env, user: User, now = Date.now()): Promise<Response | null> {
+  const ai = await monthlyAllowance(env, user.id, now);
+  if (ai.monthly <= 0) return json({ error: "AI top-ups are for the Pro and Max plans." }, 402);
+  if (await isBlocked(env, user.id)) return json({ error: BLOCKED_MESSAGE }, 403);
+  const opens = ai.paidSince === null ? null : ai.paidSince + AI_TOPUP_WAIT_DAYS * DAY;
+  if (ai.trial || opens === null)
+    return json({ error: `Top-ups open ${AI_TOPUP_WAIT_DAYS} days after your plan's first payment.` }, 403);
+  if (opens > now) return json({ error: `Top-ups open on ${longDate(opens)}, ${AI_TOPUP_WAIT_DAYS} days after your plan started.` }, 403);
+  const d = new Date(now);
+  const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  const bought = await env.DB.prepare("SELECT count(*) AS n FROM ai_topups WHERE user_id = ? AND created_at >= ?")
+    .bind(user.id, monthStart)
+    .first<{ n: number }>();
+  if ((bought?.n ?? 0) >= AI_TOPUPS_PER_MONTH) {
+    const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    return json({ error: `You've added ${AI_TOPUPS_PER_MONTH} top-ups this month, the most for one month. More open on ${longDate(next)}.` }, 429);
+  }
+  return null;
+}
+
 export async function checkout(req: Request, env: Env, user: User): Promise<Response> {
   const body = await req.json<{ plan?: unknown; interval?: unknown }>().catch(() => ({}) as Record<string, unknown>);
   const plan = String(body.plan ?? "");
@@ -171,13 +203,14 @@ export async function checkout(req: Request, env: Env, user: User): Promise<Resp
   let product: string | undefined;
   let kind = "subscription";
   if (plan === "topup") {
-    if ((await monthlyAllowance(env, user.id)).monthly <= 0)
-      return json({ error: "AI top-ups are for the Pro and Max plans." }, 402);
+    const refused = await topupRefused(env, user);
+    if (refused) return refused;
     product = envString(env, "POLAR_PRODUCT_AI_TOPUP");
     kind = "ai_topup";
   } else {
     if (!isPaidPlan(plan) || !isInterval(interval)) return json({ error: "bad plan" }, 400);
     if (isAiPlan(plan) && !aiForSale(env, user)) return json({ error: NOT_FOR_SALE }, 403);
+    if (isAiPlan(plan) && (await isBlocked(env, user.id))) return json({ error: BLOCKED_MESSAGE }, 403);
     if (await liveSubscription(env, user.id))
       return json({ error: "You already have a plan. Change it instead of buying a second one.", change: true }, 409);
     product = productFor(env, plan, interval);
@@ -218,6 +251,7 @@ export async function changePlan(req: Request, env: Env, user: User): Promise<Re
   if (!sub) return json({ error: "You don't have a plan to change. Choose one instead." }, 409);
   // Before launch, only early access (or someone already on an AI plan) may move to one.
   if (isAiPlan(plan) && !isAiPlan(sub.plan) && !aiForSale(env, user)) return json({ error: NOT_FOR_SALE }, 403);
+  if (isAiPlan(plan) && !isAiPlan(sub.plan) && (await isBlocked(env, user.id))) return json({ error: BLOCKED_MESSAGE }, 403);
   // Unknown for subscriptions last updated before product ids were stored.
   const current = await currentInterval(env, sub.polar_subscription_id);
   if (sub.plan === plan && current === interval) return json({ error: "You're already on that plan." }, 400);
@@ -323,6 +357,7 @@ interface PolarOrder {
   /** Cents, before tax. */
   net_amount: number;
   refunded_amount: number;
+  created_at?: string;
   metadata?: Record<string, unknown>;
   customer?: { external_id?: string | null };
 }
@@ -493,22 +528,31 @@ async function subscriptionEvent(env: Env, sub: PolarSubscription): Promise<Resp
 async function orderEvent(env: Env, order: PolarOrder): Promise<Response> {
   const topupProduct = envString(env, "POLAR_PRODUCT_AI_TOPUP");
   const planned = order.product_id ? planForProduct(env, order.product_id) : null;
-  if (planned && (planned.plan === "pro" || planned.plan === "max") && order.refunded_amount > 0) {
-    // A refunded Pro/Max payment takes back that share of this month's AI.
+  const paid = order.paid === true || ["paid", "refunded", "partially_refunded"].includes(order.status);
+  if (planned) {
     const userId = userIdOf(order);
     if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
-    try {
-      await refundPlanOrder(env, userId, order.id, order.net_amount, order.refunded_amount);
-    } catch (e) {
-      console.error(`ai plan refund ${order.id}: ${e instanceof Error ? e.message : String(e)}`);
-      return json({ error: "try again" }, 503);
+    // Kept for refund quotes (each payment once; renewals are orders too).
+    if (paid && order.net_amount > 0)
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO plan_orders (order_id, user_id, plan, interval, net_amount, paid_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+        .bind(order.id, userId, planned.plan, planned.interval, order.net_amount, (order.created_at && Date.parse(order.created_at)) || Date.now())
+        .run();
+    if (isAiPlan(planned.plan) && order.refunded_amount > 0) {
+      // A refunded Pro/Max payment takes back that share of this month's AI.
+      try {
+        await refundPlanOrder(env, userId, order.id, order.net_amount, order.refunded_amount);
+      } catch (e) {
+        console.error(`ai plan refund ${order.id}: ${e instanceof Error ? e.message : String(e)}`);
+        return json({ error: "try again" }, 503);
+      }
     }
     return json({ ok: true });
   }
   if (!topupProduct || order.product_id !== topupProduct) return json({ ok: true, ignored: "not an AI top-up" });
   const userId = userIdOf(order);
   if (!(await knownUser(env, userId))) return json({ ok: true, ignored: "unknown user" });
-  const paid = order.paid === true || ["paid", "refunded", "partially_refunded"].includes(order.status);
   if (!paid) return json({ ok: true, ignored: "not paid yet" });
   try {
     await applyTopup(env, userId, order.id, AI_TOPUP_CREDIT, order.net_amount);
@@ -519,4 +563,79 @@ async function orderEvent(env: Env, order: PolarOrder): Promise<Response> {
     return json({ error: "try again" }, 503);
   }
   return json({ ok: true });
+}
+
+/* ------------------------------ refund quotes ----------------------------- */
+
+interface PlanOrder {
+  order_id: string;
+  plan: PaidPlan;
+  interval: Interval;
+  net_amount: number;
+  paid_at: number;
+}
+
+const addMonths = (ms: number, n: number) => {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+};
+
+/**
+ * What to refund for the account's latest plan payment, in cents before tax:
+ * the payment minus the larger of the share of its period already used and
+ * the BrewLM AI used since it (valued at the top-up's price), minus anything
+ * refunded already. Null when no paid order is on record.
+ */
+export async function refundQuote(env: Env, userId: string, now = Date.now()) {
+  const order = await env.DB.prepare(
+    "SELECT order_id, plan, interval, net_amount, paid_at FROM plan_orders WHERE user_id = ? ORDER BY paid_at DESC LIMIT 1"
+  )
+    .bind(userId)
+    .first<PlanOrder>();
+  if (!order) return null;
+  const periodEnd = addMonths(order.paid_at, order.interval === "year" ? 12 : 1);
+  const usedShare = Math.min(1, Math.max(0, (now - order.paid_at) / (periodEnd - order.paid_at)));
+  const aiSpentUsd = isAiPlan(order.plan) ? await planSpentSince(env, userId, order.paid_at, now) : 0;
+  const aiValueCents = Math.round(aiSpentUsd * (AI_TOPUP_PRICE / AI_TOPUP_CREDIT) * 100);
+  const timeValueCents = Math.round(usedShare * order.net_amount);
+  const keptCents = Math.min(order.net_amount, Math.max(timeValueCents, aiValueCents));
+  const done = await env.DB.prepare("SELECT refunded_amount FROM ai_plan_refunds WHERE order_id = ?")
+    .bind(order.order_id)
+    .first<{ refunded_amount: number }>();
+  const alreadyRefundedCents = done?.refunded_amount ?? 0;
+  const refundCents = Math.max(0, order.net_amount - keptCents - alreadyRefundedCents);
+  return {
+    orderId: order.order_id,
+    plan: order.plan,
+    interval: order.interval,
+    paidAt: order.paid_at,
+    periodEnd,
+    paidCents: order.net_amount,
+    usedShare: Math.round(usedShare * 1000) / 1000,
+    timeValueCents,
+    aiSpentUsd,
+    aiValueCents,
+    alreadyRefundedCents,
+    refundCents,
+  };
+}
+
+const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+/** GET /v1/admin/billing/refund-quote?email= (ADMIN_TOKEN). */
+export async function billingAdminRoutes(req: Request, env: Env, path: string): Promise<Response | null> {
+  if (path !== "/v1/admin/billing/refund-quote") return null;
+  if (!isAdmin(req, env)) return json({ error: "unauthorized" }, 401);
+  if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+  const email = (new URL(req.url).searchParams.get("email") ?? "").trim().toLowerCase();
+  const user = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first<{ id: string }>();
+  if (!user) return json({ error: "no such account" }, 404);
+  const q = await refundQuote(env, user.id);
+  if (!q) return json({ error: "No paid plan order on record for this account (orders are recorded from this version on)." }, 404);
+  const why =
+    q.aiValueCents > q.timeValueCents
+      ? `BrewLM AI used since the payment: $${q.aiSpentUsd.toFixed(2)} of AI, worth ${dollars(q.aiValueCents)} at the top-up's price`
+      : `${Math.round(q.usedShare * 100)}% of the ${q.interval === "year" ? "year" : "month"} used, worth ${dollars(q.timeValueCents)}`;
+  const summary = `Refund ${dollars(q.refundCents)} of the ${dollars(q.paidCents)} ${q.plan} payment of ${longDate(q.paidAt)} (amounts before tax). Kept: ${why}.${q.alreadyRefundedCents ? ` Already refunded: ${dollars(q.alreadyRefundedCents)}.` : ""} In Polar: Orders → ${q.orderId} → Refund.`;
+  return json({ email, ...q, summary });
 }

@@ -34,6 +34,8 @@ async function account(email: string): Promise<{ session: string; id: string }> 
     session: string;
     vault: string;
   };
+  // An established subscriber unless a test says otherwise: no slow start, top-ups open (ai.ts, billing.ts).
+  await env.DB.prepare("UPDATE users SET ai_paid_since = ? WHERE id = ?").bind(Date.now() - 60 * 86_400_000, res.vault).run();
   return { session: res.session, id: res.vault };
 }
 
@@ -331,9 +333,14 @@ describe("AI top-ups", () => {
     expect(rolled.topup).toBeCloseTo(AI_TOPUP_CREDIT - 1, 4);
   });
 
-  it("ignores orders for other products", async () => {
+  it("records plan payments without adding AI, and ignores orders for other products", async () => {
     const a = await account("topup-other@example.com");
     const res = await send("order.paid", { id: "order-x", status: "paid", product_id: "prod-sync-m", net_amount: 500, refunded_amount: 0, customer: { external_id: a.id } });
-    expect(((await res.json()) as { ignored?: string }).ignored).toBe("not an AI top-up");
+    expect(((await res.json()) as { ok?: boolean }).ok).toBe(true);
+    const order = await env.DB.prepare("SELECT plan, interval, net_amount FROM plan_orders WHERE order_id = 'order-x'").first();
+    expect(order).toEqual({ plan: "sync", interval: "month", net_amount: 500 });
+    expect(await row(a.id)).toBeNull();
+    const other = await send("order.paid", { id: "order-y", status: "paid", product_id: "prod-unknown", net_amount: 500, refunded_amount: 0, customer: { external_id: a.id } });
+    expect(((await other.json()) as { ignored?: string }).ignored).toBe("not an AI top-up");
   });
 });

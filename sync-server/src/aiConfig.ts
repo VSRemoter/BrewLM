@@ -70,3 +70,17 @@ export const AI_MONTHLY: Record<string, number> = { pro: 4, max: 10 };
 export const AI_TRIAL = 0.5;
 /** What one AI top-up (POLAR_PRODUCT_AI_TOPUP, sold for $7) adds. Unused top-ups carry over while the plan lasts. */
 export const AI_TOPUP_CREDIT = 5;
+/** What the top-up sells for, in US dollars. Refund quotes value AI used at this rate (AI_TOPUP_PRICE / AI_TOPUP_CREDIT). */
+export const AI_TOPUP_PRICE = 7;
+
+/**
+ * The slow start: for its first AI_RAMP_DAYS, an account's first paid plan
+ * runs on AI_RAMP_SHARE of the month's allowance (never less than the trial
+ * amount); the rest unlocks after. Someone who subscribes, spends a whole
+ * month's AI and then asks for their money back can only take this much.
+ */
+export const AI_RAMP_SHARE = 0.25;
+export const AI_RAMP_DAYS = 7;
+/** Top-ups open this many days after the first paid plan started, at most AI_TOPUPS_PER_MONTH a month (UTC). */
+export const AI_TOPUP_WAIT_DAYS = 30;
+export const AI_TOPUPS_PER_MONTH = 2;

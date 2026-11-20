@@ -9,8 +9,8 @@
  *   AI_PAUSED secret (`wrangler secret put AI_PAUSED` with 1).
  * - Blocks: BrewLM AI off for one account (abuse), whatever its plan.
  * - Spend watch (every 10 minutes): BrewLM's whole OpenRouter spend today,
- *   from OpenRouter's running total. An email at AI_DAILY_ALERT_USD, a pause
- *   at AI_DAILY_CEILING_USD, and an email when the credit left drops below
+ *   from OpenRouter's running total. An email at the daily alert, a pause at
+ *   the daily ceiling, and an email when the credit left drops below
  *   AI_LOW_BALANCE_USD. Each fires at most once a day.
  * - Daily summary (first hourly run of each UTC day): yesterday's spend,
  *   credit left, subscribers and top-ups, the accounts that used the most,
@@ -66,12 +66,28 @@ function num(v: string | undefined, fallback: number): number {
   return v !== undefined && v !== "" && Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-export function limits(env: Env) {
+/**
+ * Today's alert and ceiling grow with subscribers: each is the larger of its
+ * fixed amount (AI_DAILY_ALERT_USD, AI_DAILY_CEILING_USD) and a share of all
+ * subscribers' monthly allowances and top-ups (AI_DAILY_ALERT_SHARE,
+ * AI_DAILY_CEILING_SHARE). Spending a whole month's AI evenly is about 3.3% a
+ * day, so the default 10% ceiling pauses only at three times that.
+ */
+export function limits(env: Env, allowances = 0) {
+  const alert = num(env.AI_DAILY_ALERT_USD, 20);
+  const ceiling = num(env.AI_DAILY_CEILING_USD, 60);
   return {
-    alert: num(env.AI_DAILY_ALERT_USD, 20),
-    ceiling: num(env.AI_DAILY_CEILING_USD, 60),
+    alert: Math.round(Math.max(alert, allowances * num(env.AI_DAILY_ALERT_SHARE, 0.04)) * 100) / 100,
+    ceiling: Math.round(Math.max(ceiling, allowances * num(env.AI_DAILY_CEILING_SHARE, 0.1)) * 100) / 100,
     lowBalance: num(env.AI_LOW_BALANCE_USD, 25),
+    allowances,
   };
+}
+
+/** limits() for the subscribers BrewLM AI has right now. */
+export async function currentLimits(env: Env) {
+  const row = await env.DB.prepare("SELECT coalesce(sum(monthly + topup), 0) AS s FROM ai_accounts WHERE monthly > 0").first<{ s: number }>();
+  return limits(env, row?.s ?? 0);
 }
 
 /* ---------------------------------- pause --------------------------------- */
@@ -160,7 +176,7 @@ export async function spendWatch(env: Env, now = Date.now()): Promise<SpendCheck
   await env.DB.prepare("UPDATE ai_days SET last_usage = ?, balance = ? WHERE day = ?").bind(used, balance, day).run();
 
   const spent = Math.max(0, used - row.start_usage);
-  const l = limits(env);
+  const l = await currentLimits(env);
   const out: SpendCheck = { day, spent, balance, alerted: false, paused: false, lowBalance: false };
 
   if (spent >= l.ceiling && (await claim(env, day, "ceiling_at", now))) {
@@ -169,14 +185,14 @@ export async function spendWatch(env: Env, now = Date.now()): Promise<SpendCheck
     await mail(
       env,
       `BrewLM AI paused: ${usd(spent)} spent today`,
-      `BrewLM AI has spent ${usd(spent)} on OpenRouter today (UTC), over the daily ceiling of ${usd(l.ceiling)} (AI_DAILY_CEILING_USD), so it's paused for everyone until midnight UTC. Subscribers see "paused for a little while"; their own API keys still work.\n\nOpenRouter credit left: ${usd(balance)}.\n\nIf this is real demand, raise AI_DAILY_CEILING_USD and resume now:\n${pauseCmd(env, false)}\n\nIf it's abuse, the daily summary lists the accounts that used the most; tomorrow it resumes by itself unless you pause it:\n${pauseCmd(env, true)}`
+      `BrewLM AI has spent ${usd(spent)} on OpenRouter today (UTC), over the daily ceiling of ${usd(l.ceiling)} (AI_DAILY_CEILING_USD, or AI_DAILY_CEILING_SHARE of the ${usd(l.allowances)} of monthly allowances), so it's paused for everyone until midnight UTC. Subscribers see "paused for a little while"; their own API keys still work.\n\nOpenRouter credit left: ${usd(balance)}.\n\nIf this is real demand, raise AI_DAILY_CEILING_USD or AI_DAILY_CEILING_SHARE and resume now:\n${pauseCmd(env, false)}\n\nIf it's abuse, the daily summary lists the accounts that used the most; tomorrow it resumes by itself unless you pause it:\n${pauseCmd(env, true)}`
     );
   } else if (spent >= l.alert && !row.ceiling_at && (await claim(env, day, "alerted_at", now))) {
     out.alerted = true;
     await mail(
       env,
       `BrewLM AI: ${usd(spent)} spent today`,
-      `BrewLM AI has spent ${usd(spent)} on OpenRouter today (UTC), past the alert at ${usd(l.alert)} (AI_DAILY_ALERT_USD). It pauses itself at ${usd(l.ceiling)} (AI_DAILY_CEILING_USD).\n\nOpenRouter credit left: ${usd(balance)}.\n\nTo pause BrewLM AI for everyone now:\n${pauseCmd(env, true)}`
+      `BrewLM AI has spent ${usd(spent)} on OpenRouter today (UTC), past the alert at ${usd(l.alert)}. It pauses itself at ${usd(l.ceiling)}. Both grow with subscribers (AI_DAILY_*_USD and AI_DAILY_*_SHARE).\n\nOpenRouter credit left: ${usd(balance)}.\n\nTo pause BrewLM AI for everyone now:\n${pauseCmd(env, true)}`
     );
   }
 
@@ -255,7 +271,7 @@ export async function dailySummary(env: Env, now = Date.now()): Promise<string |
 
   const today = await env.DB.prepare("SELECT start_usage FROM ai_days WHERE day = ?").bind(dayOf(now)).first<{ start_usage: number }>();
   const spent = Math.max(0, (today?.start_usage ?? row.last_usage) - row.start_usage);
-  const l = limits(env);
+  const l = await currentLimits(env);
   const dayStart = Date.parse(`${day}T00:00:00Z`);
 
   const subs = (
@@ -322,7 +338,7 @@ export async function aiAdminRoutes(req: Request, env: Env, path: string): Promi
     return json({
       paused: await currentPause(env, now),
       today: row ? { day: row.day, spent: Math.max(0, row.last_usage - row.start_usage), balance: row.balance } : null,
-      limits: limits(env),
+      limits: await currentLimits(env),
     });
   }
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);

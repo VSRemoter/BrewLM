@@ -406,8 +406,14 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       cursor: number;
       more: boolean;
       epoch?: number;
+      generation?: number;
       usedBytes?: number;
     }>(cfg, `pull?since=${cursor}&limit=500`);
+    if (await noteGeneration(res.generation)) {
+      // The server's copy is gone: this device's library goes up again from the outbox.
+      cursor = 0;
+      continue;
+    }
     await noteSweeps(res.epoch);
     noteUsage(res.usedBytes);
     const batch: { tbl: string; row_id: string; hlc: string; deleted: boolean; row?: Record<string, unknown> }[] = [];
@@ -754,6 +760,23 @@ async function startRecordBlobFill(c: SyncConfig): Promise<void> {
 
 async function finishRecordBlobFill(c: SyncConfig): Promise<void> {
   if ((await getState("record_blobs")) === `filling:${c.vault}`) await setState("record_blobs", c.vault);
+}
+
+/**
+ * The server deleted this vault's files and records (an account kept too long
+ * without a plan; the server's retention.ts) and counts it as a new
+ * generation: offer the whole local library again. True when that happened.
+ */
+async function noteGeneration(generation: number | undefined): Promise<boolean> {
+  if (generation === undefined) return false;
+  const seen = await getState("vault_generation");
+  if (seen === String(generation)) return false;
+  await setState("vault_generation", String(generation));
+  // First time this device hears of generations: only a vault wiped before counts.
+  if (seen === "" && generation === 0) return false;
+  log("the sync server's copy of this library was deleted; uploading it again");
+  await resendEverything();
+  return true;
 }
 
 /** A sweep elsewhere deleted files: check again that the server has every file this device uses. */

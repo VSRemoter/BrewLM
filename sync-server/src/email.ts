@@ -21,6 +21,20 @@ export async function sendSignInEmail(env: Env, to: string, link: string, code: 
   if (!res.ok) throw new Error(`email: Resend HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
 }
 
+/** A plain-text email to an account holder, or printed locally without RESEND_API_KEY. */
+export async function sendUserEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
+  if (!env.RESEND_API_KEY) {
+    console.log(`[dev] email to ${to} "${subject}":\n${text}`);
+    return;
+  }
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ from: env.EMAIL_FROM, to, reply_to: env.REPORT_EMAIL || undefined, subject, text }),
+  });
+  if (!res.ok) throw new Error(`email: Resend HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+}
+
 /** A plain-text email to the admin (REPORT_EMAIL), or printed locally without one. */
 export async function sendAdminEmail(env: Env, subject: string, text: string): Promise<void> {
   if (!env.RESEND_API_KEY || !env.REPORT_EMAIL) {

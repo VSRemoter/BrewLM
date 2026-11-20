@@ -39,6 +39,7 @@
  * its own R2 object, so a reader never sees half of an update: the new one is
  * stored first, then the version (and object name) moves, then the old one goes.
  */
+import { overLimit } from "./limits";
 import { isAdmin, userForSession, type User } from "./auth";
 import { entitlement } from "./billing";
 import { sendReportEmail } from "./email";
@@ -152,6 +153,21 @@ async function destroy(env: Env, id: string, keepRecord: boolean): Promise<void>
         ).bind(Date.now(), id)
       : env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id),
   ]);
+}
+
+/**
+ * Removes every link an owner has (retention.ts): published ones answer 410
+ * from then on, unpublished ones go. Up to `max` at a time; true when none are left.
+ */
+export async function destroyOwnerShares(env: Env, ownerId: string, max = 20): Promise<boolean> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, version FROM shares WHERE owner_id = ? AND (manifest_bytes > 0 OR version = 0 OR stopped_at IS NULL
+       OR EXISTS (SELECT 1 FROM share_blobs b WHERE b.share_id = shares.id)) LIMIT ?`
+  )
+    .bind(ownerId, max + 1)
+    .all<{ id: string; version: number }>();
+  for (const r of results.slice(0, max)) await destroy(env, r.id, r.version > 0);
+  return results.length <= max;
 }
 
 /** Exactly `size` bytes of the request body into R2, or null if they didn't all arrive. */
@@ -288,7 +304,8 @@ async function publicRoutes(req: Request, env: Env, id: string, op: string | und
 async function ownerRoutes(req: Request, env: Env, id: string | null, op: string | null, blob?: string) {
   const user = await userForSession(env, req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
   if (!user) return fail(401, "unauthorized");
-  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
+  const limited = await overLimit(env, user.id);
+  if (limited) return fail(429, limited);
 
   if (id === null) {
     if (req.method === "GET") {

@@ -47,6 +47,8 @@ async function account(email: string, plan?: string, status = "active"): Promise
     session: string;
     vault: string;
   };
+  // An established subscriber unless a test says otherwise: no slow start, top-ups open (ai.ts, billing.ts).
+  await env.DB.prepare("UPDATE users SET ai_paid_since = ? WHERE id = ?").bind(Date.now() - 60 * 86_400_000, res.vault).run();
   if (plan) await subscribe(res.vault, plan, status);
   return { session: res.session, id: res.vault };
 }

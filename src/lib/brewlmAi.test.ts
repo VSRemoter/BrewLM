@@ -69,6 +69,7 @@ describe("BrewLM AI allowance", () => {
   it("recognises the proxy's refusals", () => {
     expect(aiBlock("You've used this month's BrewLM AI. It refills on December 1, or add a top-up")).toBe("limit");
     expect(aiBlock("BrewLM AI comes with the Pro and Max plans. Choose one in Settings → Sync")).toBe("plan");
+    expect(aiBlock("New plans start with part of the month's BrewLM AI in their first week. The rest unlocks on December 8.")).toBe("ramp");
     expect(aiBlock("HTTP 500: upstream error")).toBeNull();
   });
 
