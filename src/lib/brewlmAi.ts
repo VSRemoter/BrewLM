@@ -216,6 +216,8 @@ export interface AiUsage {
   topupAdds?: AiCounts;
   /** BrewLM AI is paused for everyone, or turned off for this account. */
   paused?: boolean;
+  /** A new plan's first week: when the rest of this month's allowance unlocks (null or absent = not slowed). */
+  unlocksAt?: number | null;
 }
 
 export interface AiCounts {
@@ -233,8 +235,9 @@ export interface AiCounts {
  * (sync-server/src/ai.ts writes these): the month's allowance is used up, or
  * the account has no plan with AI.
  */
-export function aiBlock(message: string): "limit" | "plan" | null {
+export function aiBlock(message: string): "limit" | "ramp" | "plan" | null {
   if (/used this month's BrewLM AI/i.test(message)) return "limit";
+  if (/rest unlocks on/i.test(message)) return "ramp";
   if (/BrewLM AI comes with the Pro and Max plans/i.test(message)) return "plan";
   return null;
 }

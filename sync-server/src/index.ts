@@ -16,6 +16,7 @@
  *   /v1/shares…                      shared notebook links (shares.ts)
  *   /v1/ai/…                         BrewLM AI: model config, the proxy to OpenRouter, usage (ai.ts)
  *   /v1/admin/ai…                    BrewLM AI pause switch and account blocks (aiGuard.ts; ADMIN_TOKEN)
+ *   GET    /v1/admin/billing/refund-quote?email=   what to refund for the latest plan payment (billing.ts; ADMIN_TOKEN)
  *
  * A vault (one user's library, a Durable Object + R2 prefix):
  *   POST /v1/vaults/:vault/push   { device, changes: [{ key, hlc, payload }] }
@@ -45,8 +46,10 @@
 import { aiRoutes, reconcileAll } from "./ai";
 import { aiAdminRoutes, dailySummary, spendWatch } from "./aiGuard";
 import { pollSignIn, signOut, startSignIn, userForSession, verifySignIn, type User } from "./auth";
-import { aiForSale, billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
+import { aiForSale, billingAdminRoutes, billingDone, changePlan, checkout, entitlement, polarWebhook, portal } from "./billing";
 import { fetchFail, pageFetch } from "./fetch";
+import { overLimit, sweepRequestDays } from "./limits";
+import { retentionSweep } from "./retention";
 import { sharedBytes, shareRoutes, sweepShares } from "./shares";
 import { HLC_RE, MAX_ENVELOPE, MAX_KEY, MAX_PAYLOAD, MAX_PULL, MAX_PUSH, type Change, Vault } from "./vault";
 
@@ -74,12 +77,6 @@ const fail = (status: number, error: string) => json({ error }, status);
 /** A push's records together; Durable Object calls carry at most 32 MB. */
 const MAX_PUSH_CHARS = 20_000_000;
 
-/** Over the account's request rate (ACCOUNT_RATE in wrangler.jsonc)? */
-async function flooding(env: Env, userId: string): Promise<boolean> {
-  return !(await env.ACCOUNT_RATE.limit({ key: userId })).success;
-}
-
-const SLOW_DOWN = "Too many requests. Wait a minute and try again.";
 
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 
@@ -107,7 +104,8 @@ async function vaultCaller(req: Request, env: Env, vault: string): Promise<Calle
   const user = await userForSession(env, bearer(req));
   if (!user) return fail(401, "unauthorized");
   if (user.id !== vault) return fail(403, "not your vault");
-  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
+  const limited = await overLimit(env, user.id);
+  if (limited) return fail(429, limited);
   const ent = await entitlement(env, user);
   // Shared links use the same storage as the library.
   return { canWrite: ent.canSync, limitBytes: Math.max(0, ent.limitBytes - (await sharedBytes(env, user.id))) };
@@ -118,7 +116,8 @@ async function fetchCaller(req: Request, env: Env): Promise<string | Response> {
   if (isDevToken(req, env)) return "dev";
   const user = await userForSession(env, bearer(req));
   if (!user) return fetchFail(401, "Signed out — sign in again in Settings → Sync.");
-  if (await flooding(env, user.id)) return fetchFail(429, SLOW_DOWN);
+  const limited = await overLimit(env, user.id);
+  if (limited) return fetchFail(429, limited);
   if (!(await entitlement(env, user)).canSync)
     return fetchFail(402, "Your free trial has ended. Choose a plan to add web pages from this device.");
   return user.id;
@@ -156,7 +155,8 @@ async function accountRoutes(req: Request, env: Env, path: string): Promise<Resp
   if (!signedIn.includes(path)) return null;
   const user = await userForSession(env, bearer(req));
   if (!user) return fail(401, "unauthorized");
-  if (await flooding(env, user.id)) return fail(429, SLOW_DOWN);
+  const limited = await overLimit(env, user.id);
+  if (limited) return fail(429, limited);
   if (path === "/v1/auth/session" && req.method === "DELETE") return signOut(env, bearer(req));
   if (path === "/v1/me" && req.method === "GET") return me(env, user);
   if (path === "/v1/billing/checkout" && req.method === "POST") return checkout(req, env, user);
@@ -207,7 +207,8 @@ export default {
   },
   /**
    * wrangler.jsonc triggers. Hourly: expired and abandoned shared links, AI
-   * allowances and keys, and (once a day) the BrewLM AI summary. Every 10
+   * allowances and keys, (once a day) the BrewLM AI summary, old request
+   * counts, and lapsed accounts' data (retention.ts). Every 10
    * minutes: BrewLM AI's spend against the daily alert and ceiling.
    */
   async scheduled(event, env, ctx) {
@@ -219,6 +220,12 @@ export default {
     ctx.waitUntil(sweepShares(env).then((r) => r.removed && console.log(`shares: removed ${r.removed}`)));
     ctx.waitUntil(reconcileAll(env).then((r) => r.checked && console.log(`ai: checked ${r.checked}, failed ${r.failed}`)));
     ctx.waitUntil(dailySummary(env).catch(log("ai daily summary")).then(() => {}));
+    ctx.waitUntil(sweepRequestDays(env).catch(log("request counts")));
+    ctx.waitUntil(
+      retentionSweep(env)
+        .then((r) => (r.warned || r.deleted) && console.log(`retention: warned ${r.warned}, deleted ${r.deleted}`))
+        .catch(log("retention"))
+    );
   },
 } satisfies ExportedHandler<Env>;
 
@@ -230,6 +237,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (shared) return shared;
   const aiAdmin = await aiAdminRoutes(req, env, url.pathname);
   if (aiAdmin) return aiAdmin;
+  const billingAdmin = await billingAdminRoutes(req, env, url.pathname);
+  if (billingAdmin) return billingAdmin;
   const ai = await aiRoutes(req, env, url.pathname);
   if (ai) return ai;
   if (url.pathname === "/v1/fetch") {

@@ -21,8 +21,12 @@
  * - A key lives for one cycle: the first request of a new month deletes it and
  *   the next AI request creates a fresh one.
  *   Keys also expire on OpenRouter two days into the next month, as a backstop.
+ * - The slow start (AI_RAMP_* in aiConfig.ts): for the first week of an
+ *   account's first paid plan, the plan's part of the allowance is held to a
+ *   share of it (ramp_until); the rest unlocks after. Trials don't count.
+ * - Each finished month's spend is kept (ai_spend) for refund quotes.
  * - The hourly cron (reconcileAll) grants new subscribers their allowance,
- *   revokes keys of lapsed plans, and rolls finished months over.
+ *   revokes keys of lapsed plans, ends slow starts, and rolls months over.
  *
  * The key never leaves this server (OpenRouter's terms forbid reselling API
  * access): the app's requests come through the proxy, which allows only the
@@ -30,8 +34,9 @@
  * never logged.
  */
 import { userForSession, type User } from "./auth";
-import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "./aiConfig";
+import { AI_CONFIG, AI_ESTIMATES, AI_MONTHLY, AI_RAMP_DAYS, AI_RAMP_SHARE, AI_TOPUP_CREDIT, AI_TRIAL } from "./aiConfig";
 import { BLOCKED_MESSAGE, currentPause, isBlocked, PAUSED_MESSAGE } from "./aiGuard";
+import { overLimit } from "./limits";
 import { createKey, deleteKey, getKey, openKey, OpenRouterError, openRouterConfigured, sealKey, updateKey, usd } from "./openrouter";
 
 const DAY = 86_400_000;
@@ -41,6 +46,7 @@ const PERIOD_GRACE_MS = DAY;
 const KEY_EXPIRY_SLACK_MS = 2 * DAY;
 const AI_STATUSES = ["active", "trialing"];
 const CRON_BATCH = 50;
+const RAMP_MS = AI_RAMP_DAYS * DAY;
 
 export interface AiAccount {
   user_id: string;
@@ -52,6 +58,8 @@ export interface AiAccount {
   key_hash: string | null;
   key_enc: string | null;
   key_created_at: number | null;
+  /** The slow start: until then the plan's part of the allowance is held back (null = not slowed). */
+  ramp_until: number | null;
   rev: number;
   updated_at: number;
 }
@@ -77,16 +85,32 @@ export function restOfMonth(now: number): number {
 
 /* ------------------------------- allowance -------------------------------- */
 
-/** The account's monthly AI allowance by its subscription right now (0 = none). */
-export async function monthlyAllowance(env: Env, userId: string, now = Date.now()): Promise<{ monthly: number; plan: string | null; trial: boolean }> {
-  const sub = await env.DB.prepare("SELECT plan, status, current_period_end FROM subscriptions WHERE user_id = ?")
+/**
+ * The account's monthly AI allowance by its subscription right now (0 = none),
+ * and when it first had a paid AI plan (null = never; users.ai_paid_since).
+ */
+export async function monthlyAllowance(
+  env: Env,
+  userId: string,
+  now = Date.now()
+): Promise<{ monthly: number; plan: string | null; trial: boolean; paidSince: number | null }> {
+  const sub = await env.DB.prepare(
+    `SELECT s.plan, s.status, s.current_period_end, u.ai_paid_since
+     FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id WHERE u.id = ?`
+  )
     .bind(userId)
-    .first<{ plan: string; status: string; current_period_end: number | null }>();
-  const none = { monthly: 0, plan: null, trial: false };
-  if (!sub || !(sub.plan in AI_MONTHLY) || !AI_STATUSES.includes(sub.status)) return none;
+    .first<{ plan: string | null; status: string | null; current_period_end: number | null; ai_paid_since: number | null }>();
+  const paidSince = sub?.ai_paid_since ?? null;
+  const none = { monthly: 0, plan: null, trial: false, paidSince };
+  if (!sub?.plan || !sub.status || !(sub.plan in AI_MONTHLY) || !AI_STATUSES.includes(sub.status)) return none;
   if (sub.current_period_end !== null && sub.current_period_end + PERIOD_GRACE_MS < now) return none;
   const trial = sub.status === "trialing";
-  return { monthly: trial ? AI_TRIAL : AI_MONTHLY[sub.plan], plan: sub.plan, trial };
+  return { monthly: trial ? AI_TRIAL : AI_MONTHLY[sub.plan], plan: sub.plan, trial, paidSince };
+}
+
+/** Notes the account's first paid AI plan (once). */
+async function markPaid(env: Env, userId: string, now: number): Promise<void> {
+  await env.DB.prepare("UPDATE users SET ai_paid_since = ? WHERE id = ? AND ai_paid_since IS NULL").bind(now, userId).run();
 }
 
 async function load(env: Env, userId: string): Promise<AiAccount | null> {
@@ -105,8 +129,17 @@ async function save(env: Env, row: AiAccount, fields: Partial<Omit<AiAccount, "u
   return res.meta.changes === 1;
 }
 
+/** What the plan's part of the allowance is held to during the slow start. */
+export const rampAmount = (monthly: number) => usd(Math.max(monthly * AI_RAMP_SHARE, Math.min(monthly, AI_TRIAL)));
+
+type Limits = Pick<AiAccount, "cap" | "topup" | "carried" | "monthly" | "ramp_until">;
+
+/** The plan's part of this cycle's allowance as it stands now (held back during the slow start). */
+export const planPart = (row: Pick<AiAccount, "cap" | "monthly" | "ramp_until">) =>
+  row.ramp_until !== null ? Math.min(row.cap, rampAmount(row.monthly)) : row.cap;
+
 /** OpenRouter's limit for the account's key: what's left of this cycle's allowance. */
-const keyLimit = (row: Pick<AiAccount, "cap" | "topup" | "carried">) => usd(row.cap + row.topup - row.carried);
+const keyLimit = (row: Limits) => usd(Math.max(0, planPart(row) + row.topup - row.carried));
 
 /**
  * Brings the account's row (and its key's limit) in line with its plan and
@@ -116,19 +149,25 @@ const keyLimit = (row: Pick<AiAccount, "cap" | "topup" | "carried">) => usd(row.
 export async function reconcile(env: Env, userId: string, now = Date.now()): Promise<AiAccount | null> {
   const cycle = cycleOf(now);
   for (let attempt = 0; attempt < 4; attempt++) {
-    const { monthly } = await monthlyAllowance(env, userId, now);
+    const { monthly, trial, paidSince } = await monthlyAllowance(env, userId, now);
     const row = await load(env, userId);
+    // The account's first paid plan starts slow; a slow start ends by itself.
+    const firstPaid = monthly > 0 && !trial && paidSince === null;
+    const ramp = (current: number | null) => (firstPaid ? now + RAMP_MS : current !== null && current > now ? current : null);
 
     if (!row) {
       if (monthly <= 0) return null;
       // First grant: the rest of this month, but never less than the trial amount.
       const cap = usd(Math.max(monthly * restOfMonth(now), Math.min(monthly, AI_TRIAL)));
       const ins = await env.DB.prepare(
-        "INSERT OR IGNORE INTO ai_accounts (user_id, cycle, monthly, cap, updated_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO ai_accounts (user_id, cycle, monthly, cap, ramp_until, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-        .bind(userId, cycle, monthly, cap, now)
+        .bind(userId, cycle, monthly, cap, ramp(null), now)
         .run();
-      if (ins.meta.changes === 1) return load(env, userId);
+      if (ins.meta.changes === 1) {
+        if (firstPaid) await markPaid(env, userId, now);
+        return load(env, userId);
+      }
       continue; // someone else created it first
     }
 
@@ -140,18 +179,43 @@ export async function reconcile(env: Env, userId: string, now = Date.now()): Pro
         spent += (await getKey(env, row.key_hash))?.usage ?? 0;
         await deleteKey(env, row.key_hash);
       }
+      // The finished month, for refund quotes (the plan's allowance is spent before top-ups).
+      await env.DB.prepare("INSERT OR REPLACE INTO ai_spend (user_id, cycle, plan_spent, spent) VALUES (?, ?, ?, ?)")
+        .bind(userId, row.cycle, usd(Math.min(spent, row.cap)), usd(spent))
+        .run();
       if (monthly <= 0) {
         const del = await env.DB.prepare("DELETE FROM ai_accounts WHERE user_id = ? AND rev = ?").bind(userId, row.rev).run();
         if (del.meta.changes === 1) return null;
         continue;
       }
       const topup = usd(Math.max(0, row.topup - Math.max(0, spent - row.cap)));
-      const fresh = { cycle, monthly, cap: monthly, topup, carried: 0, key_hash: null, key_enc: null, key_created_at: null };
-      if (await save(env, row, fresh, now)) return load(env, userId);
+      const fresh = {
+        cycle,
+        monthly,
+        cap: monthly,
+        topup,
+        carried: 0,
+        key_hash: null,
+        key_enc: null,
+        key_created_at: null,
+        ramp_until: ramp(row.ramp_until),
+      };
+      if (await save(env, row, fresh, now)) {
+        if (firstPaid) await markPaid(env, userId, now);
+        return load(env, userId);
+      }
       continue;
     }
 
-    if (monthly === row.monthly) return row;
+    const rampUntil = ramp(row.ramp_until);
+    if (monthly === row.monthly) {
+      if (rampUntil === row.ramp_until) return row;
+      // A slow start began or ended: the key's limit follows.
+      if (!(await save(env, row, { ramp_until: rampUntil }, now))) continue;
+      if (firstPaid) await markPaid(env, userId, now);
+      if (row.key_hash) await updateKey(env, row.key_hash, { limit: keyLimit({ ...row, ramp_until: rampUntil }) });
+      return load(env, userId);
+    }
 
     // The plan changed this month: add or remove the difference for the rest of it.
     const lowering = monthly < row.monthly;
@@ -176,8 +240,9 @@ export async function reconcile(env: Env, userId: string, now = Date.now()): Pro
     }
     let cap = row.cap + (monthly - row.monthly) * restOfMonth(now);
     if (lowering) cap = Math.max(cap, Math.min(row.cap, spent));
-    const next = { monthly, cap: usd(cap), carried: usd(carried), ...key };
+    const next = { monthly, cap: usd(cap), carried: usd(carried), ...key, ramp_until: rampUntil };
     if (!(await save(env, row, next, now))) continue;
+    if (firstPaid) await markPaid(env, userId, now);
     if (next.key_hash) await updateKey(env, next.key_hash, { limit: keyLimit({ ...row, ...next }) });
     return load(env, userId);
   }
@@ -189,6 +254,22 @@ export async function reconcile(env: Env, userId: string, now = Date.now()): Pro
 /** What the account has spent this cycle: earlier keys plus the current one. */
 async function spentThisCycle(env: Env, row: AiAccount): Promise<number> {
   return row.carried + (row.key_hash ? ((await getKey(env, row.key_hash))?.usage ?? 0) : 0);
+}
+
+/**
+ * Dollars of the plan's own allowance (not top-ups) spent from the month that
+ * holds `since` until now, for refund quotes. Whole months: a payment made
+ * mid-month counts that month's spending from its start.
+ */
+export async function planSpentSince(env: Env, userId: string, since: number, now = Date.now()): Promise<number> {
+  const past = await env.DB.prepare(
+    "SELECT coalesce(sum(plan_spent), 0) AS s FROM ai_spend WHERE user_id = ? AND cycle >= ? AND cycle < ?"
+  )
+    .bind(userId, cycleOf(since), cycleOf(now))
+    .first<{ s: number }>();
+  const row = await load(env, userId);
+  const current = row && row.cycle === cycleOf(now) ? Math.min(await spentThisCycle(env, row), row.cap) : 0;
+  return usd((past?.s ?? 0) + current);
 }
 
 /**
@@ -287,11 +368,6 @@ const fail = (status: number, error: string) => json({ error }, status);
 
 const NO_AI = "BrewLM AI comes with the Pro and Max plans. Choose one in Settings → Sync, or add your own API key.";
 const UNAVAILABLE = "BrewLM AI isn't available right now. Try again in a minute, or use your own API key.";
-const SLOW_DOWN = "Too many requests. Wait a minute and try again.";
-
-async function flooding(env: Env, userId: string): Promise<boolean> {
-  return !(await env.ACCOUNT_RATE.limit({ key: userId })).success;
-}
 
 /**
  * The account's OpenRouter key, created on first use each month. It never
@@ -373,6 +449,13 @@ const resetDate = (now: number) =>
 const LIMIT_REACHED = (now: number) =>
   `You've used this month's BrewLM AI. It refills on ${resetDate(now)}, or add a top-up in Settings → Sync to keep going now.`;
 
+const RAMP_REACHED = (until: number) =>
+  `New plans start with part of the month's BrewLM AI in their first week. The rest unlocks on ${new Date(until).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}.`;
+
+/** "You've used it" for this account: the slow start's or the month's. */
+const reached = (row: AiAccount, now: number) =>
+  row.ramp_until !== null && row.ramp_until > now ? RAMP_REACHED(row.ramp_until) : LIMIT_REACHED(now);
+
 /**
  * An error from OpenRouter, retold for the app. Its own messages can name the
  * key's dashboard page and dollar amounts, so they never pass through as-is:
@@ -391,7 +474,7 @@ async function upstreamError(env: Env, res: Response, row: AiAccount, now: numbe
   const message = typeof err.message === "string" ? err.message : "";
   const keyLimit =
     err.metadata?.scope === "key_limit" || err.metadata?.limit_source === "openrouter_key_limit" || /key limit exceeded/i.test(message);
-  if (keyLimit) return orFail(402, LIMIT_REACHED(now));
+  if (keyLimit) return orFail(402, reached(row, now));
   // BrewLM's own spending cap on OpenRouter (a guardrail's budget, for every key at once):
   // not the subscriber's doing, so the same "unavailable" as BrewLM running out of credit.
   const source = `${err.metadata?.limit_source ?? ""} ${err.metadata?.scope ?? ""}`;
@@ -402,7 +485,7 @@ async function upstreamError(env: Env, res: Response, row: AiAccount, now: numbe
   if (res.status === 402) {
     // Usually BrewLM's OpenRouter credit, but check the key in case a limit shows up this way.
     const info = row.key_hash ? await getKey(env, row.key_hash).catch(() => null) : null;
-    if (info && info.limit !== null && info.usage >= info.limit - 0.0001) return orFail(402, LIMIT_REACHED(now));
+    if (info && info.limit !== null && info.usage >= info.limit - 0.0001) return orFail(402, reached(row, now));
     console.error("ai proxy: OpenRouter refused for credit while the key has room; top up the OpenRouter account");
     return orFail(503, UNAVAILABLE);
   }
@@ -482,7 +565,7 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
   // Paused for everyone (or off for this account): the app says so instead of a meter alone.
   const paused = !!(await currentPause(env, now)) || (await isBlocked(env, user.id));
   if (!row || row.monthly <= 0) return json({ plan: null, trial: false, usedFraction: 0, resetsAt, left: null, paused });
-  const allowance = row.cap + row.topup;
+  const allowance = planPart(row) + row.topup;
   const spent = await spentThisCycle(env, row);
   const remaining = Math.max(0, allowance - spent);
   const counts = (usd: number) => Object.fromEntries(Object.entries(AI_ESTIMATES).map(([k, cost]) => [k, Math.floor(usd / cost)]));
@@ -496,6 +579,8 @@ async function usage(env: Env, user: User, now = Date.now()): Promise<Response> 
     // What one top-up adds, in the same counts.
     topupAdds: counts(AI_TOPUP_CREDIT),
     paused,
+    // The slow start: when the rest of this month's allowance unlocks (null = not slowed).
+    unlocksAt: row.ramp_until,
   });
 }
 
@@ -514,7 +599,8 @@ export async function aiRoutes(req: Request, env: Env, path: string): Promise<Re
   const err = proxied !== null ? orFail : fail;
   const user = await userForSession(env, req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
   if (!user) return err(401, "Signed out of BrewLM. Sign in again in Settings → Sync.");
-  if (await flooding(env, user.id)) return err(429, SLOW_DOWN);
+  const limited = await overLimit(env, user.id);
+  if (limited) return err(429, limited);
   if (!openRouterConfigured(env)) return err(503, UNAVAILABLE);
   try {
     return proxied !== null ? await proxy(req, env, user, proxied) : await usage(env, user);
@@ -547,6 +633,8 @@ export async function reconcileAll(env: Env, now = Date.now()): Promise<{ checke
     ).bind(...plans, ...AI_STATUSES, PERIOD_GRACE_MS, now),
     // Last month's rows.
     env.DB.prepare(`SELECT user_id FROM ai_accounts WHERE cycle != ? LIMIT ${CRON_BATCH}`).bind(cycleOf(now)),
+    // Slow starts that are over: the rest of the allowance unlocks.
+    env.DB.prepare(`SELECT user_id FROM ai_accounts WHERE ramp_until IS NOT NULL AND ramp_until <= ? LIMIT ${CRON_BATCH}`).bind(now),
     // Still holding an allowance, but the plan is gone.
     env.DB.prepare(
       `SELECT a.user_id FROM ai_accounts a LEFT JOIN subscriptions s ON s.user_id = a.user_id

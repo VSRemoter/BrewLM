@@ -142,6 +142,10 @@ export function BrewLmAiStatusRow({ model }: { model?: string }) {
     desc = `Included with the Pro and Max plans; you're on ${status.account?.plan === "trial" ? "the free trial" : "a plan without it"}. Choose Pro or Max in Settings → Sync, or pick another provider with your own key.`;
   else if (usage?.paused) desc = "BrewLM AI is paused for a little while. Try again later, or use your own API key meanwhile.";
   else if (!usage?.left) desc = `Included with your ${status.account?.plan === "max" ? "Max" : "Pro"} plan. No API key needed.`;
+  else if (usage.unlocksAt)
+    desc = `Left this week: ${countsLine(usage.left, ratio)}${
+      model && ratio >= 1.5 ? ` on ${brewlmModelLabel(model)}` : ""
+    }. New plans start with part of the month's AI in their first week; the rest unlocks ${resetsOn(usage.unlocksAt)}.`;
   else
     desc = `${usage.trial ? "Left in your trial" : "Left this month"}: ${countsLine(usage.left, ratio)}${
       model && ratio >= 1.5 ? ` on ${brewlmModelLabel(model)}` : ""
@@ -296,7 +300,7 @@ export function BrewLmTierRow({ settings, patch }: { settings: Settings; patch: 
 export function AiBlockedNotice({ message, onOpenSettings }: { message: string; onOpenSettings: () => void }) {
   const block = aiBlock(message);
   const { status } = useAiAccess();
-  const usage = useAiUsage(block === "limit");
+  const usage = useAiUsage(block === "limit" || block === "ramp");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   if (!block) return null;
@@ -331,10 +335,18 @@ export function AiBlockedNotice({ message, onOpenSettings }: { message: string; 
   return (
     <div className="text-[12.5px] leading-relaxed text-ink">
       <div className="font-semibold">
-        {block === "limit" ? "You've used this month's BrewLM AI" : "BrewLM AI comes with Pro and Max"}
+        {block === "limit"
+          ? "You've used this month's BrewLM AI"
+          : block === "ramp"
+            ? "You've used this week's BrewLM AI"
+            : "BrewLM AI comes with Pro and Max"}
       </div>
       <div className="mt-0.5 text-ink-2">
-        {block === "limit"
+        {block === "ramp"
+          ? `New plans start with part of the month's AI in their first week. The rest unlocks ${
+              usage?.unlocksAt ? resetsOn(usage.unlocksAt) : "a week after your plan started"
+            }. Until then, you can use your own API key.`
+          : block === "limit"
           ? `It refills ${usage ? resetsOn(usage.resetsAt) : "at the start of next month"}. To keep going now, add a top-up${
               plan === "pro" ? ", move to Max for a bigger allowance," : ""
             } or use your own API key.`
@@ -350,11 +362,11 @@ export function AiBlockedNotice({ message, onOpenSettings }: { message: string; 
               </button>
             )}
           </>
-        ) : (
+        ) : block === "plan" ? (
           <button onClick={() => settingsAt("sync")} className={button}>
             See plans
           </button>
-        )}
+        ) : null}
         <button onClick={() => settingsAt("ai")} className={button}>
           Use my own key
         </button>

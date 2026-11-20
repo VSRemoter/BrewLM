@@ -26,6 +26,12 @@
  * file younger than SWEEP_GRACE_MS is kept (a device may be about to use it).
  * Each sweep that deletes something bumps `epoch`, sent with every pull, so
  * devices re-check that the files they use are still here.
+ *
+ * Wiping (`wipe`, for data kept too long without a plan; retention.ts): every
+ * file and record goes, the key envelope stays (the password still unlocks
+ * it), and `generation` goes up. A device that sees a new generation in a
+ * pull offers its whole library again. `seq` never goes backwards (the
+ * wiped vault's last seq is kept as a floor), so no device's cursor is ahead.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -349,7 +355,34 @@ export class Vault extends DurableObject<Env> {
   }
 
   private cursor(): number {
-    return (this.sql.exec<{ s: number | null }>("SELECT max(seq) AS s FROM changes").one().s ?? 0) as number;
+    const top = (this.sql.exec<{ s: number | null }>("SELECT max(seq) AS s FROM changes").one().s ?? 0) as number;
+    return Math.max(top, this.counter("seq_floor"));
+  }
+
+  private counter(k: string): number {
+    return this.sql.exec<{ v: number }>("SELECT v FROM usage WHERE k = ?", k).toArray()[0]?.v ?? 0;
+  }
+
+  /**
+   * Deletes every file and record (not the key envelope). Files go from R2 a
+   * page at a time; call again until `done`. Returns what's left counted.
+   */
+  async wipe(vault: string): Promise<{ done: boolean; usedBytes: number }> {
+    const page = await this.env.BLOBS.list({ prefix: `${vault}/`, limit: 1000 });
+    if (page.objects.length) await this.env.BLOBS.delete(page.objects.map((o) => o.key));
+    if (page.truncated) return { done: false, usedBytes: this.usage().total };
+    this.ctx.storage.transactionSync(() => {
+      const floor = this.cursor();
+      this.sql.exec("DELETE FROM changes");
+      this.sql.exec("DELETE FROM blobs");
+      this.sql.exec("DELETE FROM uploads");
+      this.sql.exec("DELETE FROM links");
+      this.sql.exec("INSERT OR REPLACE INTO usage (k, v) VALUES ('records', 0)");
+      this.sql.exec("INSERT OR REPLACE INTO usage (k, v) VALUES ('seq_floor', ?)", floor);
+      this.sql.exec("UPDATE usage SET v = v + 1 WHERE k = 'epoch'");
+      this.sql.exec("INSERT INTO usage (k, v) VALUES ('generation', 1) ON CONFLICT (k) DO UPDATE SET v = v + 1");
+    });
+    return { done: true, usedBytes: this.usage().total };
   }
 
   /**
@@ -404,11 +437,14 @@ export class Vault extends DurableObject<Env> {
     return { accepted, stale, cursor: this.cursor(), usedBytes: this.usage().total };
   }
 
-  /** Changes after `since`, oldest first; `epoch` counts sweeps that deleted files; `usedBytes` the vault's storage. */
+  /**
+   * Changes after `since`, oldest first; `epoch` counts sweeps that deleted
+   * files; `generation` counts wipes; `usedBytes` the vault's storage.
+   */
   pull(
     since: number,
     limit: number
-  ): { changes: StoredChange[]; cursor: number; more: boolean; epoch: number; usedBytes: number } {
+  ): { changes: StoredChange[]; cursor: number; more: boolean; epoch: number; generation: number; usedBytes: number } {
     const rows = this.sql
       .exec<StoredChange>(
         "SELECT key, seq, hlc, device, payload FROM changes WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -423,6 +459,7 @@ export class Vault extends DurableObject<Env> {
       cursor: changes.length ? changes[changes.length - 1].seq : since,
       more,
       epoch: this.epoch(),
+      generation: this.counter("generation"),
       usedBytes: this.usage().total,
     };
   }
