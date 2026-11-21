@@ -157,6 +157,13 @@ export function renderMarkdown(src: string): string {
     let listType: "ul" | "ol" | null = null;
     let para: string[] = [];
     let li = 0;
+    // Inside an open list: the current item's own paragraph lines, a nested
+    // list under it, and whether a blank line came since the last item line.
+    let itemOpen = false;
+    let itemTail = false; // the item's first line can still run on
+    let itemPara: string[] = [];
+    let subType: "ul" | "ol" | null = null;
+    let blankSince = false;
 
     const flushPara = () => {
       if (para.length) {
@@ -164,11 +171,58 @@ export function renderMarkdown(src: string): string {
         para = [];
       }
     };
+    const flushSub = () => {
+      if (subType) {
+        html += `</${subType}>`;
+        subType = null;
+      }
+    };
+    const flushItemPara = () => {
+      if (itemPara.length) {
+        html += `<p>${inline(itemPara.join(" "))}</p>`;
+        itemPara = [];
+      }
+    };
+    const closeItem = () => {
+      if (!itemOpen) return;
+      flushItemPara();
+      flushSub();
+      html += "</li>";
+      itemOpen = false;
+      itemTail = false;
+    };
+    /** More text for the open item: runs on from its first line, else a paragraph in it. */
+    const continueItem = (body: string) => {
+      flushSub();
+      if (itemTail && !blankSince) {
+        html += ` ${inline(body)}`;
+      } else {
+        itemTail = false;
+        itemPara.push(body);
+      }
+    };
     const flushList = () => {
+      closeItem();
       if (listType) {
         html += `</${listType}>`;
         listType = null;
       }
+      blankSince = false;
+    };
+    /** Open a list item, keeping the number the model wrote ("3." starts at 3). */
+    const openItem = (type: "ul" | "ol", text: string, num?: string) => {
+      flushPara();
+      closeItem();
+      if (listType !== type) {
+        flushList();
+        const start = type === "ol" && num && Number(num) !== 1 ? ` start="${Number(num)}"` : "";
+        html += `<${type}${start}>`;
+        listType = type;
+      }
+      html += `<li>${inline(text)}`;
+      itemOpen = true;
+      itemTail = true;
+      blankSince = false;
     };
 
     for (; li < lines.length; li++) {
@@ -176,9 +230,40 @@ export function renderMarkdown(src: string): string {
       const t = line.trimEnd();
       if (!t.trim()) {
         flushPara();
-        flushList();
+        // A blank line ends the item's paragraph but not the list: the next
+        // item, or an indented line belonging to this one, may follow it.
+        if (listType) {
+          flushItemPara();
+          blankSince = true;
+        }
         continue;
       }
+      // Indented lines under a list item belong to it: a nested list or more
+      // of its text (models indent the explanation under a numbered heading).
+      if (listType && itemOpen && /^(?: {2,}|\t)/.test(t)) {
+        const body = t.trim();
+        const subUl = body.match(/^[-*•]\s+(.*)$/);
+        const subOl = body.match(/^\d+[.)]\s+(.*)$/);
+        if (subUl || subOl) {
+          flushItemPara();
+          const type = subUl ? "ul" : "ol";
+          if (subType !== type) {
+            flushSub();
+            const num = subOl ? Number(body.match(/^\d+/)![0]) : 1;
+            html += `<${type}${num !== 1 ? ` start="${num}"` : ""}>`;
+            subType = type;
+          }
+          html += `<li>${inline((subUl ?? subOl)![1])}</li>`;
+          itemTail = false;
+        } else {
+          continueItem(body);
+        }
+        blankSince = false;
+        continue;
+      }
+      // An unindented list marker after a blank keeps going; anything else
+      // unindented after a blank ends the list.
+      if (listType && blankSince && !/^(?:[-*•]|\d+[.)])\s+/.test(t)) flushList();
       if (/^-{3,}$/.test(t.trim())) {
         flushPara();
         flushList();
@@ -224,31 +309,24 @@ export function renderMarkdown(src: string): string {
         continue;
       }
       const ul = t.match(/^[-*•]\s+(.*)$/);
-      const ol = t.match(/^\d+[.)]\s+(.*)$/);
+      const ol = t.match(/^(\d+)[.)]\s+(.*)$/);
       if (ul) {
-        flushPara();
-        if (listType !== "ul") {
-          flushList();
-          html += "<ul>";
-          listType = "ul";
-        }
-        html += `<li>${inline(ul[1])}</li>`;
+        openItem("ul", ul[1]);
         continue;
       }
       if (ol) {
-        flushPara();
-        if (listType !== "ol") {
-          flushList();
-          html += "<ol>";
-          listType = "ol";
-        }
-        html += `<li>${inline(ol[1])}</li>`;
+        openItem("ol", ol[2], ol[1]);
         continue;
       }
       if (t.startsWith("&gt;")) {
         flushPara();
         flushList();
         html += `<blockquote>${inline(t.replace(/^&gt;\s?/, ""))}</blockquote>`;
+        continue;
+      }
+      // Unindented text right under an item (no blank line) still belongs to it.
+      if (listType && itemOpen && !blankSince) {
+        continueItem(t.trim());
         continue;
       }
       flushList();

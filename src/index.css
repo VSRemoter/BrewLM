@@ -412,6 +412,14 @@ textarea {
 .md li {
   margin: 0.2em 0;
 }
+/* An item's own explanation paragraphs and nested lists sit close under it. */
+.md li > p {
+  margin: 0.35em 0 0.6em;
+}
+.md li > ul,
+.md li > ol {
+  margin: 0.25em 0 0.35em 1.25em;
+}
 .md code {
   font-family: var(--font-mono);
   font-size: 0.85em;
