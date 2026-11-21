@@ -7,6 +7,7 @@ import { IconButton } from "./ui";
 export default function ChatsPanel({
   chats,
   activeChatId,
+  openChatIds,
   onSelect,
   onNew,
   onRename,
@@ -15,6 +16,8 @@ export default function ChatsPanel({
 }: {
   chats: Chat[];
   activeChatId: string | null;
+  /** Chats open side by side, left to right (only when there's more than one). */
+  openChatIds?: string[];
   onSelect: (chatId: string) => void;
   onNew: () => void;
   onRename: (chatId: string, title: string) => void;
@@ -57,6 +60,7 @@ export default function ChatsPanel({
         ) : (
           ordered.map((chat) => {
             const active = chat.id === activeChatId;
+            const paneNo = (openChatIds?.indexOf(chat.id) ?? -1) + 1;
             return (
               <div
                 key={chat.id}
@@ -130,6 +134,7 @@ export default function ChatsPanel({
                       </span>
                       <span className="mt-0.5 block text-[10.5px] text-ink-3">
                         {formatTime(chat.updated_at)}
+                        {paneNo > 0 && ` · pane ${paneNo}`}
                       </span>
                     </button>
                     <button

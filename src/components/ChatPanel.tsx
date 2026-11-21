@@ -11,6 +11,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Columns2,
   Copy,
   ExternalLink,
   FilePlus2,
@@ -42,8 +43,9 @@ import {
   Telescope,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addMessage,
   listFolders,
@@ -969,6 +971,11 @@ export default function ChatPanel({
   chatBgDim,
   onChatBgChange,
   onShowChats,
+  onSetModel,
+  onSplit,
+  onClosePane,
+  focused = true,
+  onFocusPane,
 }: {
   notebookId: string;
   chatId: string | null;
@@ -1017,6 +1024,15 @@ export default function ChatPanel({
   onChatBgChange: (bg: string, dim: number) => void | Promise<void>;
   /** Phones: the chat list is a sheet; the title opens it and a new-chat button sits beside it. */
   onShowChats?: () => void;
+  /** Side-by-side chats: this pane's own model. Given, /model and the model menu change only this pane. */
+  onSetModel?: (id: string) => void;
+  /** Open another chat beside this one (absent once three are open). */
+  onSplit?: () => void;
+  /** Close this pane (the chat itself is kept). Absent when it's the only pane. */
+  onClosePane?: () => void;
+  /** With several panes: the one the chat list and new chats act on. */
+  focused?: boolean;
+  onFocusPane?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -1054,8 +1070,9 @@ export default function ChatPanel({
   };
   const anyStreaming = Object.keys(streams).length > 0;
   // The tab strip's busy dot; a closed tab stops counting.
-  useEffect(() => setChatStreaming(notebookId, anyStreaming), [notebookId, anyStreaming]);
-  useEffect(() => () => setChatStreaming(notebookId, false), [notebookId]);
+  const paneId = useId();
+  useEffect(() => setChatStreaming(notebookId, anyStreaming, paneId), [notebookId, anyStreaming, paneId]);
+  useEffect(() => () => setChatStreaming(notebookId, false, paneId), [notebookId, paneId]);
   const [error, setErrorState] = useState<string | null>(null);
   /** Errors from a send in another chat stay out of the open one. */
   const setError = (e: string | null) => {
@@ -1305,6 +1322,36 @@ export default function ChatPanel({
   // Mirrors of the persisted choices so the pickers mark "current" instantly.
   const [model, setModel] = useState(settings.model);
   useEffect(() => setModel(settings.model), [settings.model]);
+  /** Switch the chat model: this pane's own when it has one, else the app-wide setting. */
+  const chooseModel = async (id: string) => {
+    setModel(id);
+    if (onSetModel) return onSetModel(id);
+    await setSetting("model", id);
+    onSettingsChanged();
+  };
+  /** The footer's model menu (click the model name under the composer). */
+  const [modelMenu, setModelMenu] = useState<string[] | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!modelMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!modelMenuRef.current?.contains(e.target as Node)) setModelMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModelMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [modelMenu]);
+  const openModelMenu = async () => {
+    if (modelMenu) return setModelMenu(null);
+    const list = await loadModelList(settings.provider);
+    setModelMenu(model && !list.includes(model) ? [model, ...list] : list);
+  };
   const [imageModel, setImageModel] = useState(settings.imageModel);
   useEffect(() => setImageModel(settings.imageModel), [settings.imageModel]);
   const [researchModel, setResearchModel] = useState(settings.researchModels[settings.provider] ?? "");
@@ -1528,11 +1575,9 @@ export default function ChatPanel({
       const list = await loadModelList(settings.provider);
       return say(`Current model: \`${model}\`. Your ${settings.provider} models: ${codeList(list)}.`);
     }
-    await setSetting("model", raw);
-    setModel(raw);
+    await chooseModel(raw);
     await rememberModel("chat", raw);
-    onSettingsChanged();
-    await say(`Model set to \`${raw}\`.`);
+    await say(`Model set to \`${raw}\`${onSetModel ? " for this chat pane" : ""}.`);
   };
 
   /** BrewLM AI's /model: its three tiers, by name. */
@@ -1550,9 +1595,7 @@ export default function ChatPanel({
     if (!tier && !extra)
       return `BrewLM AI runs ${tiers}${more.length ? " and the models under Settings → AI Model → More models" : ""}. To use any other model, pick OpenRouter, OpenAI or Anthropic with your own key in **Settings → AI Model**.`;
     const id = tier ? c.tiers[tier].model : extra!.model;
-    await setSetting("model", id);
-    setModel(id);
-    onSettingsChanged();
+    await chooseModel(id);
     // Warn when a model eats the allowance much faster than Fast.
     const ratio = await costVsFast(id);
     const cost = ratio && ratio >= 1.5 ? ` Each chat uses ${costLabel(ratio).replace(/ Fast$/, "")} as much of your allowance as one on Fast.` : "";
@@ -2797,6 +2840,8 @@ export default function ChatPanel({
   return (
     <section
       className="anim-panel-center relative flex h-full min-w-0 flex-1 flex-col bg-canvas"
+      onPointerDownCapture={onFocusPane}
+      onFocusCapture={onFocusPane}
       onDragEnter={(e) => {
         if (!hasDraggedFiles(e)) return;
         e.preventDefault();
@@ -2848,11 +2893,21 @@ export default function ChatPanel({
             <ChevronDown size={14} className="shrink-0 text-ink-3" />
           </button>
         ) : (
-          <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-ink-3">
-            Chat{chatTitle ? ` · ${chatTitle}` : ""}
+          <span
+            className={`flex min-w-0 items-center gap-1.5 truncate text-[12px] font-semibold uppercase tracking-wide ${
+              focused ? "text-ink-3" : "text-ink-3/60"
+            }`}
+          >
+            {onClosePane && (
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${focused ? "bg-accent" : "bg-transparent"}`}
+                title={focused ? "The chat list opens chats here" : undefined}
+              />
+            )}
+            <span className="truncate">Chat{chatTitle ? ` · ${chatTitle}` : ""}</span>
           </span>
         )}
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {onShowChats && (
             <IconButton onClick={onNewChat} label="New chat">
               <MessageSquarePlus size={15} strokeWidth={1.8} />
@@ -2865,6 +2920,16 @@ export default function ChatPanel({
             >
               <Settings2 size={11} /> {settings.provider === "local" ? "Set up local server" : settings.provider === "brewlm" ? "Sign in for BrewLM AI" : "Add API key"}
             </button>
+          )}
+          {onSplit && (
+            <IconButton onClick={onSplit} label="Open another chat side by side">
+              <Columns2 size={14} strokeWidth={1.8} />
+            </IconButton>
+          )}
+          {onClosePane && (
+            <IconButton onClick={onClosePane} label="Close this chat pane">
+              <X size={15} strokeWidth={1.8} />
+            </IconButton>
           )}
           {/* chat background */}
           <div className="relative">
@@ -3530,10 +3595,10 @@ export default function ChatPanel({
               rows={1}
               placeholder={
                 sources.length > 0
-                  ? narrow
+                  ? narrow || onClosePane
                     ? "Ask about your sources…"
                     : "Ask about your sources… (@ to reference · / for commands)"
-                  : narrow
+                  : narrow || onClosePane
                     ? "Ask anything…"
                     : "Ask anything… (type / for commands)"
               }
@@ -3608,9 +3673,52 @@ export default function ChatPanel({
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-ink-3">
-            {settings.provider === "brewlm"
-              ? `BrewLM AI · ${brewlmModelLabel(model)}`
-              : `${model || "no model picked"} · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
+            <span ref={modelMenuRef} className="relative inline-block">
+              <button
+                onClick={() => void openModelMenu()}
+                className="rounded px-1 transition-colors hover:bg-hover hover:text-ink-2"
+                aria-haspopup="menu"
+                aria-expanded={!!modelMenu}
+                title={onSetModel ? "Change this pane's model" : "Change model"}
+              >
+                {settings.provider === "brewlm" ? `BrewLM AI · ${brewlmModelLabel(model)}` : model || "no model picked"}
+                <ChevronDown size={10} className="ml-0.5 inline -translate-y-px" />
+              </button>
+              {modelMenu && (
+                <span
+                  role="menu"
+                  className="absolute bottom-full left-1/2 z-30 mb-2 block max-h-72 w-72 -translate-x-1/2 overflow-y-auto rounded-xl border border-edge bg-panel py-1 text-left shadow-lg"
+                >
+                  <span className="block px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
+                    {onSetModel ? "Model for this pane" : "Chat model"}
+                  </span>
+                  {modelMenu.length === 0 && (
+                    <span className="block px-3 py-1.5 text-[12px] text-ink-3">No models yet. Add some in Settings → AI Model.</span>
+                  )}
+                  {modelMenu.map((id) => (
+                    <button
+                      key={id}
+                      role="menuitemradio"
+                      aria-checked={id === model}
+                      onClick={() => {
+                        setModelMenu(null);
+                        void chooseModel(id);
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors hover:bg-hover ${
+                        id === model ? "text-ink" : "text-ink-2"
+                      }`}
+                    >
+                      <span className="flex w-3.5 shrink-0 justify-center">
+                        {id === model && <Check size={12} strokeWidth={2.4} />}
+                      </span>
+                      <span className="min-w-0 truncate">{settings.provider === "brewlm" ? brewlmModelLabel(id) : id}</span>
+                    </button>
+                  ))}
+                </span>
+              )}
+            </span>
+            {settings.provider !== "brewlm" &&
+              ` · ${settings.provider === "local" ? "on your computer" : `via ${settings.provider === "openrouter" ? "OpenRouter" : settings.provider}`}`}
             {settings.provider === "local" && cloudJobs(settings).length > 0 && (
               <span title={`These still use a cloud service: ${cloudJobs(settings).join(", ")}. Change them in Settings → Local Models.`}>
                 {" "}

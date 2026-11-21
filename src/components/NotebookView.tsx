@@ -25,12 +25,13 @@ import {
   renameNotebook,
   setNotebookChatBg,
   setNotebookChatBgDim,
+  setSetting,
   touchChat,
 } from "../lib/db";
 import { cloneNotebook } from "../lib/share";
 import { ingestFiles } from "../lib/ingest";
 import { fetchLinkContent } from "../lib/source";
-import type { Artifact, ArtifactKind, Chat, Notebook, Settings, Source, SourceType } from "../lib/types";
+import type { Artifact, ArtifactKind, Chat, Notebook, Provider, Settings, Source, SourceType } from "../lib/types";
 import { MiniPlayerDock } from "./AudioPlayer";
 import ChatPanel from "./ChatPanel";
 import ChatsPanel from "./ChatsPanel";
@@ -50,6 +51,29 @@ const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.le
 const num = (key: string, fallback: number) => {
   const v = Number(localStorage.getItem(key));
   return Number.isFinite(v) && v > 0 ? v : fallback;
+};
+
+/** How many chats a notebook can show side by side. */
+const MAX_PANES = 3;
+/**
+ * One chat shown in the notebook. `model` is the pane's own model (for
+ * `provider`); without one, or after the provider changes, it follows the
+ * app-wide model from Settings.
+ */
+type Pane = { id: string; chatId: string; model?: string; provider?: Provider };
+const paneOf = (chatId: string): Pane => ({ id: crypto.randomUUID(), chatId });
+const panesKey = (notebookId: string) => `om.chatPanes.${notebookId}`;
+const loadPanes = (notebookId: string): Pane[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(panesKey(notebookId)) ?? "[]");
+    if (!Array.isArray(v)) return [];
+    return v
+      .filter((p) => typeof p?.chatId === "string")
+      .slice(0, MAX_PANES)
+      .map((p) => ({ ...p, id: typeof p.id === "string" ? p.id : crypto.randomUUID() }));
+  } catch {
+    return [];
+  }
 };
 
 /** Minimum Studio width while reading an output (reports, quizzes, mind maps…). */
@@ -90,7 +114,41 @@ export default function NotebookView({
   const readOnly = !!notebook.share_id;
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  /** The chats on screen, left to right (one on phones). */
+  const [panes, setPanes] = useState<Pane[]>([]);
+  /** The pane the chat list, "New chat" and /clear act on. */
+  const [focusedPane, setFocusedPane] = useState(0);
+  const focusIdx = Math.min(focusedPane, Math.max(panes.length - 1, 0));
+  const activeChatId = panes[focusIdx]?.chatId ?? null;
+  /** Show `chatId` in the focused pane; a chat already open in another pane is focused there instead. */
+  const setActiveChatId = useCallback(
+    (chatId: string | null) => {
+      if (!chatId) return;
+      setPanes((cur) => {
+        const at = cur.findIndex((p) => p.chatId === chatId);
+        if (at >= 0) {
+          setFocusedPane(at);
+          return cur;
+        }
+        if (cur.length === 0) return [paneOf(chatId)];
+        const i = Math.min(focusedPane, cur.length - 1);
+        return cur.map((p, j) => (j === i ? { ...p, chatId } : p));
+      });
+    },
+    [focusedPane]
+  );
+  /** Keep panes whose chats still exist; never leave none while there's a chat. */
+  const prunePanes = useCallback((list: Chat[]) => {
+    setPanes((cur) => {
+      const kept = cur.filter((p) => list.some((c) => c.id === p.chatId));
+      if (kept.length === cur.length && kept.length > 0) return cur;
+      return kept.length ? kept : list[0] ? [paneOf(list[0].id)] : [];
+    });
+  }, []);
+  // Remember which chats were open side by side, per notebook.
+  useEffect(() => {
+    if (panes.length) localStorage.setItem(panesKey(notebook.id), JSON.stringify(panes));
+  }, [panes, notebook.id]);
   const [titleDraft, setTitleDraft] = useState(notebook.title);
   const [leftW, setLeftW] = useState(() => clamp(200, 560, num(LS.left, 264)));
   const [rightW, setRightW] = useState(() => clamp(240, 620, num(LS.right, 288)));
@@ -166,12 +224,9 @@ export default function NotebookView({
       onRemoteChanges((c) => {
         if (c.tables.has("sources")) void refreshSources();
         if (c.tables.has("artifacts")) void refreshArtifacts();
-        if (c.tables.has("chats"))
-          void refreshChats().then((list) =>
-            setActiveChatId((cur) => (list.some((ch) => ch.id === cur) ? cur : list[0]?.id ?? null))
-          );
+        if (c.tables.has("chats")) void refreshChats().then(prunePanes);
       }),
-    [refreshSources, refreshArtifacts, refreshChats]
+    [refreshSources, refreshArtifacts, refreshChats, prunePanes]
   );
 
   /** Files dropped/picked in chat become notebook sources (+ auto-@mention). */
@@ -220,9 +275,13 @@ export default function NotebookView({
       const list = await refreshChats();
       if (!cancelled) {
         setChats(list);
-        setActiveChatId((cur) =>
-          list.some((c) => c.id === cur) ? cur : list[0]?.id ?? null
-        );
+        setPanes((cur) => {
+          const exists = (p: Pane) => list.some((c) => c.id === p.chatId);
+          if (cur.length && cur.every(exists)) return cur;
+          // First open: bring back the panes from last time.
+          const saved = (cur.length ? cur : loadPanes(notebook.id)).filter(exists);
+          return saved.length ? saved : list[0] ? [paneOf(list[0].id)] : [];
+        });
       }
     })();
     return () => {
@@ -245,6 +304,39 @@ export default function NotebookView({
     await refreshChats();
     setActiveChatId(chat.id);
   };
+
+  /** Open a fresh chat beside the others (up to MAX_PANES), on the app's current model. */
+  const addPane = async () => {
+    if (panes.length >= MAX_PANES) return;
+    const chat = await createChat(notebook.id);
+    await refreshChats();
+    setPanes((cur) =>
+      cur.length >= MAX_PANES ? cur : [...cur, { ...paneOf(chat.id), model: settings.model, provider: settings.provider }]
+    );
+    setFocusedPane(panes.length);
+  };
+
+  /** The model a pane runs: its own, unless the provider changed since it was picked. */
+  const paneModel = (p: Pane) => (p.model && p.provider === settings.provider ? p.model : settings.model);
+
+  const closePane = async (i: number) => {
+    const rest = panes.filter((_, j) => j !== i);
+    if (rest.length === 0) return;
+    // Down to one chat: it keeps the model it was on, which becomes the app's model.
+    if (rest.length === 1) {
+      const m = paneModel(rest[0]);
+      rest[0] = { id: rest[0].id, chatId: rest[0].chatId };
+      if (m !== settings.model) {
+        await setSetting("model", m);
+        onSettingsChanged();
+      }
+    }
+    setPanes(rest);
+    setFocusedPane((f) => (f > i ? f - 1 : Math.min(f, rest.length - 1)));
+  };
+
+  const setPaneModel = (i: number, model: string) =>
+    setPanes((cur) => cur.map((p, j) => (j === i ? { ...p, model, provider: settings.provider } : p)));
 
   /** /clone command — exact copy of this notebook (sources, chats, studio). */
   const handleClone = async (title: string, jump: boolean): Promise<string> => {
@@ -311,7 +403,8 @@ export default function NotebookView({
       await deleteAllChats(notebook.id);
       const fresh = await createChat(notebook.id);
       await refreshChats();
-      setActiveChatId(fresh.id);
+      setPanes((cur) => [{ ...(cur[focusIdx] ?? paneOf(fresh.id)), chatId: fresh.id }]);
+      setFocusedPane(0);
       const reply = "Removed all chats — this is a fresh one.";
       // The old chat (and the message this command ran in) is gone: post the
       // confirmation into the fresh chat ourselves.
@@ -356,24 +449,19 @@ export default function NotebookView({
   const handleDeleteChat = async (chatId: string) => {
     await deleteChat(chatId);
     const list = await refreshChats();
-    if (chatId === activeChatId) {
-      if (list.length > 0) {
-        setActiveChatId(list[0].id);
-      } else {
-        const fresh = await createChat(notebook.id);
-        await refreshChats();
-        setActiveChatId(fresh.id);
-      }
+    const at = panes.findIndex((p) => p.chatId === chatId);
+    if (at < 0) return;
+    if (panes.length > 1) {
+      // Side by side: the pane closes with its chat.
+      const rest = panes.filter((_, j) => j !== at);
+      setPanes(rest);
+      setFocusedPane((f) => (f > at ? f - 1 : Math.min(f, rest.length - 1)));
+      return;
     }
+    const next = list[0] ?? (await createChat(notebook.id));
+    if (!list[0]) await refreshChats();
+    setPanes((cur) => cur.map((p, j) => (j === at ? { ...p, chatId: next.id } : p)));
   };
-
-  /** `/clear` in chat — delete the active thread; a fresh one is auto-selected. */
-  const handleClearChat = async () => {
-    if (!activeChatId) return;
-    await handleDeleteChat(activeChatId);
-  };
-
-  const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
   // Each panel is built once and placed in whichever layout this screen uses.
   const header = (
@@ -429,6 +517,7 @@ export default function NotebookView({
     <ChatsPanel
       chats={chats}
       activeChatId={activeChatId}
+      openChatIds={panes.length > 1 ? panes.map((p) => p.chatId) : undefined}
       onSelect={(chatId) => {
         setActiveChatId(chatId);
         setChatsOpen(false);
@@ -449,24 +538,44 @@ export default function NotebookView({
     />
   );
 
-  const chatPanel = (
+  const panesFor = phone ? panes.slice(focusIdx, focusIdx + 1) : panes;
+  /** Settings as a pane sees them: its own model swapped in (one stable object per model). */
+  const settingsFor = useMemo(() => {
+    const cache = new Map<string, Settings>();
+    return (model: string) => {
+      if (model === settings.model) return settings;
+      if (!cache.has(model)) cache.set(model, { ...settings, model });
+      return cache.get(model)!;
+    };
+  }, [settings]);
+  const chatPanelFor = (pane: Pane, i: number) => {
+    const chat = chats.find((c) => c.id === pane.chatId);
+    const model = paneModel(pane);
+    const own = panes.length > 1 && !phone;
+    return (
     <ChatPanel
+      key={pane.id}
       notebookId={notebook.id}
-      chatId={activeChatId}
+      chatId={pane.chatId}
       notebookTitle={notebook.title}
       notebookFolderId={notebook.folder_id}
-      chatTitle={activeChat?.title ?? ""}
+      chatTitle={chat?.title ?? ""}
       sources={sources}
       artifacts={artifacts}
-      settings={settings}
+      settings={settingsFor(model)}
       onOpenSettings={onOpenSettings}
       onChatActivity={handleChatActivity}
       onAddFiles={handleChatFiles}
       onNotebookMoved={onNotebookMoved}
-      onNewChat={newChat}
+      onNewChat={async () => {
+        setFocusedPane(i);
+        const c = await createChat(notebook.id);
+        await refreshChats();
+        setPanes((cur) => cur.map((p, j) => (j === i ? { ...p, chatId: c.id } : p)));
+      }}
       onAddNote={handleAddNote}
       onAddLink={handleAddLink}
-      onClearChat={handleClearChat}
+      onClearChat={() => handleDeleteChat(pane.chatId)}
       onReturnHome={onBack}
       onSettingsChanged={onSettingsChanged}
       onStudioCommand={(cmd) => {
@@ -486,8 +595,14 @@ export default function NotebookView({
         onNotebookMoved();
       }}
       onShowChats={phone ? () => setChatsOpen(true) : undefined}
+      onSetModel={own ? (id) => setPaneModel(i, id) : undefined}
+      onSplit={!phone && panes.length < MAX_PANES ? () => void addPane() : undefined}
+      onClosePane={own ? () => void closePane(i) : undefined}
+      focused={!own || i === focusIdx}
+      onFocusPane={own && i !== focusIdx ? () => setFocusedPane(i) : undefined}
     />
-  );
+    );
+  };
 
   const studioPanel = (
     <StudioPanel
@@ -552,7 +667,7 @@ export default function NotebookView({
         {sharedBanner}
         <div className="relative min-h-0 flex-1">
           <div className={`absolute inset-0 flex flex-col bg-panel ${tab === "sources" ? "" : "hidden"}`}>{sourcesPanel}</div>
-          <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{chatPanel}</div>
+          <div className={`absolute inset-0 flex flex-col ${tab === "chat" ? "" : "hidden"}`}>{panesFor.map((p) => chatPanelFor(p, focusIdx))}</div>
           <div className={`absolute inset-0 flex flex-col ${tab === "studio" ? "" : "hidden"}`}>{studioPanel}</div>
         </div>
         {/* The audio player docks here, above the tabs, instead of floating over them. */}
@@ -633,7 +748,11 @@ export default function NotebookView({
           }}
           className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
         />
-        {chatPanel}
+        {panesFor.map((p, i) => (
+          <div key={p.id} className={`flex h-full min-w-0 flex-1 ${i > 0 ? "border-l border-edge-soft" : ""}`}>
+            {chatPanelFor(p, i)}
+          </div>
+        ))}
         <div
           role="separator"
           aria-label="Resize studio panel"

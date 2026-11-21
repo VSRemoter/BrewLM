@@ -7,13 +7,21 @@ import { useMemo, useSyncExternalStore } from "react";
 import { hasStudioJobs, useAllStudioJobs } from "./studioJobs";
 
 let streaming = new Set<string>();
+/** Which chat panes of each notebook are streaming (a notebook can show up to three side by side). */
+const streamingPanes = new Map<string, Set<string>>();
 const listeners = new Set<() => void>();
 
-/** ChatPanel reports when its reply starts and stops streaming. */
-export function setChatStreaming(notebookId: string, on: boolean): void {
-  if (streaming.has(notebookId) === on) return;
+/** ChatPanel reports when its reply starts and stops streaming; `pane` tells side-by-side chats apart. */
+export function setChatStreaming(notebookId: string, on: boolean, pane = ""): void {
+  const panes = streamingPanes.get(notebookId) ?? new Set<string>();
+  if (on) panes.add(pane);
+  else panes.delete(pane);
+  if (panes.size) streamingPanes.set(notebookId, panes);
+  else streamingPanes.delete(notebookId);
+  const busy = panes.size > 0;
+  if (streaming.has(notebookId) === busy) return;
   streaming = new Set(streaming);
-  if (on) streaming.add(notebookId);
+  if (busy) streaming.add(notebookId);
   else streaming.delete(notebookId);
   for (const l of listeners) l();
 }
