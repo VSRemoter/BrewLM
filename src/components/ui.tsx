@@ -28,7 +28,7 @@ export function Modal({
   return (
     // On a phone the dialog is a sheet along the bottom edge, clear of the home indicator.
     <div
-      className="anim-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[2px] md:items-center"
+      className="anim-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[6px] md:items-center"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
