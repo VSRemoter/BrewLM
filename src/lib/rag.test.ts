@@ -43,7 +43,7 @@ vi.mock("./llm", () => ({
   },
 }));
 
-const { condenseNotebook, embedTargets } = await import("./rag");
+const { condenseNotebook, embedTargets, excerptByRelevance } = await import("./rag");
 
 let n = 0;
 /** Three 20k-char sources: over the condense target, so the model is called. */
@@ -127,5 +127,22 @@ describe("local embeddings", () => {
 
   it("use keyword search with no embedding model, and never a cloud key", () => {
     expect(embedTargets(local({ localEmbedModel: "", openrouterKey: "or-key" }))).toEqual([]);
+  });
+});
+
+describe("excerptByRelevance", () => {
+  const filler = (word: string, n: number) => Array.from({ length: n }, (_, i) => `${word} sentence number ${i}.`).join(" ");
+  const doc = `Intro to the review. ${filler("alpha", 60)} The binomial distribution counts successes in n trials. ${filler("gamma", 60)}`;
+  it("keeps the opening and the matching part, in reading order, within the cap", () => {
+    const got = excerptByRelevance([{ label: "Review", text: doc }], "binomial distribution", 3000);
+    const text = got.map((c) => c.text).join(" ");
+    expect(text.startsWith("Intro to the review.")).toBe(true);
+    expect(text).toContain("binomial distribution");
+    expect(got.reduce((n, c) => n + c.text.length + 8, 0)).toBeLessThanOrEqual(3000);
+    expect(got.map((c) => c.seq)).toEqual([...got.map((c) => c.seq)].sort((a, b) => a - b));
+  });
+  it("with no matching words, reads from the start", () => {
+    const got = excerptByRelevance([{ label: "Review", text: doc }], "zzz", 1500);
+    expect(got[0].seq).toBe(0);
   });
 });

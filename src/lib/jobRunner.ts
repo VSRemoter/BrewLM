@@ -50,6 +50,7 @@ import { CONSTITUTION_TEMPLATES, CONSTITUTION_TITLE } from "./constitution";
 import { reviseOutput } from "./revise";
 import { parseStudioCommand } from "./studioCommands";
 import { artifactText, buildMentionCatalog, exportName, resolveMentions, type MentionItem } from "./mentions";
+import { mentionsForTurn, prepareMentions } from "./mentionLinks";
 import { complete, extractJson, isAbortError, streamChat, type StreamUsage } from "./llm";
 import {
   cloneReply,
@@ -737,14 +738,10 @@ async function runChatJob(p: {
     const key = activeKey(settings);
     if (!key) throw new Error(noKeyMessage(settings));
     const isSummarize = SUMMARIZE_RE.test(text);
-    // Mentions from recent user turns keep their priority across follow-ups.
-    const mentioned = resolveMentions(
-      history
-        .filter((m) => m.role === "user")
-        .slice(-8)
-        .map((m) => m.content)
-        .join("\n"),
-      catalog
+    // Mentions from recent user turns keep their priority across follow-ups —
+    // including items picked on the computer from other notebooks.
+    const mentionedRaw = await mentionsForTurn(history, catalog, p.notebook_id).catch(() =>
+      resolveMentions(history.filter((m) => m.role === "user").slice(-8).map((m) => m.content).join("\n"), catalog)
     );
     const sources = await withoutConstitutionIfOff(p.notebook_id, allSources);
     // Same prompt layout as desktop chat: a notebook that fits is sent whole and
@@ -762,7 +759,7 @@ async function runChatJob(p: {
         } else {
           await ensureIndexed(sources, settings);
           const ranked = await rankChunks(sources, p.content, settings, budget.sources);
-          const mentionedIds = new Set(mentioned.filter((m) => m.group === "source").map((m) => m.id));
+          const mentionedIds = new Set(mentionedRaw.filter((m) => m.group === "source").map((m) => m.id));
           const filtered = ranked.filter((r) => !mentionedIds.has(r.sourceId));
           if (filtered.length) retrieved = filtered;
         }
@@ -770,6 +767,13 @@ async function runChatJob(p: {
         console.warn("rag: retrieval skipped", e);
       }
     }
+    const mentioned = await prepareMentions(mentionedRaw, {
+      query: p.content,
+      settings,
+      budget,
+      localSources: sources,
+      inline: (m) => whole && m.group === "source" && !m.notebookId && sources.some((s) => s.id === m.id && isRetrievable(s)),
+    }).catch(() => mentionedRaw);
     const system = buildSystemParts(sources, mentioned, retrieved, { grounded, budget, whole });
     const turns = selectChatHistory(history, budget.history);
     let acc = "";

@@ -46,3 +46,31 @@ describe("system prompt for caching", () => {
     expect(wholeNotebookFits([], 1000)).toBe(false);
   });
 });
+
+describe("@-mentions from other notebooks", () => {
+  const away = {
+    id: "p1",
+    title: "Probability review",
+    group: "output",
+    type: "report",
+    text: "Bayes: P(A|B) = P(B|A)P(A)/P(B)",
+    notebookId: "stats",
+    notebookTitle: "Stats 101",
+    prepared: true,
+  } as never;
+  it("says which notebook it came from and how to cite it", () => {
+    const { stable, volatile } = buildSystemParts([a], [away], undefined, { whole: true });
+    expect(stable).not.toContain("Probability review");
+    expect(volatile).toContain('### @Probability review (Output · report · from your notebook "Stats 101")');
+    expect(volatile).toContain("P(A|B)");
+    expect(volatile).toContain("name that notebook too");
+  });
+  it("a deleted pick tells the model not to guess", () => {
+    const gone = { id: "x", title: "Old notes", group: "source", type: "pdf", text: null, missing: "was deleted" } as never;
+    expect(buildSystemParts([a], [gone]).volatile).toContain("This source was deleted");
+  });
+  it("a whole notebook is labelled as one", () => {
+    const nb = { id: "stats", title: "Stats 101", group: "notebook", type: "notebook", text: "Contents — 2 sources", notebookId: "stats", excerpt: true } as never;
+    expect(buildSystemParts([a], [nb]).volatile).toContain('### @Stats 101 (Your notebook "Stats 101" · the parts most relevant to this message)');
+  });
+});
