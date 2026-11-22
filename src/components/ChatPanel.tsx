@@ -11,7 +11,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Columns2,
   Copy,
   ExternalLink,
   FilePlus2,
@@ -45,7 +44,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   addMessage,
   listFolders,
@@ -972,7 +971,8 @@ export default function ChatPanel({
   onChatBgChange,
   onShowChats,
   onSetModel,
-  onSplit,
+  headerTools,
+  onTitlePointerDown,
   onClosePane,
   focused = true,
   onFocusPane,
@@ -1026,8 +1026,10 @@ export default function ChatPanel({
   onShowChats?: () => void;
   /** Side-by-side chats: this pane's own model. Given, /model and the model menu change only this pane. */
   onSetModel?: (id: string) => void;
-  /** Open another chat beside this one (absent once three are open). */
-  onSplit?: () => void;
+  /** Extra header buttons (the layout menu). */
+  headerTools?: ReactNode;
+  /** Side by side: pressing the title starts dragging this chat to another place. */
+  onTitlePointerDown?: (e: ReactPointerEvent) => void;
   /** Close this pane (the chat itself is kept). Absent when it's the only pane. */
   onClosePane?: () => void;
   /** With several panes: the one the chat list and new chats act on. */
@@ -2904,7 +2906,13 @@ export default function ChatPanel({
                 title={focused ? "The chat list opens chats here" : undefined}
               />
             )}
-            <span className="truncate">Chat{chatTitle ? ` · ${chatTitle}` : ""}</span>
+            <span
+              className={`truncate ${onTitlePointerDown ? "cursor-grab active:cursor-grabbing" : ""}`}
+              onPointerDown={onTitlePointerDown}
+              title={onTitlePointerDown ? "Drag to move this chat" : undefined}
+            >
+              Chat{chatTitle ? ` · ${chatTitle}` : ""}
+            </span>
           </span>
         )}
         <div className="flex shrink-0 items-center gap-1">
@@ -2921,11 +2929,7 @@ export default function ChatPanel({
               <Settings2 size={11} /> {settings.provider === "local" ? "Set up local server" : settings.provider === "brewlm" ? "Sign in for BrewLM AI" : "Add API key"}
             </button>
           )}
-          {onSplit && (
-            <IconButton onClick={onSplit} label="Open another chat side by side">
-              <Columns2 size={14} strokeWidth={1.8} />
-            </IconButton>
-          )}
+          {headerTools}
           {onClosePane && (
             <IconButton onClick={onClosePane} label="Close this chat pane">
               <X size={15} strokeWidth={1.8} />
