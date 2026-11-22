@@ -15,6 +15,12 @@
 import { platform } from "../platform";
 
 export const BLOB_PREFIX = "brewblob:";
+/**
+ * Largest file Sync can upload: the server takes 100 MB per file, and each
+ * file gains a few bytes when encrypted. Bigger files stay on the device they
+ * were added on (sync.ts `tooLarge`, shown in Settings → Data & Storage).
+ */
+export const MAX_SYNC_FILE_BYTES = 100 * 1024 * 1024 - 64;
 const REF_RE = /brewblob:[0-9a-f]{64}\.[a-z0-9]{1,5}/g;
 
 /** Extensions the store uses; mimes outside this list stay inline. */
@@ -88,6 +94,19 @@ export function mediaSrc(v: string): string {
   const name = v.slice(BLOB_PREFIX.length);
   const url = platform.blobs.url(name);
   return arrived.has(name) ? `${url}?arrived` : url;
+}
+
+/** A stored file's size on this device, without reading it (a one-byte range request); 0 if it isn't here. */
+export async function mediaFileSize(name: string): Promise<number> {
+  try {
+    if (platform.kind === "web" && (await platform.blobs.missing([name])).length > 0) return 0;
+    const res = await fetch(mediaSrc(`${BLOB_PREFIX}${name}`), { headers: { range: "bytes=0-0" } });
+    const total = /\/(\d+)$/.exec(res.headers.get("content-range") ?? "")?.[1];
+    if (total) return Number(total);
+    return Number(res.headers.get("content-length") ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 export async function mediaBlob(v: string): Promise<Blob> {

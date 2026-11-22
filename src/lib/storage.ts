@@ -10,8 +10,7 @@
  * the space is freed within a sync cycle or two.
  */
 import { useEffect, useState } from "react";
-import { platform } from "../platform";
-import { BLOB_PREFIX, blobRefsIn, mediaSrc } from "./blobs";
+import { BLOB_PREFIX, blobRefsIn, mediaFileSize } from "./blobs";
 import {
   deleteArtifact,
   deleteImage,
@@ -22,7 +21,7 @@ import {
   setNotebookChatBg,
   setNotebookCover,
 } from "./db";
-import { requestStorageSweep, syncedSizes } from "./sync";
+import { filesTooLargeToSync, requestStorageSweep, syncedSizes } from "./sync";
 
 export type StorageKind = "source" | "artifact" | "image" | "cover" | "chat-bg" | "folder-cover";
 
@@ -39,6 +38,8 @@ export interface StorageItem {
   bytes: number;
   /** Some of its files are also used by another item: deleting frees less. */
   shared: boolean;
+  /** Some of its files are over Sync's per-file limit: they stay on this device only. */
+  tooLargeToSync: boolean;
 }
 
 interface Candidate {
@@ -161,18 +162,7 @@ async function candidates(): Promise<Candidate[]> {
   return out;
 }
 
-/** A file's size on this device, without reading it (a one-byte range request); 0 if it isn't here. */
-async function localFileSize(name: string): Promise<number> {
-  try {
-    if (platform.kind === "web" && (await platform.blobs.missing([name])).length > 0) return 0;
-    const res = await fetch(mediaSrc(`${BLOB_PREFIX}${name}`), { headers: { range: "bytes=0-0" } });
-    const total = /\/(\d+)$/.exec(res.headers.get("content-range") ?? "")?.[1];
-    if (total) return Number(total);
-    return Number(res.headers.get("content-length") ?? 0);
-  } catch {
-    return 0;
-  }
-}
+const localFileSize = mediaFileSize;
 
 /** The library's items, largest first; `synced` tells whether sizes are Sync's server-side counts. */
 export async function largestItems(limit = 50): Promise<{ items: StorageItem[]; synced: boolean }> {
@@ -183,9 +173,13 @@ export async function largestItems(limit = 50): Promise<{ items: StorageItem[]; 
   const labels = all.map((c) => c.label).filter(Boolean);
 
   const server = await syncedSizes(fileNames, labels).catch(() => null);
+  const tooLarge = filesTooLargeToSync();
   const fileSize = new Map<string, number>();
-  if (server) for (const [n, b] of server.files) fileSize.set(n, b);
-  else
+  if (server) {
+    for (const [n, b] of server.files) fileSize.set(n, b);
+    // Not on the server, so Sync has no size for them: count what they take here.
+    for (const n of fileNames) if (tooLarge.has(n)) fileSize.set(n, await localFileSize(n));
+  } else
     for (let i = 0; i < fileNames.length; i += 16) {
       const batch = fileNames.slice(i, i + 16);
       const sizes = await Promise.all(batch.map(localFileSize));
@@ -205,6 +199,7 @@ export async function largestItems(limit = 50): Promise<{ items: StorageItem[]; 
       inTrash: c.inTrash,
       bytes: fileBytes + rowBytes,
       shared: files.some((f) => (fileUse.get(f) ?? 0) > 1),
+      tooLargeToSync: files.some((f) => tooLarge.has(f)),
     };
   });
   items.sort((a, b) => b.bytes - a.bytes);

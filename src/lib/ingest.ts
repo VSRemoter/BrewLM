@@ -1,6 +1,6 @@
 /** Shared file ingestion: turns dropped/picked files into notebook sources. */
 
-import { putBlob } from "./blobs";
+import { MAX_SYNC_FILE_BYTES, putBlob } from "./blobs";
 import { addSource } from "./db";
 import { extractFileText } from "./extractors";
 import { describeImage, TRANSCRIPT_ONLY, transcribeAudio } from "./media";
@@ -9,7 +9,36 @@ import { loadSettings } from "./settings";
 import { classifyFile, extractPdfText, readFileAsDataUrl } from "./source";
 import type { Source } from "./types";
 
-const MAX_BINARY_BYTES = 8 * 1024 * 1024; // 8 MB for originals kept as-is (images, audio that couldn't be compressed)
+const MB = 1024 * 1024;
+const MAX_BINARY_BYTES = 8 * MB; // 8 MB for originals kept as-is (images, audio that couldn't be compressed)
+
+/**
+ * PDFs, documents and images are read whole into memory before anything
+ * else happens, so a huge one could freeze or crash the app. Files over these
+ * are refused by their size alone, without reading them. (Audio and video are
+ * read in pieces and have no such limit.)
+ */
+export const MAX_READ_BYTES: Partial<Record<Source["type"], number>> = {
+  pdf: 200 * MB,
+  text: 100 * MB,
+  file: 100 * MB,
+  image: 50 * MB,
+};
+const READ_KIND: Partial<Record<Source["type"], string>> = { pdf: "PDFs", text: "Documents", file: "Documents", image: "Images" };
+
+/** Why a file is refused before it's read, or null when its size is fine. */
+export function tooLargeToRead(type: Source["type"], name: string, size: number): string | null {
+  const limit = MAX_READ_BYTES[type];
+  if (!limit || size <= limit) return null;
+  return `${name} is ${Math.round(size / MB).toLocaleString()} MB. ${READ_KIND[type]} can be up to ${limit / MB} MB, so it wasn't added.`;
+}
+
+/** "5 h 12 min" */
+function hoursMinutes(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
 
 export interface IngestResult {
   added: Source[];
@@ -26,6 +55,11 @@ export async function ingestFiles(
   const settings = await loadSettings();
   for (const file of Array.from(files)) {
     const type = classifyFile(file);
+    const refused = tooLargeToRead(type, file.name, file.size);
+    if (refused) {
+      errors.push(refused);
+      continue;
+    }
     onBusy?.(file.name);
     try {
       if (type === "pdf") {
@@ -74,6 +108,11 @@ export async function ingestFiles(
         if (keep && media.recording) {
           content = await putBlob(media.recording.bytes, "m4a");
           mime = "audio/mp4";
+          // Over about 4½ hours the compressed recording passes Sync's file limit: it stays here (sync.ts skips it).
+          if (media.recording.bytes.length > MAX_SYNC_FILE_BYTES)
+            errors.push(
+              `${file.name}: added. Its recording is ${hoursMinutes(media.recording.duration)} (${Math.round(media.recording.bytes.length / MB)} MB), over Sync's 100 MB limit, so it plays only on this device. The transcript syncs as usual.`
+            );
         } else if (keep && file.size <= MAX_BINARY_BYTES) {
           content = await readFileAsDataUrl(file);
         } else if (keep) {
