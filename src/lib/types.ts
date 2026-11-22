@@ -77,6 +77,8 @@ export interface ChatMessage {
   chat_id: string | null;
   role: "user" | "assistant";
   content: string;
+  /** @-mentions picked from the menu, as MentionRef JSON ("" or absent = none; see mentions.ts). */
+  mentions?: string;
   created_at: number;
 }
 

@@ -66,9 +66,21 @@ import { renderMarkdown } from "../lib/markdown";
 import { hydrateMermaid } from "../lib/mermaid";
 import {
   buildMentionCatalog,
+  keptRefs,
+  mentionBudget,
+  mentionLabel,
+  parseMentionRefs,
+  pickerRows,
   resolveMentions,
+  scopePath,
   segmentMentions,
+  serializeMentionRefs,
+  shareBudget,
+  type MentionIndex,
   type MentionItem,
+  type MentionRef,
+  type PickerRow,
+  type ScopeHint,
 } from "../lib/mentions";
 import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { aiBlock, AI_TIERS, brewlmModelLabel, costLabel, costVsFast, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
@@ -84,6 +96,7 @@ import {
 } from "../lib/genImage";
 import { isImageApiModel } from "../lib/imageApi";
 import { ensureIndexed, inDocumentOrder, isRetrievable, rankChunks, wholeNotebookFits, type RetrievedChunk } from "../lib/rag";
+import { catalogToIndex, loadAwayText, loadMentionIndex, lookupRefs, mentionsForTurn, prepareMentions, refItems } from "../lib/mentionLinks";
 import { imageRoute } from "../lib/featureRoute";
 import { cloudJobs, ensureMediaText } from "../lib/media";
 import {
@@ -147,8 +160,8 @@ import { FONTS, chooseFont } from "../lib/fonts";
 import type { Artifact, ChatMessage, Folder, Settings, Source, Thinking } from "../lib/types";
 import { BrewingStatus, IconButton } from "./ui";
 
-const MAX_MENTION_CHARS = 8000;
 const HISTORY_LIMIT = 16;
+const EMPTY_INDEX: MentionIndex = { notebooks: [], folders: [], items: [] };
 
 /** Empty-chat inspiration: one quote is picked each time a new chat opens. */
 const CHAT_QUOTES: { text: string; author: string }[] = [
@@ -861,28 +874,35 @@ export function buildSystemParts(
   }
 
   // @-mentions tail the prompt: they vary per message, and anything before
-  // them stays byte-stable for provider prompt caching.
+  // them stays byte-stable for provider prompt caching. Items from other
+  // notebooks arrive already prepared (mentionLinks.prepareMentions: their
+  // text read from the database, long ones cut to their most relevant parts).
   if (mentioned.length > 0) {
-    let budget = budgetCaps.mentions;
-    const sections: string[] = [];
-    for (const m of mentioned) {
-      if (budget <= 0) break;
-      const cap = Math.min(MAX_MENTION_CHARS, budget);
-      // Its full text is already in the sources above: point at it, don't repeat it.
-      const body = whole && m.group === "source" && inKnowledge.has(m.id)
+    // Its full text is already in the sources above: point at it, don't repeat it.
+    const inline = (m: MentionItem) => whole && m.group === "source" && !m.notebookId && inKnowledge.has(m.id);
+    const needs = mentioned.map((m) => (m.missing || inline(m) ? 0 : m.text?.length ?? 0));
+    const caps = shareBudget(needs, mentionBudget(budgetCaps, mentioned));
+    const sections = mentioned.map((m, i) => {
+      const noun = m.group === "notebook" ? "notebook" : m.group === "source" ? "source" : "output";
+      const body = m.missing
+        ? `[This ${noun} ${m.missing}, so its contents can't be read. Tell the user; don't guess what it said.]`
+        : inline(m)
         ? "[Its full text is in the Sources section above.]"
         : m.text
-        ? m.text.length > cap
-          ? m.text.slice(0, cap) + "\n[…truncated]"
+        ? m.text.length > caps[i]
+          ? m.text.slice(0, caps[i]) + "\n[…truncated]"
           : m.text
+        : m.group === "notebook"
+        ? "[Nothing in this notebook has readable text.]"
         : "[No readable text — this is a binary/media file; acknowledge it by title, but don't invent its contents.]";
-      sections.push(
-        `### @${m.title} (${m.group === "source" ? "Source" : "Output"} · ${m.type})\n${body}`
-      );
-      budget -= body.length;
-    }
+      return `### @${m.title} (${mentionLabel(m)})\n${body}`;
+    });
+    const away = mentioned.some((m) => m.notebookId && !m.missing);
+    const cite = away
+      ? ` For material from another notebook, name that notebook too, e.g. (Source: Probability review, from "Stats 101") — it isn't part of this notebook; the user brought it in for this conversation.`
+      : "";
     tail.push(
-      `# @-mentioned materials — PRIORITY\nThe user pointed at these with @, so focus on them and cite them by title:\n\n${sections.join("\n\n")}`
+      `# @-mentioned materials — PRIORITY\nThe user pointed at these with @, so focus on them and cite them by title.${cite}\n\n${sections.join("\n\n")}`
     );
   }
 
@@ -958,6 +978,7 @@ export default function ChatPanel({
   onNewChat,
   onAddNote,
   onAddLink,
+  onOpenNotebook,
   onClearChat,
   onReturnHome,
   onSettingsChanged,
@@ -998,6 +1019,8 @@ export default function ChatPanel({
   onAddNote: (text: string, title?: string) => Promise<Source>;
   /** /url command — NotebookView fetches + saves the page as a link source. */
   onAddLink: (url: string) => Promise<Source>;
+  /** Go to another notebook (an @mention chip from another notebook). */
+  onOpenNotebook?: (id: string) => void;
   /** /clear command — NotebookView deletes the active chat thread. */
   onClearChat: () => void | Promise<void>;
   /** /return command — NotebookView exits to the homepage. */
@@ -1127,7 +1150,12 @@ export default function ChatPanel({
     onSettingsChanged();
     textareaRef.current?.focus();
   };
-  const [mention, setMention] = useState<{ start: number; query: string; active: number } | null>(null);
+  /** The open @ menu: where its "@" sits, what follows it, the highlighted row, and the folder/notebook opened by picking a row. */
+  const [mention, setMention] = useState<{ start: number; query: string; active: number; hint?: ScopeHint } | null>(null);
+  /** Items picked from the @ menu for the draft, by id — saved with the message (messages.mentions). */
+  const [draftRefs, setDraftRefs] = useState<MentionRef[]>([]);
+  /** Every notebook's titles for the @ menu (mentionLinks.loadMentionIndex). */
+  const [mentionIndex, setMentionIndex] = useState<MentionIndex | null>(null);
   const [cmdQuery, setCmdQuery] = useState<{ query: string; active: number } | null>(null);
   const [moveQuery, setMoveQuery] = useState<{ query: string; active: number } | null>(null);
   const [themeQuery, setThemeQuery] = useState<{ query: string; active: number } | null>(null);
@@ -1252,27 +1280,145 @@ export default function ChatPanel({
     () => new Set(sources.filter((s) => s.type === "link" && s.mime).map((s) => urlKey(s.mime!))),
     [sources]
   );
-  const mentionHits = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.query.trim().toLowerCase();
-    const all = q ? catalog.filter((c) => c.title.toLowerCase().includes(q)) : catalog;
-    return all.slice(0, 8);
-  }, [mention, catalog]);
+  const mentionOpen = mention !== null;
+  // Loaded with the panel (so the first "@" already searches everything) and
+  // refreshed each time the menu opens; the last copy serves until then.
+  useEffect(() => {
+    let live = true;
+    loadMentionIndex()
+      .then((ix) => live && setMentionIndex(ix))
+      .catch((e) => console.warn("mentions: index failed", e));
+    return () => {
+      live = false;
+    };
+  }, [mentionOpen]);
+  // A cleared composer forgets what was picked for it.
+  useEffect(() => {
+    if (!draft) setDraftRefs([]);
+  }, [draft]);
+  const localIndex = useMemo(() => catalogToIndex(catalog, notebookId), [catalog, notebookId]);
+  const picker = useMemo(
+    () => (mention ? pickerRows(mentionIndex ?? EMPTY_INDEX, mention.query, notebookId, localIndex, mention.hint) : null),
+    [mention, mentionIndex, notebookId, localIndex]
+  );
+  const mentionHits = picker?.rows ?? [];
   const activeIdx = Math.min(mention?.active ?? 0, Math.max(mentionHits.length - 1, 0));
 
-  const acceptMention = (item: MentionItem) => {
+  /** Each user message's @ menu picks. */
+  const messageRefs = useMemo(() => {
+    const out = new Map<string, MentionRef[]>();
+    for (const m of messages) if (m.role === "user" && m.mentions) out.set(m.id, parseMentionRefs(m.mentions));
+    return out;
+  }, [messages]);
+  /** Picks from other notebooks (or whole notebooks), looked up live: title now, notebook, or gone. */
+  const [awayRefs, setAwayRefs] = useState<Map<string, MentionItem>>(new Map());
+  const awayKey = useMemo(
+    () =>
+      [...new Set([...messageRefs.values()].flat().filter((r) => r.kind === "notebook" || r.notebookId !== notebookId).map((r) => r.id))]
+        .sort()
+        .join(","),
+    [messageRefs, notebookId]
+  );
+  useEffect(() => {
+    if (!awayKey) return;
+    let live = true;
+    lookupRefs([...messageRefs.values()].flat(), notebookId)
+      .then((m) => live && setAwayRefs(m))
+      .catch((e) => console.warn("mentions: lookup failed", e));
+    return () => {
+      live = false;
+    };
+    // messageRefs is read for its current value; awayKey says when it matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [awayKey, notebookId, mentionIndex]);
+  /** What each user message's "@…" chips point at: its picks first, then this notebook by name. */
+  const bubbleItems = useMemo(() => {
+    const out = new Map<string, MentionItem[]>();
+    for (const [id, refs] of messageRefs) out.set(id, [...refItems(refs, notebookId, catalog, awayRefs), ...catalog]);
+    return out;
+  }, [messageRefs, notebookId, catalog, awayRefs]);
+  /** "Save a copy here": another notebook's source or output becomes a text source in this one. */
+  const saveMentionCopy = async (item: MentionItem) => {
+    const [full] = await loadAwayText([item]);
+    if (!full?.text?.trim()) throw new Error("Nothing readable to copy");
+    await onAddNote(full.text, item.title);
+  };
+
+  /**
+   * A mention just inserted: its "@" and text. Moving the caret or typing
+   * after it must not reopen the menu on it (a second Enter would insert it
+   * again); a new "@" does.
+   */
+  const insertedRef = useRef<{ start: number; query: string } | null>(null);
+  /**
+   * The composer text a pick just set. A selection event can arrive before
+   * the box shows it, carrying the old "@query" — that one is ignored.
+   */
+  const pendingTextRef = useRef<string | null>(null);
+  /**
+   * The "@query" at the caret, unless it's the mention just inserted (and
+   * what's typed after it). `undefined` = a stale selection event: change nothing.
+   */
+  const openMention = (value: string, caret: number, fromSelect = false) => {
+    if (pendingTextRef.current !== null) {
+      if (fromSelect && value !== pendingTextRef.current) return undefined;
+      pendingTextRef.current = null;
+    }
+    const hit = detectMention(value, caret);
+    const done = insertedRef.current;
+    if (hit && done && hit.start === done.start && hit.query.startsWith(done.query)) return null;
+    if (!hit || hit.start !== done?.start) insertedRef.current = null;
+    return hit;
+  };
+
+  /** Put `insert` where the "@query" is; keep the menu open on a scope when browsing into one. */
+  const replaceMention = (insert: string, browse?: ScopeHint) => {
     if (!mention) return;
     const ta = textareaRef.current;
-    const caret = ta?.selectionStart ?? draft.length;
-    setDraft(draft.slice(0, mention.start) + `@${item.title} ` + draft.slice(caret));
-    setMention(null);
-    const pos = mention.start + item.title.length + 2;
+    // The textarea's own value: a fast second key can beat the re-render.
+    const value = ta?.value ?? draft;
+    // Replace exactly the "@query" the menu shows, wherever the caret is.
+    const end = Math.min(value.length, mention.start + 1 + mention.query.length);
+    const next = value.slice(0, mention.start) + insert + value.slice(end);
+    pendingTextRef.current = next;
+    setDraft(next);
+    insertedRef.current = browse ? null : { start: mention.start, query: insert.slice(1) };
+    setMention(browse ? { start: mention.start, query: insert.slice(1), active: 0, hint: browse } : null);
+    const pos = mention.start + insert.length;
     requestAnimationFrame(() => {
-      if (!ta) return;
+      if (!ta || ta.value !== next) return; // typed on since: leave the caret alone
       ta.focus();
       ta.setSelectionRange(pos, pos);
       autoSize(ta);
     });
+  };
+
+  const acceptMention = (row: PickerRow) => {
+    if (!mention) return;
+    switch (row.kind) {
+      case "item": {
+        const { item } = row;
+        replaceMention(`@${item.title} `);
+        setDraftRefs((r) => [...r, { kind: item.group, id: item.id, notebookId: item.notebookId, title: item.title }]);
+        return;
+      }
+      case "whole":
+        replaceMention(`@${row.notebook.title} `);
+        setDraftRefs((r) => [...r, { kind: "notebook", id: row.notebook.id, notebookId: row.notebook.id, title: row.notebook.title }]);
+        return;
+      case "notebook": {
+        // From inside a folder the path keeps the folder: "@Courses/Stats 101/".
+        const folder = picker?.scope?.folder;
+        const path = scopePath(folder, row.notebook);
+        replaceMention(`@${path}`, { path, folderId: folder?.id, notebookId: row.notebook.id });
+        return;
+      }
+      case "folder": {
+        const path = scopePath(row.folder, undefined);
+        replaceMention(`@${path}`, { path, folderId: row.folder.id });
+        return;
+      }
+    }
   };
 
   /* ---------------------------- / command palette ---------------------------- */
@@ -1980,6 +2126,8 @@ export default function ChatPanel({
 
   /** FIFO of queued prompts/commands. Ref mirrors state for drain loops. */
   const queueRef = useRef<string[]>([]);
+  /** @ menu picks for queued payloads, by payload text. */
+  const queuedRefsRef = useRef(new Map<string, MentionRef[]>());
   const [queue, setQueue] = useState<string[]>([]);
   /** Chats with a reply in flight — mirrors `streams` synchronously so chained sends aren't blocked by a stale closure. */
   const streamingRef = useRef(new Set<string>());
@@ -2168,7 +2316,7 @@ export default function ChatPanel({
    * loop calls this in sequence; `streamingRef` mirrors the LLM busy state
    * synchronously so a chained runSend never hits a stale-closure block.
    */
-  const runSend = async (text: string, opts?: { imageId?: string }): Promise<void> => {
+  const runSend = async (text: string, opts?: { imageId?: string; refs?: MentionRef[] }): Promise<void> => {
     if (!text || !chatId || streamingRef.current.has(chatId)) return;
     setError(null);
     // First "real" user message = first that isn't a /queue command — lets a
@@ -2177,7 +2325,7 @@ export default function ChatPanel({
       (m) => m.role === "user" && !/^\/queue(\s|$)/i.test(m.content)
     );
 
-    const userMsg = await addMessage(chatId, notebookId, "user", text);
+    const userMsg = await addMessage(chatId, notebookId, "user", text, serializeMentionRefs(opts?.refs ?? []));
     const history = [...messagesRef.current, userMsg];
     setMsgs(history);
 
@@ -2496,7 +2644,11 @@ export default function ChatPanel({
             query,
             settings,
             sources,
-            mentioned: resolveMentions(query, catalog),
+            mentioned: await mentionsForTurn([userMsg], catalog, notebookId)
+              .then((items) =>
+                prepareMentions(items, { query, settings, budget: contextBudget(settings), localSources: sources })
+              )
+              .catch(() => resolveMentions(query, catalog)),
             grounded: (notebookGrounded ?? 1) !== 0,
             constitution: (notebookConstitutionOn ?? 1) !== 0,
             signal: ctrl.signal,
@@ -2594,14 +2746,11 @@ export default function ChatPanel({
     abortRef.current.set(chatId, ctrl);
 
     // Mentions from recent user turns keep their priority across follow-ups.
-    const mentioned = resolveMentions(
-      history
-        .filter((m) => m.role === "user")
-        .slice(-8)
-        .map((m) => m.content)
-        .join("\n"),
-      catalog
-    );
+    // Picked items are found by id (in any notebook); typed "@Title" by name here.
+    const mentioned = await mentionsForTurn(history, catalog, notebookId).catch((e) => {
+      console.warn("mentions: lookup failed", e);
+      return resolveMentions(history.filter((m) => m.role === "user").slice(-8).map((m) => m.content).join("\n"), catalog);
+    });
 
     // Sources. A notebook that fits the budget goes whole (no ranking, and a
     // prompt that stays identical, so it's served from the prompt cache).
@@ -2638,7 +2787,19 @@ export default function ChatPanel({
     }
     const tSources = performance.now();
 
-    const system = buildSystemParts(sources, mentioned, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings), whole });
+    // Mentioned material, read and sized for this message: what fits goes
+    // whole, a long item sends its parts most relevant to the question.
+    const preparedMentions = await prepareMentions(mentioned, {
+      query: text,
+      settings,
+      budget: contextBudget(settings),
+      localSources: sources,
+      inline: (m) => whole && m.group === "source" && !m.notebookId && sources.some((s) => s.id === m.id && isRetrievable(s)),
+    }).catch((e) => {
+      console.warn("mentions: prepare failed", e);
+      return mentioned;
+    });
+    const system = buildSystemParts(sources, preparedMentions, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings), whole });
     markWarm(settings, system.stable);
     const llmMessages: LlmMessage[] = [
       { role: "system", content: system.stable },
@@ -2750,9 +2911,11 @@ export default function ChatPanel({
       while (chatIdRef.current === chatId && queueRef.current.length > 0 && !streamingRef.current.has(chatId)) {
         const next = queueRef.current.shift()!;
         setQueue([...queueRef.current]);
+        const refs = queuedRefsRef.current.get(next);
+        if (!queueRef.current.includes(next)) queuedRefsRef.current.delete(next);
         // runSend resets streamingRef synchronously when an LLM stream starts,
         // so the loop naturally waits for it before the next item.
-        await runSend(next);
+        await runSend(next, { refs });
       }
     } finally {
       drainingRef.current.delete(chatId);
@@ -2790,6 +2953,8 @@ export default function ChatPanel({
         return;
       }
       queueRef.current.push(payload);
+      const picked = keptRefs(draftRefs, payload);
+      if (picked.length) queuedRefsRef.current.set(payload, picked);
       setQueue([...queueRef.current]);
       const pos = queueRef.current.length;
       const replyMsg = await addMessage(
@@ -2816,7 +2981,10 @@ export default function ChatPanel({
     // modelQuery cleared above
     const target = /^\/(edit|remix)(\s|$)/i.test(text) ? imageTarget?.id : undefined;
     setImageTarget(null);
-    await runSend(text, { imageId: target });
+    // A message sent straight from a button (direct) has no menu picks.
+    const refs = direct === undefined ? keptRefs(draftRefs, text) : [];
+    setDraftRefs([]);
+    await runSend(text, { imageId: target, refs });
     void drainQueue();
   };
 
@@ -3025,7 +3193,9 @@ export default function ChatPanel({
                 animate={!streamedIdsRef.current.has(m.id)}
                 role={m.role}
                 content={m.content}
-                items={catalog}
+                items={bubbleItems.get(m.id) ?? catalog}
+                onSaveMentionCopy={saveMentionCopy}
+                onOpenNotebook={onOpenNotebook}
                 usage={showDetails ? usageByMsg[m.id] : undefined}
                 reasoning={reasoningByMsg[m.id]}
                 reasoningOpen={showReasoning}
@@ -3335,15 +3505,40 @@ export default function ChatPanel({
               </p>
             </div>
           )}
-          {/* @-mention suggestions */}
-          {mention && mentionHits.length > 0 && (            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
-              <div className="max-h-56 overflow-y-auto py-1">
-                {mentionHits.map((item, i) => (
+          {/* @-mention suggestions: this notebook first, every other notebook a keystroke away */}
+          {mention && (mentionHits.length > 0 || picker?.scope) && (
+            <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-edge bg-panel shadow-lg">
+              {picker?.scope && (
+                <div className="flex items-center gap-1.5 border-b border-edge-soft px-3 py-1.5 text-[11px] text-ink-3">
+                  {picker.scope.folder && (
+                    <>
+                      <FolderClosed size={11} strokeWidth={1.8} className="shrink-0" />
+                      <span className="truncate">{picker.scope.folder.name}</span>
+                    </>
+                  )}
+                  {picker.scope.folder && picker.scope.notebook && <ChevronRight size={11} className="shrink-0" />}
+                  {picker.scope.notebook && (
+                    <>
+                      <BookOpen size={11} strokeWidth={1.8} className="shrink-0" />
+                      <span className="truncate">
+                        {picker.scope.notebook.title}
+                        {picker.scope.notebook.id === notebookId ? " (this notebook)" : ""}
+                      </span>
+                    </>
+                  )}
+                  <span className="ml-auto shrink-0">Backspace to go back</span>
+                </div>
+              )}
+              <div className="max-h-64 overflow-y-auto py-1">
+                {mentionHits.length === 0 && (
+                  <p className="px-3 py-2 text-[12.5px] text-ink-3">Nothing in here matches.</p>
+                )}
+                {mentionHits.map((row, i) => (
                   <button
-                    key={item.id}
+                    key={row.key}
                     onMouseDown={(e) => {
                       e.preventDefault();
-                      acceptMention(item);
+                      acceptMention(row);
                     }}
                     ref={i === activeIdx ? keepInView : undefined}
                     onMouseEnter={() => setMention((m) => (m ? { ...m, active: i } : m))}
@@ -3351,20 +3546,49 @@ export default function ChatPanel({
                       i === activeIdx ? "bg-hover" : ""
                     }`}
                   >
-                    {item.group === "source" ? (
-                      <FileText size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    {row.kind === "item" ? (
+                      row.item.group === "source" ? (
+                        <FileText size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                      ) : (
+                        <Sparkles size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                      )
+                    ) : row.kind === "folder" ? (
+                      <FolderClosed size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                    ) : row.kind === "whole" ? (
+                      <Layers size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
                     ) : (
-                      <Sparkles size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
+                      <BookOpen size={13} strokeWidth={1.8} className="shrink-0 text-ink-3" />
                     )}
-                    <span className="min-w-0 flex-1 truncate text-[13px]">{item.title}</span>
-                    <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-3">
-                      {item.type}
+                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                      {row.kind === "item"
+                        ? row.item.title
+                        : row.kind === "folder"
+                        ? row.folder.name
+                        : row.kind === "whole"
+                        ? `All of ${row.notebook.title}`
+                        : row.notebook.title}
                     </span>
+                    {row.kind === "item" && row.notebook ? (
+                      <span className="max-w-[45%] shrink-0 truncate text-[11px] text-ink-3" title={`From ${row.notebook.title}`}>
+                        {row.notebook.title} · {row.item.type}
+                      </span>
+                    ) : (
+                      <span className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-3">
+                        {row.kind === "item"
+                          ? row.item.type
+                          : row.kind === "whole"
+                          ? `notebook · ${row.count} item${row.count === 1 ? "" : "s"}`
+                          : row.kind === "folder"
+                          ? `${row.count} notebook${row.count === 1 ? "" : "s"}`
+                          : `notebook · ${row.count}`}
+                        {(row.kind === "folder" || row.kind === "notebook") && <ChevronRight size={11} />}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
               <p className="border-t border-edge-soft px-3 py-1.5 text-[10.5px] text-ink-3">
-                ↑↓ navigate · Enter to insert · Esc to dismiss
+                ↑↓ navigate · Enter to pick or open · type a notebook's name and / to look inside · Esc to dismiss
               </p>
             </div>
           )}
@@ -3432,16 +3656,24 @@ export default function ChatPanel({
                   setModelQuery({ query: md.query, active: 0, remove: md.remove, kind: md.kind });
                   setMention(null);
                 } else {
-                  const hit = detectMention(e.target.value, e.target.selectionStart);
-                  setMention(hit ? { ...hit, active: 0 } : null);
+                  const hit = openMention(e.target.value, e.target.selectionStart);
+                  // Typing inside an opened folder/notebook keeps it open.
+                  setMention((prev) => (hit ? { ...hit, active: 0, hint: prev?.start === hit.start ? prev.hint : undefined } : null));
                 }
               }}
               onSelect={(e) => {
                 const el = e.currentTarget;
+                // Read the box now: an updater runs during render, when the
+                // page may still show the text from before the last edit.
+                const hit = openMention(el.value, el.selectionStart, true);
+                if (hit === undefined) return;
                 setMention((prev) => {
-                  const hit = detectMention(el.value, el.selectionStart);
                   if (!hit) return null;
-                  return { ...hit, active: prev && prev.query === hit.query ? prev.active : 0 };
+                  return {
+                    ...hit,
+                    active: prev && prev.query === hit.query ? prev.active : 0,
+                    hint: prev?.start === hit.start ? prev.hint : undefined,
+                  };
                 });
               }}
               onKeyDown={(e) => {
@@ -3565,20 +3797,22 @@ export default function ChatPanel({
                     return;
                   }
                 }
-                if (mention && mentionHits.length > 0) {
+                if (mention && (mentionHits.length > 0 || picker?.scope)) {
+                  const n = Math.max(1, mentionHits.length);
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    setMention((m) => m && { ...m, active: (activeIdx + 1) % mentionHits.length });
+                    setMention((m) => m && { ...m, active: (activeIdx + 1) % n });
                     return;
                   }
                   if (e.key === "ArrowUp") {
                     e.preventDefault();
-                    setMention((m) => m && { ...m, active: (activeIdx - 1 + mentionHits.length) % mentionHits.length });
+                    setMention((m) => m && { ...m, active: (activeIdx - 1 + n) % n });
                     return;
                   }
-                  if (e.key === "Enter" || e.key === "Tab") {
+                  if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
                     e.preventDefault();
-                    acceptMention(mentionHits[activeIdx]);
+                    const row = mentionHits[activeIdx];
+                    if (row) acceptMention(row);
                     return;
                   }
                   if (e.key === "Escape") {
@@ -3881,6 +4115,109 @@ export function replySourceTitle(content: string): string {
   return flat.length > 60 ? flat.slice(0, 60).trimEnd() + "…" : flat;
 }
 
+/**
+ * An @mention in a sent message. One from another notebook shows where it
+ * came from and opens a small menu: save a copy here, or go to that notebook.
+ * One that can't be read any more is struck through.
+ */
+function MentionChip({
+  text,
+  item,
+  onSaveCopy,
+  onOpenNotebook,
+}: {
+  text: string;
+  item: MentionItem;
+  onSaveCopy?: (item: MentionItem) => Promise<void>;
+  onOpenNotebook?: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [copy, setCopy] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const kind = item.group === "notebook" ? "Notebook" : `${item.group === "source" ? "Source" : "Output"} · ${item.type}`;
+  const from = item.notebookId && item.group !== "notebook" ? item.notebookTitle : undefined;
+  const tip = item.missing
+    ? `${kind} — ${item.missing}`
+    : from
+    ? `${kind} · from "${from}"${item.title !== text.slice(1) ? ` (now "${item.title}")` : ""}`
+    : kind;
+  const away = !!item.notebookId && !item.missing;
+  const chipClass = `rounded-md border border-accent-ink/25 bg-accent-ink/10 px-1 py-px text-[12.5px] font-medium${
+    item.missing ? " line-through opacity-60" : ""
+  }`;
+  if (!away) {
+    return (
+      <span title={tip} className={chipClass}>
+        {text}
+      </span>
+    );
+  }
+  const save = async () => {
+    if (!onSaveCopy || copy === "saving" || copy === "saved") return;
+    setCopy("saving");
+    try {
+      await onSaveCopy(item);
+      setCopy("saved");
+    } catch {
+      setCopy("error");
+    }
+  };
+  return (
+    <span ref={ref} className="relative inline">
+      {/* A span, not a button: a long title wraps with the sentence like any chip. */}
+      <span
+        role="button"
+        tabIndex={0}
+        title={tip}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((o) => !o);
+          }
+        }}
+        className={`${chipClass} cursor-pointer box-decoration-clone`}
+      >
+        {text}
+        <span className="ml-1 font-normal opacity-70">· {item.group === "notebook" ? "notebook" : from ?? "another notebook"}</span>
+      </span>
+      {open && (
+        <span className="absolute right-0 top-full z-20 mt-1 flex w-56 flex-col overflow-hidden rounded-lg border border-edge bg-panel py-1 text-left text-[12.5px] font-normal text-ink shadow-lg whitespace-normal">
+          <span className="px-3 py-1 text-[11px] text-ink-3">{tip}</span>
+          {item.group !== "notebook" && onSaveCopy && (
+            <button type="button" onClick={save} className="flex items-center gap-2 px-3 py-1.5 text-left hover:bg-hover">
+              {copy === "saved" ? <Check size={13} /> : copy === "saving" ? <Loader2 size={13} className="animate-spin" /> : <FilePlus2 size={13} />}
+              {copy === "saved" ? "Saved to this notebook's Sources" : copy === "error" ? "Couldn't copy — try again" : "Save a copy to this notebook"}
+            </button>
+          )}
+          {onOpenNotebook && item.notebookId && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onOpenNotebook(item.notebookId!);
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 text-left hover:bg-hover"
+            >
+              <ExternalLink size={13} />
+              Open {item.group === "notebook" ? item.title : from ?? "its notebook"}
+            </button>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Bubble({
   animate = true,
   role,
@@ -3894,6 +4231,8 @@ function Bubble({
   linkKeys,
   onAddLink,
   onSaveToSources,
+  onSaveMentionCopy,
+  onOpenNotebook,
 }: {
   /** Entrance fade; off for a reply that just finished streaming in place. */
   animate?: boolean;
@@ -3915,6 +4254,10 @@ function Bubble({
   onAddLink?: (url: string) => Promise<Source>;
   /** Save this reply as a text source (assistant replies only). */
   onSaveToSources?: () => Promise<void>;
+  /** Copy another notebook's mentioned item into this notebook's Sources. */
+  onSaveMentionCopy?: (item: MentionItem) => Promise<void>;
+  /** Go to the notebook a mention came from. */
+  onOpenNotebook?: (id: string) => void;
 }) {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "error">("idle");
   const segments = useMemo(
@@ -3950,13 +4293,13 @@ function Bubble({
         <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-tr-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-accent-ink">
           {segments.map((seg, i) =>
             seg.item ? (
-              <span
+              <MentionChip
                 key={i}
-                title={`${seg.item.group === "source" ? "Source" : "Output"} · ${seg.item.type}`}
-                className="rounded-md border border-accent-ink/25 bg-accent-ink/10 px-1 py-px text-[12.5px] font-medium"
-              >
-                {seg.text}
-              </span>
+                text={seg.text}
+                item={seg.item}
+                onSaveCopy={onSaveMentionCopy}
+                onOpenNotebook={onOpenNotebook}
+              />
             ) : (
               <span key={i}>{seg.text}</span>
             )

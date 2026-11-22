@@ -98,6 +98,12 @@ async function initDb(): Promise<SqlDb> {
       );
     }
   }
+  // @-mentions picked from the menu, by id (MentionRef JSON; "" = none): the
+  // text keeps "@Title", this says exactly which item it was — even when two
+  // share a name or the item lives in another notebook (mentions.ts).
+  if (!msgCols.some((c) => c.name === "mentions")) {
+    await db.execute("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT ''");
+  }
   await db.execute(`
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,
@@ -844,7 +850,9 @@ export async function addMessage(
   chatId: string,
   notebookId: string,
   role: "user" | "assistant",
-  content: string
+  content: string,
+  /** Serialized MentionRef[] (serializeMentionRefs) — "" when nothing was picked from the @ menu. */
+  mentions = ""
 ): Promise<ChatMessage> {
   const d = await getDb();
   const msg: ChatMessage = {
@@ -853,11 +861,12 @@ export async function addMessage(
     chat_id: chatId,
     role,
     content,
+    mentions,
     created_at: Date.now(),
   };
   await d.execute(
-    "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-    [msg.id, msg.notebook_id, msg.chat_id, msg.role, msg.content, msg.created_at]
+    "INSERT INTO messages (id, notebook_id, chat_id, role, content, mentions, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [msg.id, msg.notebook_id, msg.chat_id, msg.role, msg.content, msg.mentions, msg.created_at]
   );
   await touchChat(chatId);
   await touchNotebook(notebookId);

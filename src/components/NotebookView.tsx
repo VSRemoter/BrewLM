@@ -574,6 +574,7 @@ export default function NotebookView({
         setPanes((cur) => cur.map((p, j) => (j === i ? { ...p, chatId: c.id } : p)));
       }}
       onAddNote={handleAddNote}
+      onOpenNotebook={onOpenNotebook}
       onAddLink={handleAddLink}
       onClearChat={() => handleDeleteChat(pane.chatId)}
       onReturnHome={onBack}

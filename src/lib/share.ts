@@ -17,6 +17,7 @@
  * (`snapshotBlobRefs` lists them).
  */
 import { blobRefsIn, isBlobRef } from "./blobs";
+import { parseMentionRefs, serializeMentionRefs } from "./mentions";
 import { getDb, uid, type LibraryImage } from "./db";
 import type { Artifact, Chat, ChatMessage, Notebook, Source, SourceChunk } from "./types";
 
@@ -75,9 +76,11 @@ export async function readSnapshot(notebookId: string, opts: SnapshotOptions = {
   const chats = opts.includeChats
     ? await d.select<Chat[]>("SELECT * FROM chats WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
     : [];
-  const messages = opts.includeChats
-    ? await d.select<ChatMessage[]>("SELECT * FROM messages WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
-    : [];
+  const messages = (
+    opts.includeChats
+      ? await d.select<ChatMessage[]>("SELECT * FROM messages WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
+      : []
+  ).map((m) => ({ ...m, mentions: ownMentions(m.mentions, notebookId) }));
 
   // Images belong to the messages that show them (a clone's messages may point
   // at rows of the original notebook, so look them up by id, not notebook).
@@ -157,6 +160,15 @@ export function omitMedia(snap: NotebookSnapshot, included: Set<string>): Notebo
 }
 
 /**
+ * A message's @ menu picks, minus any pointing outside `notebookId`: a shared
+ * or copied notebook shouldn't carry ids (or the names) of the owner's other
+ * notebooks.
+ */
+function ownMentions(raw: string | undefined, notebookId: string): string {
+  return serializeMentionRefs(parseMentionRefs(raw).filter((r) => r.kind !== "notebook" && r.notebookId === notebookId));
+}
+
+/**
  * The same snapshot under fresh ids (`newId(oldId)`), every row pointing at `notebookId`.
  * Links between rows follow: chunks → sources, messages → chats, images →
  * chats and parent images, `brewimg:` references in messages and outputs.
@@ -175,6 +187,7 @@ export function remapSnapshot(
     return id;
   };
   snap.sources.forEach((s) => fresh(s.id));
+  snap.artifacts.forEach((a) => fresh(a.id));
   snap.chats.forEach((c) => fresh(c.id));
   snap.images.forEach((i) => fresh(i.id));
   const known = (old: string | null | undefined) => (old ? ids.get(old) ?? null : null);
@@ -187,7 +200,7 @@ export function remapSnapshot(
     chunks: snap.chunks
       .filter((c) => ids.has(c.source_id))
       .map((c) => ({ ...c, id: newId(c.id), source_id: fresh(c.source_id), notebook_id: notebookId })),
-    artifacts: snap.artifacts.map((a) => ({ ...a, id: newId(a.id), notebook_id: notebookId, data: relinkImages(a.data) })),
+    artifacts: snap.artifacts.map((a) => ({ ...a, id: fresh(a.id), notebook_id: notebookId, data: relinkImages(a.data) })),
     chats: snap.chats.map((c) => ({ ...c, id: fresh(c.id), notebook_id: notebookId })),
     messages: snap.messages.map((m) => ({
       ...m,
@@ -195,6 +208,13 @@ export function remapSnapshot(
       notebook_id: notebookId,
       chat_id: known(m.chat_id),
       content: relinkImages(m.content),
+      // @ menu picks follow the copied items; a pick from another notebook is
+      // dropped (its "@Title" stays as text).
+      mentions: serializeMentionRefs(
+        parseMentionRefs(m.mentions)
+          .filter((r) => r.kind !== "notebook" && ids.has(r.id))
+          .map((r) => ({ ...r, id: ids.get(r.id)!, notebookId }))
+      ),
     })),
     images: snap.images.map((i) => ({
       ...i,
@@ -277,8 +297,8 @@ async function insertRows(s: NotebookSnapshot, fromShare = false): Promise<void>
   }
   for (const m of s.messages) {
     await d.execute(
-      "INSERT INTO messages (id, notebook_id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-      [m.id, m.notebook_id, m.chat_id, m.role, m.content, m.created_at]
+      "INSERT INTO messages (id, notebook_id, chat_id, role, content, mentions, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [m.id, m.notebook_id, m.chat_id, m.role, m.content, m.mentions ?? "", m.created_at]
     );
   }
 }

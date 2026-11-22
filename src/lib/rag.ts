@@ -258,6 +258,52 @@ function bm25Scores(docs: string[], query: string): number[] {
   });
 }
 
+/**
+ * The parts of `docs` most relevant to `query`, within `maxChars` — for text
+ * that isn't in the retrieval index (saved outputs) or when the index can't
+ * help. In-memory BM25 over the same chunks the index uses. Each document's
+ * opening chunk goes first (it usually says what the document is), then the
+ * best matches; with no matching words at all, the documents read from the
+ * start. Returned in reading order: by document, then position.
+ */
+export function excerptByRelevance(
+  docs: { label: string; text: string }[],
+  query: string,
+  maxChars: number
+): { label: string; seq: number; page: number | null; text: string }[] {
+  const chunks = docs.flatMap((d, doc) => chunkText(d.text).map((c) => ({ ...c, doc, label: d.label })));
+  if (chunks.length === 0) return [];
+  const scores = bm25Scores(chunks.map((c) => c.text), query);
+  const idx = chunks.map((_, i) => i);
+  const openings = idx.filter((i) => chunks[i].seq === 0).slice(0, 4);
+  const byScore = idx.filter((i) => scores[i] > 0).sort((a, b) => scores[b] - scores[a]);
+  const inOrder = idx; // reading order fills whatever room is left
+  const picked = new Set<number>();
+  let used = 0;
+  for (const i of [...openings, ...byScore, ...inOrder]) {
+    if (picked.has(i)) continue;
+    const cost = chunks[i].text.length + 8;
+    if (used + cost > maxChars) {
+      if (used === 0 && maxChars > 200) {
+        picked.add(i); // one oversized first chunk: trimmed below rather than nothing
+        used = maxChars;
+      }
+      continue;
+    }
+    picked.add(i);
+    used += cost;
+    if (used >= maxChars) break;
+  }
+  return [...picked]
+    .sort((a, b) => chunks[a].doc - chunks[b].doc || chunks[a].seq - chunks[b].seq)
+    .map((i) => ({
+      label: chunks[i].label,
+      seq: chunks[i].seq,
+      page: chunks[i].page,
+      text: chunks[i].text.length > maxChars ? chunks[i].text.slice(0, Math.max(0, maxChars - 8)) : chunks[i].text,
+    }));
+}
+
 /* -------------------------------- helpers --------------------------------- */
 
 /** Run `fn` over `items` with at most `size` in flight; order-preserving. */
