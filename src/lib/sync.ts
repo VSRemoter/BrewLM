@@ -36,7 +36,7 @@
  * `_PASSWORD`) skips accounts for the two-copy dev setup.
  */
 import { platform } from "../platform";
-import { BLOB_PREFIX, blobRefsIn, markArrived, mediaBytes, putBlob } from "./blobs";
+import { BLOB_PREFIX, blobRefsIn, markArrived, MAX_SYNC_FILE_BYTES, mediaBytes, mediaFileSize, putBlob } from "./blobs";
 import { getDb, referencedBlobRefs, SYNCED_TABLES, uid } from "./db";
 import {
   createEnvelope,
@@ -145,6 +145,8 @@ export interface SyncStatus {
   syncApiKeys: boolean;
   /** Signed-in account and plan (absent in the dev-token setup). */
   account?: AccountInfo;
+  /** Files on this device too large to sync (over MAX_SYNC_FILE_BYTES); they stay here. */
+  tooLarge?: number;
 }
 
 /** How often the outbox is checked (locally — no request unless there's something to send). */
@@ -535,6 +537,12 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       let pointer: string | null = null;
       if (json.length > MAX_INLINE) {
         const bytes = new TextEncoder().encode(json);
+        // Characters outside ASCII take up to 3 bytes: the record can still pass the server's file limit.
+        if (bytes.length > MAX_SYNC_FILE_BYTES) {
+          if (!oversized.has(label)) log(`${label} is too large to sync (${bytes.length} bytes)`, true);
+          oversized.add(label);
+          continue;
+        }
         pointer = await hiddenId(keys, `rec:${await sha256Hex(bytes)}`);
         await putRemoteBlob(cfg, pointer, await encryptBlob(keys, pointer, bytes));
         json = JSON.stringify({ v: 1, blob: pointer });
@@ -589,7 +597,26 @@ const media = {
   retryAt: new Map<string, number>(),
   /** Files uploaded this session (for the activity log). */
   uploaded: 0,
+  /**
+   * Files over the server's per-file limit: kept on this device, never
+   * uploaded, listed in Settings → Data & Storage. Skipping them (instead of
+   * failing the cycle) keeps everything else syncing.
+   */
+  tooLarge: new Set<string>(),
 };
+
+/** Files on this device too large to sync (Settings → Data & Storage marks them). */
+export function filesTooLargeToSync(): ReadonlySet<string> {
+  return media.tooLarge;
+}
+
+function markTooLarge(name: string, bytes: number): void {
+  media.toUpload.delete(name);
+  if (media.tooLarge.has(name)) return;
+  media.tooLarge.add(name);
+  log(`file ${name} is ${Math.round(bytes / 1024 / 1024)} MB, over the 100 MB Sync limit: it stays on this device`, true);
+  setStatus({ tooLarge: media.tooLarge.size });
+}
 
 /** A file's server-side id: hidden, so the server can't recognise it by its hash. */
 const fileId = (keys: VaultKeys, name: string) => hiddenId(keys, `file:${name}`);
@@ -604,7 +631,7 @@ async function scanMedia(): Promise<void> {
 /** Upload files the server lacks. */
 async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   // Each file leaves the queue only once it's settled, so an error keeps the rest.
-  for (const n of media.toUpload) if (media.onServer.has(n)) media.toUpload.delete(n);
+  for (const n of media.toUpload) if (media.onServer.has(n) || media.tooLarge.has(n)) media.toUpload.delete(n);
   const pending = [...media.toUpload];
   for (let i = 0; i < pending.length; i += 1000) {
     const names = pending.slice(i, i + 1000);
@@ -617,6 +644,12 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
         media.toUpload.delete(name);
         continue;
       }
+      // Measure before reading: a too-large file is never loaded or sent.
+      const size = await mediaFileSize(name);
+      if (size > MAX_SYNC_FILE_BYTES) {
+        markTooLarge(name, size);
+        continue;
+      }
       let bytes: Uint8Array;
       try {
         bytes = await mediaBytes(`${BLOB_PREFIX}${name}`);
@@ -625,13 +658,29 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
         media.wanted.add(name); // not on this device either: maybe another one has it
         continue;
       }
-      await putRemoteBlob(cfg, ids[j], await encryptBlob(keys, ids[j], bytes));
+      if (bytes.length > MAX_SYNC_FILE_BYTES) {
+        markTooLarge(name, bytes.length);
+        continue;
+      }
+      try {
+        await putRemoteBlob(cfg, ids[j], await encryptBlob(keys, ids[j], bytes));
+      } catch (e) {
+        // The server's own limit (it may be lower than this build knows): skip the file, not the whole cycle.
+        if (e instanceof Error && /HTTP 413 blob too large/.test(e.message)) {
+          markTooLarge(name, bytes.length);
+          continue;
+        }
+        throw e;
+      }
       media.onServer.add(name);
       media.toUpload.delete(name);
       media.uploaded += 1;
     }
   }
 }
+
+/** Internals for sync.test.ts only. */
+export const syncTesting = { media, uploadMedia };
 
 /**
  * The web app (on a phone) doesn't download every file up front: images come
@@ -1031,6 +1080,8 @@ async function resendEverything(): Promise<void> {
   );
   media.scanned = false;
   media.onServer.clear();
+  media.tooLarge.clear();
+  setStatus({ tooLarge: 0 });
   oversized.clear();
   unreadable.clear();
 }

@@ -712,9 +712,10 @@ function OnCard({ status }: { status: SyncStatus }) {
           desc={
             status.error
               ? `Couldn't sync: ${status.error}`
-              : status.lastSyncAt
-                ? `Up to date · last synced ${formatTime(status.lastSyncAt)}`
-                : "Syncing…"
+              : (status.lastSyncAt ? `Up to date · last synced ${formatTime(status.lastSyncAt)}` : "Syncing…") +
+                (status.tooLarge
+                  ? ` · ${status.tooLarge === 1 ? "1 file is" : `${status.tooLarge} files are`} over 100 MB, too large to sync: ${status.tooLarge === 1 ? "it stays" : "they stay"} on this device (Data & Storage lists ${status.tooLarge === 1 ? "it" : "them"})`
+                  : "")
           }
         >
           <span className={`inline-block h-2 w-2 rounded-full ${status.error ? "bg-danger" : "bg-accent"}`} />

@@ -110,6 +110,9 @@ export default function LargestItems() {
                     {item.inTrash && " · in Trash"}
                     {item.shared && " · also used elsewhere"}
                   </div>
+                  {item.tooLargeToSync && (
+                    <div className="truncate text-[11.5px] text-danger">Too large to sync (over 100 MB) · stays on this device</div>
+                  )}
                   {/* Relative size at a glance. */}
                   <div className="mt-1 h-1 overflow-hidden rounded-full bg-hover-soft">
                     <div
