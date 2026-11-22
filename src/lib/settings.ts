@@ -304,6 +304,7 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   smoothScroll: (s) => (s.smoothScroll ? "1" : "0"),
   showDetails: (s) => (s.showDetails ? "1" : "0"),
   showReasoning: (s) => (s.showReasoning ? "1" : "0"),
+  animateBackgrounds: (s) => (s.animateBackgrounds ? "1" : "0"),
 };
 
 export async function loadSettings(): Promise<Settings> {
@@ -322,6 +323,7 @@ export async function loadSettings(): Promise<Settings> {
     localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
     imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
     localSttEngine, builtinWhisperModel, localEmbedBaseUrl, localEmbedKey, localImageWorkflow, localTtsEngine,
+    animateBackgrounds,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -388,6 +390,7 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localEmbedKey"),
     getSetting("localImageWorkflow"),
     getSetting("localTtsEngine"),
+    getSetting("animateBackgrounds"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -502,6 +505,8 @@ export async function loadSettings(): Promise<Settings> {
     showDetails: showDetails !== "0",
     // Missing key → folded: reasoning is there on a click, out of the way otherwise.
     showReasoning: showReasoning === "1",
+    // Missing key → moving backgrounds play.
+    animateBackgrounds: animateBackgrounds !== "0",
     keepRecordings: keepRecordings !== "0",
   });
 }

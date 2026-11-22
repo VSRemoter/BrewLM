@@ -222,14 +222,16 @@ export const platform: Platform = {
     setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
     return defaultName;
   },
-  pickFile({ filters }) {
+  pickFile({ filters, maxBytes }) {
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = acceptFor(filters);
       input.onchange = async () => {
         const file = input.files?.[0];
-        resolve(file ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) } : null);
+        if (!file) return resolve(null);
+        if (maxBytes !== undefined && file.size > maxBytes) return resolve({ name: file.name, size: file.size, bytes: new Uint8Array(0) });
+        resolve({ name: file.name, size: file.size, bytes: new Uint8Array(await file.arrayBuffer()) });
       };
       input.oncancel = () => resolve(null);
       input.click();

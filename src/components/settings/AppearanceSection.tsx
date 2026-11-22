@@ -85,6 +85,16 @@ export default function AppearanceSection({
           />
         </Row>
         <Row
+          label="Animate backgrounds"
+          desc="GIF and video chat backgrounds play on a loop. Off, they stay on their first frame. Only for this device; they also stop when your system asks for reduced motion."
+        >
+          <Toggle
+            label="Animate backgrounds"
+            checked={settings.animateBackgrounds}
+            onChange={(on) => patch({ animateBackgrounds: on })}
+          />
+        </Row>
+        <Row
           label="Response details"
           desc="Token counts and cost under each AI reply and at the foot of each Studio output. /details in chat toggles this too."
         >

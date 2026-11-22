@@ -287,6 +287,8 @@ export interface Settings {
   showDetails: boolean;
   /** Each reply's reasoning starts open above it, not folded (/thinking show|hide). */
   showReasoning: boolean;
+  /** GIF and video chat backgrounds play; off, they hold their first frame. Per device (sync.ts LOCAL_SETTINGS). */
+  animateBackgrounds: boolean;
 }
 
 export interface Flashcard {
