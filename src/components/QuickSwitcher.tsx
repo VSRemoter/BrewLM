@@ -63,7 +63,7 @@ export default function QuickSwitcher({
 
   return (
     <div
-      className="anim-backdrop fixed inset-0 z-50 flex items-start justify-center bg-black/30 px-4 pt-[14vh] backdrop-blur-[2px]"
+      className="anim-backdrop fixed inset-0 z-50 flex items-start justify-center bg-black/30 px-4 pt-[14vh] backdrop-blur-[6px]"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
