@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { readFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { readFile, stat, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Database from "@tauri-apps/plugin-sql";
@@ -31,10 +31,16 @@ export const platform: Platform = {
     else await writeFile(path, data);
     return path;
   },
-  async pickFile({ filters }) {
+  async pickFile({ filters, maxBytes }) {
     const path = await open({ multiple: false, filters });
     if (!path) return null;
-    return { name: path.split(/[\\/]/).pop() ?? "file", bytes: await readFile(path) };
+    const name = path.split(/[\\/]/).pop() ?? "file";
+    if (maxBytes !== undefined) {
+      const { size } = await stat(path);
+      if (size > maxBytes) return { name, size, bytes: new Uint8Array(0) };
+    }
+    const bytes = await readFile(path);
+    return { name, size: bytes.length, bytes };
   },
 
   kv: {

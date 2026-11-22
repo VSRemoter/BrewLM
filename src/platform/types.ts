@@ -36,6 +36,9 @@ export interface FileFilter {
 
 export interface PickedFile {
   name: string;
+  /** The file's size on disk, in bytes. */
+  size: number;
+  /** Empty when the file is over the pick's `maxBytes` (it isn't read at all). */
   bytes: Uint8Array;
 }
 
@@ -75,7 +78,8 @@ export interface Platform {
 
   /** Save dialog (desktop) or a download (web). Resolves to where it went, or null if cancelled. */
   saveFile(opts: { defaultName: string; filters?: FileFilter[]; data: Uint8Array | string }): Promise<string | null>;
-  pickFile(opts: { filters?: FileFilter[] }): Promise<PickedFile | null>;
+  /** `maxBytes`: a bigger file comes back unread (`bytes` empty, `size` set), so it never fills memory. */
+  pickFile(opts: { filters?: FileFilter[]; maxBytes?: number }): Promise<PickedFile | null>;
 
   /** Small per-install values kept outside the database (device id, vault key). */
   kv: {

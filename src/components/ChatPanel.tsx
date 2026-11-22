@@ -57,7 +57,14 @@ import {
   setSetting,
   sourceText,
 } from "../lib/db";
-import { mediaSrc } from "../lib/blobs";
+import {
+  BackgroundError,
+  BG_IMAGE_EXTENSIONS,
+  BG_MAX_SOURCE_BYTES,
+  BG_VIDEO_EXTENSIONS,
+  prepareChatBackground,
+} from "../lib/chatBackground";
+import { ChatBackdrop } from "./ChatBackdrop";
 import { onRemoteChanges } from "../lib/sync";
 import { setChatStreaming } from "../lib/busy";
 import type { IngestResult } from "../lib/ingest";
@@ -149,7 +156,7 @@ import {
   voicesNeedIds,
 } from "../lib/settings";
 import { platform } from "../platform";
-import { ACCEPT_STRING, fileToCoverDataUrl } from "../lib/source";
+import { ACCEPT_STRING } from "../lib/source";
 import { parseStudioCommand, type StudioCommand } from "../lib/studioCommands";
 import { fmtUsageLine, recordUsage, replyCostUsd } from "../lib/usage";
 import { runProviderCommand } from "../lib/providerCommand";
@@ -1188,19 +1195,29 @@ export default function ChatPanel({
   const [bgMenuOpen, setBgMenuOpen] = useState(false);
   const [dimDraft, setDimDraft] = useState(chatBgDim);
   useEffect(() => setDimDraft(chatBgDim), [chatBgDim]);
-  /** Native file picker → compress → save as chat background (webview <input type=file> is unreliable). */
+  /** True while a picked GIF or video is being converted into a background loop. */
+  const [bgBusy, setBgBusy] = useState(false);
+  /**
+   * Native file picker → compress → save as chat background (webview <input
+   * type=file> is unreliable). Pictures become a JPEG; GIFs and videos a
+   * short muted MP4 loop (lib/chatBackground.ts).
+   */
   const pickChatBg = async () => {
+    if (bgBusy) return;
     try {
       const picked = await platform.pickFile({
-        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"] }],
+        filters: [{ name: "Image, GIF or video", extensions: [...BG_IMAGE_EXTENSIONS, ...BG_VIDEO_EXTENSIONS] }],
+        maxBytes: BG_MAX_SOURCE_BYTES,
       });
       if (!picked) return;
-      const file = new File([picked.bytes as BlobPart], picked.name, { type: "image/*" });
-      const bg = await fileToCoverDataUrl(file, 1600, 0.8);
+      setBgBusy(true);
+      const bg = await prepareChatBackground(picked.name, picked.bytes, picked.size);
       setBgMenuOpen(false);
       await onChatBgChange(bg, dimDraft);
-    } catch {
-      setError("Couldn't read that image file.");
+    } catch (e) {
+      setError(e instanceof BackgroundError ? e.message : "Couldn't read that file.");
+    } finally {
+      setBgBusy(false);
     }
   };
   const dragDepth = useRef(0);
@@ -3038,7 +3055,7 @@ export default function ChatPanel({
       {chatBg && (
         // Own compositing layer: messages scroll over it without repainting the photo.
         <div className="absolute inset-0 transform-gpu" aria-hidden>
-          <img src={mediaSrc(chatBg)} alt="" className="h-full w-full object-cover" />
+          <ChatBackdrop value={chatBg} animate={settings.animateBackgrounds} className="h-full w-full object-cover" />
           <div className="absolute inset-0 bg-canvas" style={{ opacity: dimDraft / 100 }} />
         </div>
       )}
@@ -3112,9 +3129,9 @@ export default function ChatPanel({
                 if (chatBg) setBgMenuOpen((v) => !v);
                 else void pickChatBg();
               }}
-              label="Chat background"
+              label={bgBusy ? "Converting the background…" : "Chat background"}
             >
-              <Image size={14} strokeWidth={1.8} />
+              {bgBusy ? <Loader2 size={14} className="animate-spin" /> : <Image size={14} strokeWidth={1.8} />}
             </IconButton>
             {bgMenuOpen && (
               <>
@@ -3124,19 +3141,23 @@ export default function ChatPanel({
                     Chat background
                   </p>
                   {chatBg && (
-                    <img
-                      src={mediaSrc(chatBg)}
-                      alt=""
+                    <ChatBackdrop
+                      value={chatBg}
+                      animate={settings.animateBackgrounds}
                       className="mb-2.5 h-20 w-full rounded-lg border border-edge-soft object-cover"
                     />
                   )}
                   <button
                     onClick={() => void pickChatBg()}
-                    className="flex w-full items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-opacity hover:opacity-85"
+                    disabled={bgBusy}
+                    className="flex w-full items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-opacity hover:opacity-85 disabled:opacity-60"
                   >
-                    <Upload size={13} strokeWidth={2} />
-                    Replace image
+                    {bgBusy ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} strokeWidth={2} />}
+                    {bgBusy ? "Converting…" : "Replace background"}
                   </button>
+                  <p className="mt-1.5 text-[10.5px] leading-snug text-ink-3">
+                    A picture, GIF or short video. Moving ones become a silent loop of up to a minute.
+                  </p>
                   {chatBg && (
                     <>
                       <div className="mt-3 flex items-center justify-between text-[11.5px] text-ink-2">

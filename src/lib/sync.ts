@@ -203,6 +203,8 @@ const LOCAL_SETTINGS = new Set([
   // Where each job runs depends on what this computer has set up.
   "visionRunsOn",
   "transcribeRunsOn",
+  // Moving backgrounds may suit the desk computer and not the phone.
+  "animateBackgrounds",
 ]);
 const LOCAL_SETTING_PREFIXES = ["condense."]; // per-notebook caches, rebuilt on demand
 const API_KEY_SETTINGS = new Set([
