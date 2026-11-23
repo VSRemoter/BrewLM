@@ -207,6 +207,8 @@ const LOCAL_SETTINGS = new Set([
   "transcribeRunsOn",
   // Moving backgrounds may suit the desk computer and not the phone.
   "animateBackgrounds",
+  // The Dock icon is this computer's.
+  "appIcon",
 ]);
 const LOCAL_SETTING_PREFIXES = ["condense."]; // per-notebook caches, rebuilt on demand
 const API_KEY_SETTINGS = new Set([

@@ -23,6 +23,7 @@ export const platform: Platform = {
   fetch: (url, init) => tauriFetch(url, init),
   openUrl: (url) => openUrl(url),
   appVersion: () => getVersion(),
+  setAppIcon: (png) => invoke("set_app_icon", { png: Array.from(png) }),
 
   async saveFile({ defaultName, filters, data }) {
     const path = await save({ defaultPath: defaultName, filters });

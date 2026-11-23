@@ -16,6 +16,7 @@
  * Media stay `brewblob:` references; the files themselves travel separately
  * (`snapshotBlobRefs` lists them).
  */
+import { isNotebookColor } from "./notebookColors";
 import { blobRefsIn, isBlobRef } from "./blobs";
 import { parseMentionRefs, serializeMentionRefs } from "./mentions";
 import { getDb, uid, type LibraryImage } from "./db";
@@ -27,7 +28,16 @@ export const SNAPSHOT_VERSION = 1;
 export type SnapshotNotebook = Pick<
   Notebook,
   "title" | "description" | "cover" | "chat_bg" | "chat_bg_dim" | "grounded" | "constitution_on"
->;
+> & {
+  /** The notebook's color (notebookColors.ts); absent in links from before colors. */
+  color?: string;
+};
+
+/** A snapshot's notebook color, if it's one this version knows. */
+function snapColor(snap: { notebook: SnapshotNotebook }): string {
+  const c = snap.notebook.color;
+  return typeof c === "string" && isNotebookColor(c) ? c : "";
+}
 
 export interface NotebookSnapshot {
   format: typeof SNAPSHOT_FORMAT;
@@ -101,6 +111,7 @@ export async function readSnapshot(notebookId: string, opts: SnapshotOptions = {
       cover: nb.cover,
       chat_bg: nb.chat_bg,
       chat_bg_dim: nb.chat_bg_dim,
+      color: nb.color ?? "",
       grounded: nb.grounded ?? 1,
       constitution_on: nb.constitution_on ?? 1,
     },
@@ -243,6 +254,7 @@ export async function writeSnapshot(snap: NotebookSnapshot, opts: WriteOptions =
   const now = Date.now();
   const nb: Notebook = {
     ...snap.notebook,
+    color: snapColor(snap),
     id: uid(),
     title: opts.title ?? snap.notebook.title,
     starred: opts.starred ?? 0,
@@ -306,8 +318,8 @@ async function insertRows(s: NotebookSnapshot, fromShare = false): Promise<void>
 async function insertNotebook(nb: Notebook): Promise<void> {
   const d = await getDb();
   await d.execute(
-    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, folder_id, grounded, constitution_on, share_id, share_key, share_version, shared_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
-    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.folder_id, nb.grounded, nb.constitution_on, nb.share_id ?? "", nb.share_key ?? "", nb.share_version ?? 0, nb.shared_by ?? "", nb.created_at, nb.updated_at]
+    "INSERT INTO notebooks (id, title, description, starred, cover, chat_bg, chat_bg_dim, color, folder_id, grounded, constitution_on, share_id, share_key, share_version, shared_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+    [nb.id, nb.title, nb.description, nb.starred, nb.cover, nb.chat_bg, nb.chat_bg_dim, nb.color ?? "", nb.folder_id, nb.grounded, nb.constitution_on, nb.share_id ?? "", nb.share_key ?? "", nb.share_version ?? 0, nb.shared_by ?? "", nb.created_at, nb.updated_at]
   );
 }
 
@@ -366,8 +378,8 @@ export async function writeSharedSnapshot(snap: NotebookSnapshot, origin: ShareO
       const n = snap.notebook;
       // The version last: a failure part-way leaves it behind, so the update is offered again.
       await d.execute(
-        "UPDATE notebooks SET title = $1, description = $2, cover = $3, chat_bg = $4, chat_bg_dim = $5, grounded = $6, constitution_on = $7, share_key = $8, shared_by = $9, share_version = $10, updated_at = $11 WHERE id = $12",
-        [n.title, n.description, n.cover, n.chat_bg, n.chat_bg_dim, n.grounded, n.constitution_on, origin.key, origin.sharedBy, origin.version, now, nbId]
+        "UPDATE notebooks SET title = $1, description = $2, cover = $3, chat_bg = $4, chat_bg_dim = $5, grounded = $6, constitution_on = $7, share_key = $8, shared_by = $9, share_version = $10, updated_at = $11, color = $12 WHERE id = $13",
+        [n.title, n.description, n.cover, n.chat_bg, n.chat_bg_dim, n.grounded, n.constitution_on, origin.key, origin.sharedBy, origin.version, now, snapColor(snap), nbId]
       );
     } else {
       try {
@@ -377,6 +389,7 @@ export async function writeSharedSnapshot(snap: NotebookSnapshot, origin: ShareO
         await insertRows(s, true);
         await insertNotebook({
           ...snap.notebook,
+          color: snapColor(snap),
           id: nbId,
           starred: 0,
           folder_id: "",

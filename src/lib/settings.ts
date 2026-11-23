@@ -6,6 +6,8 @@ import { isEmbeddingModel, listLocalModels, LOCAL_TTS_VOICES, parseLocalContext 
 import { DEFAULT_THEME, RETIRED_THEMES, THEMES } from "./themes";
 import { normalizeHex } from "./color";
 import { DEFAULT_CUSTOM_BG, DEFAULT_CUSTOM_TEXT } from "./customTheme";
+import { parseLookPrefs, parseMyLooks } from "./look";
+import { parseAppIcon } from "./appIcon";
 import type {
   Amount,
   AudioFormat,
@@ -305,6 +307,9 @@ const SERIALIZERS: { [K in keyof Settings]: (s: Settings) => string } = {
   showDetails: (s) => (s.showDetails ? "1" : "0"),
   showReasoning: (s) => (s.showReasoning ? "1" : "0"),
   animateBackgrounds: (s) => (s.animateBackgrounds ? "1" : "0"),
+  look: (s) => JSON.stringify(s.look),
+  myLooks: (s) => JSON.stringify(s.myLooks ?? []),
+  appIcon: (s) => s.appIcon,
 };
 
 export async function loadSettings(): Promise<Settings> {
@@ -323,7 +328,7 @@ export async function loadSettings(): Promise<Settings> {
     localSttBaseUrl, localSttKey, localSttModel, searchService, searxngUrl, braveKey, tavilyKey,
     imageRunsOn, localImageBaseUrl, localImageKey, localImageModel, localImageApi,
     localSttEngine, builtinWhisperModel, localEmbedBaseUrl, localEmbedKey, localImageWorkflow, localTtsEngine,
-    animateBackgrounds,
+    animateBackgrounds, look, myLooks, appIcon,
   ] = await Promise.all([
     getSetting("openrouterKey"),
     getSetting("openaiKey"),
@@ -391,6 +396,9 @@ export async function loadSettings(): Promise<Settings> {
     getSetting("localImageWorkflow"),
     getSetting("localTtsEngine"),
     getSetting("animateBackgrounds"),
+    getSetting("look"),
+    getSetting("myLooks"),
+    getSetting("appIcon"),
   ]);
   // Validate what we read — earlier builds may have persisted garbage values.
   const ttsProv: TtsProvider = (Object.keys(TTS_PROVIDER_LABELS) as TtsProvider[]).includes(
@@ -507,6 +515,9 @@ export async function loadSettings(): Promise<Settings> {
     showReasoning: showReasoning === "1",
     // Missing key → moving backgrounds play.
     animateBackgrounds: animateBackgrounds !== "0",
+    look: parseLookPrefs(look),
+    myLooks: parseMyLooks(myLooks),
+    appIcon: parseAppIcon(appIcon),
     keepRecordings: keepRecordings !== "0",
   });
 }

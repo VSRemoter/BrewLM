@@ -33,15 +33,15 @@ import {
   restoreNotebook,
   setFolderCover,
   setNotebookCover,
+  setNotebookColor,
   setNotebookStarred,
   trashNotebook,
   updateFolderDetails,
   updateNotebookDetails,
 } from "./lib/db";
 import { loadSettings } from "./lib/settings";
-import { applyFont } from "./lib/fonts";
-import { applyTheme } from "./lib/themes";
-import { applyCustomColors } from "./lib/customTheme";
+import { applyAppearance } from "./lib/look";
+import { applyAppIcon } from "./lib/appIcon";
 import { setSmoothScroll } from "./lib/smoothScroll";
 import { checkForUpdate, type UpdateInfo } from "./lib/updates";
 import { platform } from "./platform";
@@ -137,9 +137,7 @@ export default function App() {
         if (c.tables.has("notebooks") || c.tables.has("folders")) void refresh();
         if (c.tables.has("settings"))
           void loadSettings().then((s) => {
-            applyCustomColors({ bg: s.customBg, text: s.customText, accent: s.customAccent });
-            applyTheme(s.theme);
-            applyFont(s.font);
+            applyAppearance(s);
             setSettings(s);
           });
       }),
@@ -167,9 +165,8 @@ export default function App() {
         bootStep("Emptying old trash");
         const purged = await purgeExpiredTrash(s.trashRetentionDays);
         if (purged > 0) console.info(`trash: auto-emptied ${purged} notebook(s)`);
-        applyCustomColors({ bg: s.customBg, text: s.customText, accent: s.customAccent });
-        applyTheme(s.theme);
-        applyFont(s.font);
+        applyAppearance(s);
+        void applyAppIcon(s.appIcon);
         setSettings(s);
         bootStep("Loading your notebooks");
         await refresh();
@@ -243,9 +240,10 @@ export default function App() {
   const mounted = narrow ? (active ? [active.id] : []) : tabs.loaded;
   const showStrip = !narrow && (tabs.ids.length > 0 || active !== null);
 
-  const createAndOpen = async (title: string, description = "", folderId = "", cover = "") => {
+  const createAndOpen = async (title: string, description = "", folderId = "", cover = "", color = "") => {
     const nb = await createNotebook(title, description, folderId);
     if (cover) await setNotebookCover(nb.id, cover);
+    if (color) await setNotebookColor(nb.id, color);
     await refresh();
     openTab(nb.id);
   };
@@ -362,6 +360,10 @@ export default function App() {
             }}
             onSetCover={async (id, cover) => {
               await setNotebookCover(id, cover);
+              await refresh();
+            }}
+            onSetColor={async (id, color) => {
+              await setNotebookColor(id, color);
               await refresh();
             }}
             onMoveNotebook={async (id, folderId) => {

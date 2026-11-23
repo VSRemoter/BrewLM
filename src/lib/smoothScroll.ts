@@ -12,6 +12,7 @@
  * something else moves the element (auto-scroll to a new message, scrollbar
  * drag, keyboard), so it never fights other code.
  */
+import { reducedMotion } from "./motion";
 
 /** Fraction of the remaining distance covered per 60 Hz frame. */
 const EASE = 0.22;
@@ -109,7 +110,7 @@ function onWheel(e: WheelEvent): void {
 
 /** Turn smooth wheel scrolling on/off (installs the listener on first use). */
 export function setSmoothScroll(on: boolean): void {
-  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const reduced = reducedMotion();
   enabled = on && !reduced;
   if (!enabled) {
     for (const a of anims.values()) cancelAnimationFrame(a.raf);

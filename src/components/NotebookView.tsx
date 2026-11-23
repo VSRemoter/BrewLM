@@ -64,9 +64,48 @@ import { IconButton, Modal } from "./ui";
 import { onRemoteChanges } from "../lib/sync";
 import { platform } from "../platform";
 import { NARROW, useMediaQuery } from "../lib/usePhone";
+import { notebookTintStyle } from "../lib/notebookColors";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
-const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
+const LS = {
+  left: "om.panel.left",
+  right: "om.panel.right",
+  split: "om.split.left",
+  hideSources: "om.panel.hideSources",
+  hideStudio: "om.panel.hideStudio",
+  swapped: "om.panel.swapped",
+};
+type PanelFlag = "hideSources" | "hideStudio" | "swapped";
+const PANELS_EVENT = "brewlm:panels";
+const readFlag = (k: PanelFlag) => {
+  try {
+    return localStorage.getItem(LS[k]) === "1";
+  } catch {
+    return false;
+  }
+};
+/**
+ * Side panels shown or hidden, and swapped left↔right: one setting on this
+ * device for every notebook, so every open notebook follows a change at once.
+ */
+function usePanelFlags() {
+  const read = () => ({ hideSources: readFlag("hideSources"), hideStudio: readFlag("hideStudio"), swapped: readFlag("swapped") });
+  const [flags, setFlags] = useState(read);
+  useEffect(() => {
+    const on = () => setFlags(read());
+    window.addEventListener(PANELS_EVENT, on);
+    return () => window.removeEventListener(PANELS_EVENT, on);
+  }, []);
+  const toggle = (k: PanelFlag) => {
+    try {
+      localStorage.setItem(LS[k], readFlag(k) ? "0" : "1");
+    } catch {
+      /* storage blocked: nothing to remember it in */
+    }
+    window.dispatchEvent(new Event(PANELS_EVENT));
+  };
+  return [flags, toggle] as const;
+}
 const num = (key: string, fallback: number) => {
   const v = Number(localStorage.getItem(key));
   return Number.isFinite(v) && v > 0 ? v : fallback;
@@ -186,6 +225,8 @@ export default function NotebookView({
   const [leftW, setLeftW] = useState(() => clamp(200, 560, num(LS.left, 264)));
   const [rightW, setRightW] = useState(() => clamp(240, 620, num(LS.right, 288)));
   const [split, setSplit] = useState(() => clamp(0.25, 0.8, num(LS.split, 0.62)));
+  const [panelFlags, togglePanel] = usePanelFlags();
+  const { swapped } = panelFlags;
   const leftColRef = useRef<HTMLDivElement>(null);
   /** Phones and upright tablets show one panel at a time (see the end of this component). */
   const phone = useMediaQuery(NARROW);
@@ -530,6 +571,10 @@ export default function NotebookView({
     </header>
   );
 
+  // A colored notebook wears its color as the accent (notebookColors.ts).
+  const tintStyle = notebookTintStyle(notebook.color);
+  const tintClass = tintStyle ? " nb-tint nb-accent" : "";
+
   const constitutionOn = (notebook.constitution_on ?? 1) !== 0;
   const sourcesPanel = (
     <SourcesPanel
@@ -636,6 +681,12 @@ export default function NotebookView({
       current={preset}
       onAdd={panes.length < MAX_PANES ? (edge) => void addPane(pane.id, edge) : undefined}
       onPreset={(p) => setLayout(PRESETS[p].build(orderedPanes.map((x) => x.id)))}
+      panels={{
+        sources: !panelFlags.hideSources,
+        studio: !panelFlags.hideStudio,
+        swapped,
+        onToggle: (k) => togglePanel(k === "sources" ? "hideSources" : k === "studio" ? "hideStudio" : "swapped"),
+      }}
     />
   );
 
@@ -720,6 +771,8 @@ export default function NotebookView({
       onSourcesChanged={refreshSources}
       onOpenSettings={onOpenSettings}
       readOnly={readOnly}
+      onLeft={!phone && swapped}
+      hidden={!phone && panelFlags.hideStudio}
     />
   );
 
@@ -765,7 +818,7 @@ export default function NotebookView({
       { id: "studio", label: "Studio", icon: Sparkles, badge: artifacts.length || undefined },
     ] as const;
     return (
-      <div className="flex h-full flex-col">
+      <div className={`flex h-full flex-col${tintClass}`} style={tintStyle}>
         {header}
         {sharedBanner}
         <div className="relative min-h-0 flex-1">
@@ -812,17 +865,19 @@ export default function NotebookView({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className={`flex h-full flex-col${tintClass}`} style={tintStyle}>
       {!tabbed && header}
       {sharedBanner}
       {pairModal}
       {shareModal}
 
-      {/* three panels */}
-      <div className="flex min-h-0 flex-1">
+      {/* three panels; swapped, Sources and chats sit on the right and Studio on the left */}
+      <div className={`flex min-h-0 flex-1 ${swapped ? "flex-row-reverse" : ""}`}>
         <div
           ref={leftColRef}
-          className="anim-panel-left flex h-full shrink-0 flex-col border-r border-edge-soft bg-panel"
+          className={`${swapped ? "anim-panel-right border-l" : "anim-panel-left border-r"} h-full shrink-0 flex-col border-edge-soft bg-panel ${
+            panelFlags.hideSources ? "hidden" : "flex"
+          }`}
           style={{ width: leftW }}
         >
           <div className="flex min-h-0 flex-col" style={{ flex: `${split} 1 0%`, minHeight: 110 }}>
@@ -847,9 +902,9 @@ export default function NotebookView({
           aria-label="Resize sources panel"
           onPointerDown={(e) => {
             const start = leftW;
-            startDrag(e, (dx) => setLeftW(clamp(200, 560, start + dx)));
+            startDrag(e, (dx) => setLeftW(clamp(200, 560, swapped ? start - dx : start + dx)));
           }}
-          className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
+          className={`w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover ${panelFlags.hideSources ? "hidden" : ""}`}
         />
         {/* chats, placed by the layout; their DOM order never changes, so a move never remounts one */}
         <div ref={chatAreaRef} className="relative h-full min-w-0 flex-1">
@@ -910,9 +965,9 @@ export default function NotebookView({
           aria-label="Resize studio panel"
           onPointerDown={(e) => {
             const start = studioW;
-            startDrag(e, (dx) => setRightW(clamp(240, 620, start - dx)));
+            startDrag(e, (dx) => setRightW(clamp(240, 620, swapped ? start + dx : start - dx)));
           }}
-          className="w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover"
+          className={`w-[5px] shrink-0 cursor-col-resize transition-colors hover:bg-hover ${panelFlags.hideStudio ? "hidden" : ""}`}
         />
         {studioPanel}
       </div>

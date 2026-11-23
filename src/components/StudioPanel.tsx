@@ -81,7 +81,7 @@ import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
 import { confirmAction } from "./ConfirmDialog";
 import DrawingView from "./DrawingView";
-import { isDarkTheme } from "../lib/themes";
+import { activeTheme, isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
@@ -165,6 +165,10 @@ const StudioPanel = forwardRef<
     onReadingChange?: (reading: boolean) => void;
     /** A notebook shared with you: outputs can be opened, not made, revised or deleted. */
     readOnly?: boolean;
+    /** Side panels swapped: Studio sits on the left. */
+    onLeft?: boolean;
+    /** Hidden from the layout (still mounted, so running jobs carry on). */
+    hidden?: boolean;
   }
 >(function StudioPanel({
   notebookId,
@@ -177,6 +181,8 @@ const StudioPanel = forwardRef<
   onOpenSettings,
   onReadingChange,
   readOnly = false,
+  onLeft = false,
+  hidden = false,
 }, ref) {
   /** This notebook's generations in flight — several can run at once. */
   const jobs = useStudioJobs(notebookId);
@@ -842,7 +848,9 @@ const StudioPanel = forwardRef<
 
   return (
     <aside
-      className="anim-panel-right flex h-full shrink-0 flex-col border-l border-edge-soft bg-panel"
+      className={`${onLeft ? "anim-panel-left border-r" : "anim-panel-right border-l"} h-full shrink-0 flex-col border-edge-soft bg-panel ${
+        hidden ? "hidden" : "flex"
+      }`}
       style={{ width }}
     >
       {/* An opened output takes over the panel; Minimize brings the tools back. */}
@@ -854,7 +862,7 @@ const StudioPanel = forwardRef<
           onSourcesChanged={onSourcesChanged}
           onArtifactChanged={onArtifactsChanged}
           running={jobs.length}
-          dark={isDarkTheme(settings.theme)}
+          dark={isDarkTheme(activeTheme())}
           showDetails={settings.showDetails}
           onFixInteractive={(problem) => fixInteractive(artifacts.find((x) => x.id === viewing.id) ?? viewing, problem)}
         />
@@ -862,7 +870,7 @@ const StudioPanel = forwardRef<
         <DrawingView
           key={drawing.id}
           artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
-          dark={isDarkTheme(settings.theme)}
+          dark={isDarkTheme(activeTheme())}
           onClose={() => {
             setDrawing(null);
             onArtifactsChanged();
