@@ -68,7 +68,7 @@ import {
 } from "./chatTurns";
 import { stripFetchMarker } from "./fetchList";
 import { interactivePrior, pickAngle, pickFormat, shuffleQuizOptions, varietyNote, withVariety } from "./studioVariety";
-import { buildPagePrompt, buildStoryboardPrompt, PAGE_SYSTEM, parseInteractive, writePage } from "./interactive";
+import { buildPagePrompt, buildStoryboardPrompt, PAGE_SYSTEM, parseInteractive, STORYBOARD_ROLE, writePage } from "./interactive";
 import { storeGeneratedImages, stripHistoryImages } from "./genImage";
 import {
   condenseNotebook,
@@ -1003,7 +1003,10 @@ async function runGenerateJob(p: {
     meterUsage(meter, settings.provider, settings.model, u);
   };
   /** `query` = what to retrieve from the sources (defaults to the prompt itself). */
-  const ask = async (prompt: string, opts: { exhaustive?: boolean; query?: string } = {}) => {
+  const ask = async (
+    prompt: string,
+    opts: { exhaustive?: boolean; query?: string; role?: { persona: string; rules: string } } = {}
+  ) => {
     // Huge notebooks: cached whole-notebook condensation so every tool covers
     // ALL sources (the expensive pass is computed once, then shared).
     if (opts.exhaustive && totalSourceChars > MAP_REDUCE_THRESHOLD) {
@@ -1024,7 +1027,7 @@ async function runGenerateJob(p: {
         signal,
         onUsage: tally,
         messages: [
-          { role: "system", content: condensedSystemPrompt(notes) },
+          { role: "system", content: condensedSystemPrompt(notes, opts.role) },
           { role: "user", content: prompt },
         ],
       });
@@ -1042,7 +1045,10 @@ async function runGenerateJob(p: {
       messages: [
         {
           role: "system",
-          content: buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined, { budget: contextBudget(settings) }),
+          content: buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined, {
+            budget: contextBudget(settings),
+            role: opts.role,
+          }),
         },
         { role: "user", content: prompt },
       ],
@@ -1158,6 +1164,7 @@ async function runGenerateJob(p: {
         await ask(buildStoryboardPrompt({ topic }, { ...lens, prior: interactivePrior(artifacts) }), {
           exhaustive: true,
           query: topic || buildStoryboardPrompt({ topic }, lens),
+          role: STORYBOARD_ROLE,
         })
       ).trim();
       if (storyboard.length < 100) throw new Error("The storyboard came back empty — try again.");

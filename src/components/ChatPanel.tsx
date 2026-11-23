@@ -720,6 +720,11 @@ interface SystemPromptOpts {
    * every source's full text, oldest first, instead of `retrieved` excerpts.
    */
   whole?: boolean;
+  /**
+   * Replaces the chat persona and its default rules, for prompts that aren't
+   * chat (Studio's interactive storyboard). Sources and constitution stay.
+   */
+  role?: { persona: string; rules: string };
 }
 
 /** The system prompt as one string (one-off requests: /search, Studio). */
@@ -776,7 +781,7 @@ export function buildSystemParts(
     : [];
   const inKnowledge = new Set(knowledge.map((s) => s.id));
 
-  const parts: string[] = ["You are BrewLM, a thoughtful study assistant."];
+  const parts: string[] = [opts.role?.persona ?? "You are BrewLM, a thoughtful study assistant."];
   /** Per-message sections, after the cache breakpoint. */
   const tail: string[] = [];
 
@@ -794,7 +799,9 @@ export function buildSystemParts(
 
   const formatRules = `Write math in LaTeX notation — $...$ or \\(...\\) inline, $$...$$ or \\[...\\] for display equations (integrals, fractions, matrices…). The app renders it; never spell formulas out in plaintext.\n- Visuals the app renders inline when you emit them: fenced svg diagrams, fenced mermaid flowcharts/graphs, and image embeds ![alt](https://image-url). Use them when they'd clarify a concept.\n- Be concise and clear. Use markdown formatting (lists, headers, bold) where it improves readability.`;
   parts.push(
-    grounded
+    opts.role
+      ? `# Rules\n${opts.role.rules}`
+      : grounded
       ? `# Default rules\n- Base answers on the user's sources first; say when something isn't covered.\n- Cite sources by title in parentheses, e.g. (Source: Week 4 lecture.pdf).\n- When a message references @Title, the user is pointing at that material — center the answer on it.\n- ${formatRules}`
       : `# Default rules\n- Source grounding is OFF in this notebook: answer from your own knowledge. None of the user's documents were sent with this conversation — do not claim to have read or cite specific sources.\n- Only if a message references @Title has the user handed you material — then center the answer on it and cite it.\n- ${formatRules}`
   );
@@ -912,7 +919,7 @@ export function buildSystemParts(
     );
   }
 
-  if (grounded && knowledge.length === 0 && mentioned.length === 0) {
+  if (grounded && !opts.role && knowledge.length === 0 && mentioned.length === 0) {
     parts.push(
       "The user has not added any knowledge sources yet — encourage them to add sources, or answer simple questions generally."
     );

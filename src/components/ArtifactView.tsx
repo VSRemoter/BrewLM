@@ -13,10 +13,11 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isMediaValue, mediaBytes, mediaExt, mediaSrc } from "../lib/blobs";
 import { addSource } from "../lib/db";
 import { renderMarkdown } from "../lib/markdown";
+import { getZoom, subscribeZoom } from "../lib/zoom";
 import { artifactText, exportName } from "../lib/mentions";
 import { hydrateMermaid } from "../lib/mermaid";
 import {
@@ -275,7 +276,9 @@ function InteractiveView({
   onFix?: (problem: string) => Promise<string | null>;
 }) {
   const page = useMemo(() => parseInteractive(data), [data]);
-  const doc = useMemo(() => (page ? sandboxDoc(page.html, dark) : ""), [page, dark]);
+  /** The app's Text size: the frame cancels it (see sandboxDoc) and the page applies it itself. */
+  const zoom = useSyncExternalStore(subscribeZoom, getZoom);
+  const doc = useMemo(() => (page ? sandboxDoc(page.html, dark, zoom) : ""), [page, dark, zoom]);
   /** The page is posted to the frame (platform.sandboxUrl) when it's ready; a new doc reloads the frame. */
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -369,6 +372,7 @@ function InteractiveView({
         title={title}
         src={platform.sandboxUrl()}
         sandbox="allow-scripts"
+        style={{ zoom: 1 / zoom }}
         className="min-h-0 w-full flex-1 border-0 bg-canvas"
       />
       {!expanded && (
