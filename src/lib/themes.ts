@@ -110,6 +110,8 @@ export function applyTheme(id: string): void {
   }
   themeApplied = true;
   root.dataset.theme = id;
+  // Light or dark, for colors with a shade of each (notebook colors).
+  root.dataset.scheme = isDarkTheme(id) ? "dark" : "light";
   // Phones colour the status bar from this (web app); headers use the panel colour.
   const panel = id === "custom" ? customSwatch(currentCustomColors()).panel : THEMES.find((t) => t.id === id)?.swatch.panel;
   if (panel) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", panel);
@@ -119,4 +121,9 @@ export function applyTheme(id: string): void {
 export async function chooseTheme(id: string): Promise<void> {
   applyTheme(id);
   await setSetting("theme", id);
+}
+
+/** The theme on screen now (Match system can make it differ from the saved pick). */
+export function activeTheme(): string {
+  return document.documentElement.dataset.theme || DEFAULT_THEME;
 }

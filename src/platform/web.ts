@@ -208,6 +208,20 @@ export const platform: Platform = {
   },
   openUrl: async (url) => void window.open(url, "_blank", "noopener"),
   appVersion: async () => __APP_VERSION__,
+  // The tab's icon (a PNG data URL; the home-screen icon is fixed by the manifest).
+  setAppIcon: async (png) => {
+    let bin = "";
+    for (const b of png) bin += String.fromCharCode(b);
+    const href = `data:image/png;base64,${btoa(bin)}`;
+    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.type = "image/png";
+    link.href = href;
+  },
   // public/sandbox.html: Cloudflare serves it at /sandbox, with its own
   // headers there (public/_headers); Vite by its file name.
   sandboxUrl: () => (import.meta.env.DEV ? "/sandbox.html" : "/sandbox"),

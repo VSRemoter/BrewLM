@@ -104,6 +104,31 @@ fn dev_profile() -> Option<String> {
         .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
+/// Settings → Appearance → App icon: swaps the Dock icon for this run (PNG
+/// bytes drawn by appIcon.ts). macOS only; the bundle's icon shows while
+/// BrewLM is closed, as with any app that changes its icon.
+#[tauri::command]
+fn set_app_icon(app: tauri::AppHandle, png: Vec<u8>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(move || {
+            use objc2::{AllocAnyThread, MainThreadMarker};
+            use objc2_app_kit::{NSApplication, NSImage};
+            use objc2_foundation::NSData;
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            let ns_app = NSApplication::sharedApplication(mtm);
+            let data = NSData::with_bytes(&png);
+            if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+                unsafe { ns_app.setApplicationIconImage(Some(&image)) };
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, png);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -145,6 +170,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             restart_app,
+            set_app_icon,
             server::start_sharing,
             server::stop_sharing,
             server::share_status,
