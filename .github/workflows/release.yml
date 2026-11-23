@@ -100,6 +100,11 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+        env:
+          # kokoro-js pulls in onnxruntime-node, whose install downloads CUDA
+          # libraries on Linux x64 from a release asset that's gone (404), so
+          # the install failed. The app never uses them (voices run in the webview).
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
       # Bundles cloudflared as a Tauri sidecar (phone pairing tunnels).
       - name: Fetch sidecar binaries
