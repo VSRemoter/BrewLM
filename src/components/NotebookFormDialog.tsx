@@ -3,10 +3,10 @@
  * an optional cover across the top, a large borderless title, a quiet
  * description, then properties (the folder a notebook lives in) as rows.
  */
-import { Check, FolderClosed, House, ImagePlus, Palette, Trash2 } from "lucide-react";
+import { Check, FolderClosed, House, ImagePlus, Palette, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { mediaSrc } from "../lib/blobs";
-import { COVER_STYLES, coverPreview, makeCover } from "../lib/covers";
+import { COVER_STYLES, coverPreview, makeCover, type CoverStyle } from "../lib/covers";
 import { NOTEBOOK_COLORS, notebookTintStyle } from "../lib/notebookColors";
 import type { Folder } from "../lib/types";
 import { GhostButton, Modal, PrimaryButton, PropertyRow, SelectMenu } from "./ui";
@@ -47,16 +47,53 @@ export default function NotebookFormDialog({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [drawing, setDrawing] = useState(false);
-  const pickReadyCover = async (id: string) => {
+  /** The cover picker (upload, or a ready-made cover) is showing. */
+  const [coverMenu, setCoverMenu] = useState(false);
+  const pickReadyCover = async (c: CoverStyle) => {
     setDrawing(true);
     try {
-      onPickCover(await makeCover(id));
+      onPickCover(await makeCover(c.id));
+      // A notebook without a color takes the cover's.
+      if (color && !color.value) color.onChange(c.color);
+      setCoverMenu(false);
     } finally {
       setDrawing(false);
     }
   };
   const formId = `${kind}-form`;
-  const pick = () => fileRef.current?.click();
+  const pick = () => {
+    setCoverMenu(false);
+    fileRef.current?.click();
+  };
+
+  const coverPicker = coverMenu && (
+    <div className="anim-menu mb-3 rounded-xl border border-edge bg-panel p-2.5 shadow-sm">
+      <button
+        type="button"
+        onClick={pick}
+        className="mb-2.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+      >
+        <Upload size={14} strokeWidth={1.8} />
+        Upload an image…
+      </button>
+      <p className="mb-1.5 px-0.5 text-[11.5px] text-ink-3">Or use a ready-made cover</p>
+      <div className="grid grid-cols-4 gap-1.5" role="group" aria-label="Ready-made covers">
+        {COVER_STYLES.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            disabled={drawing}
+            onClick={() => void pickReadyCover(c)}
+            title={c.name}
+            className="group/cover flex flex-col gap-1 rounded-lg p-1 text-left transition-colors hover:bg-hover disabled:opacity-50"
+          >
+            <span className="block h-10 w-full rounded-md ring-1 ring-edge" style={{ background: coverPreview(c) }} />
+            <span className="px-0.5 text-[11px] text-ink-2 group-hover/cover:text-ink">{c.name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <Modal
@@ -86,7 +123,8 @@ export default function NotebookFormDialog({
             <div className="absolute right-2 bottom-2 flex gap-1 opacity-100 transition-opacity md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
               <button
                 type="button"
-                onClick={pick}
+                onClick={() => setCoverMenu((v) => !v)}
+                aria-expanded={coverMenu}
                 className="rounded-md bg-panel/90 px-2 py-1 text-[12px] font-medium text-ink-2 shadow-sm ring-1 ring-edge backdrop-blur transition-colors hover:text-ink"
               >
                 Change cover
@@ -103,32 +141,19 @@ export default function NotebookFormDialog({
             </div>
           </div>
         ) : (
-          <div className="-ml-1.5 mb-1 flex flex-wrap items-center gap-2">
+          <div className="-ml-1.5 mb-1 flex items-center gap-2">
             <button
               type="button"
-              onClick={pick}
+              onClick={() => setCoverMenu((v) => !v)}
+              aria-expanded={coverMenu}
               className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
             >
               <ImagePlus size={14} strokeWidth={1.8} />
               Add cover
             </button>
-            {/* Ready-made covers, drawn on the spot. */}
-            <span className="flex items-center gap-1" aria-label="Ready-made covers">
-              {COVER_STYLES.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  disabled={drawing}
-                  onClick={() => void pickReadyCover(c.id)}
-                  title={`${c.name} cover`}
-                  aria-label={`${c.name} cover`}
-                  className="h-5 w-7 rounded-[4px] ring-1 ring-edge transition-transform hover:scale-110 disabled:opacity-50"
-                  style={{ background: coverPreview(c) }}
-                />
-              ))}
-            </span>
           </div>
         )}
+        {coverPicker}
         <input
           ref={fileRef}
           type="file"

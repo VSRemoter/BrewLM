@@ -22,6 +22,7 @@ import {
 } from "./look";
 import { APP_ICONS, iconSvgFor, parseAppIcon } from "./appIcon";
 import { isNotebookColor, notebookTintStyle } from "./notebookColors";
+import { COVER_STYLES } from "./covers";
 import { THEMES } from "./themes";
 import { FONTS } from "./fonts";
 
@@ -185,6 +186,7 @@ describe("notebook colors", () => {
   it("give a light and a dark shade, each with readable text", () => {
     expect(isNotebookColor("teal")).toBe(true);
     expect(isNotebookColor("plaid")).toBe(false);
+    for (const c of COVER_STYLES) expect(isNotebookColor(c.color)).toBe(true);
     expect(notebookTintStyle("")).toBeUndefined();
     expect(notebookTintStyle("blue")).toMatchObject({ "--nb-light": "#2563eb", "--nb-light-ink": "#ffffff" });
     expect(notebookTintStyle("amber")).toMatchObject({ "--nb-dark-ink": "#111111" });

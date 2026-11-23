@@ -9,22 +9,35 @@ export interface CoverStyle {
   name: string;
   stops: [string, string, string];
   pattern: "dots" | "waves" | "grid" | "rings" | "none";
+  /** The notebook color (notebookColors.ts) that goes with it, picked along with the cover when none is set. */
+  color: string;
 }
 
 export const COVER_STYLES: CoverStyle[] = [
-  { id: "ember", name: "Ember", stops: ["#c2410c", "#f2541b", "#fbbf24"], pattern: "waves" },
-  { id: "latte", name: "Latte", stops: ["#a47148", "#d4a373", "#faedcd"], pattern: "dots" },
-  { id: "matcha", name: "Matcha", stops: ["#14532d", "#2e9a5e", "#bbf7d0"], pattern: "rings" },
-  { id: "coldbrew", name: "Cold Brew", stops: ["#0b1d4f", "#2563eb", "#7dd3fc"], pattern: "grid" },
-  { id: "berry", name: "Berry", stops: ["#6b0f35", "#db2777", "#f9a8d4"], pattern: "waves" },
-  { id: "lavender", name: "Lavender", stops: ["#3b22a8", "#7c5cff", "#ddd6fe"], pattern: "dots" },
-  { id: "night", name: "Night", stops: ["#0e0e11", "#27272f", "#52525b"], pattern: "rings" },
-  { id: "sunrise", name: "Sunrise", stops: ["#f472b6", "#fb923c", "#fde68a"], pattern: "none" },
+  { id: "ember", name: "Ember", stops: ["#c2410c", "#f2541b", "#fbbf24"], pattern: "waves", color: "orange" },
+  { id: "latte", name: "Latte", stops: ["#a47148", "#d4a373", "#faedcd"], pattern: "dots", color: "amber" },
+  { id: "matcha", name: "Matcha", stops: ["#14532d", "#2e9a5e", "#bbf7d0"], pattern: "rings", color: "green" },
+  { id: "coldbrew", name: "Cold Brew", stops: ["#0b1d4f", "#2563eb", "#7dd3fc"], pattern: "grid", color: "blue" },
+  { id: "berry", name: "Berry", stops: ["#6b0f35", "#db2777", "#f9a8d4"], pattern: "waves", color: "pink" },
+  { id: "lavender", name: "Lavender", stops: ["#3b22a8", "#7c5cff", "#ddd6fe"], pattern: "dots", color: "violet" },
+  { id: "night", name: "Night", stops: ["#0e0e11", "#27272f", "#52525b"], pattern: "rings", color: "slate" },
+  { id: "sunrise", name: "Sunrise", stops: ["#f472b6", "#fb923c", "#fde68a"], pattern: "none", color: "red" },
 ];
 
-/** A CSS preview of a cover, for the picker. */
+const LINE = "rgba(255,255,255,0.22)";
+const PATTERN_CSS: Record<CoverStyle["pattern"], string> = {
+  dots: `radial-gradient(${LINE} 1.2px, transparent 1.7px) 0 0 / 8px 8px`,
+  waves: `repeating-linear-gradient(168deg, transparent 0 7px, ${LINE} 7px 8.5px)`,
+  grid: `linear-gradient(${LINE} 1px, transparent 1px) 0 0 / 9px 9px, linear-gradient(90deg, ${LINE} 1px, transparent 1px) 0 0 / 9px 9px`,
+  rings: `repeating-radial-gradient(circle at 82% 15%, transparent 0 6px, ${LINE} 6px 7.5px)`,
+  none: "",
+};
+
+/** A CSS preview of a cover (gradient and pattern), for the picker. */
 export function coverPreview(c: CoverStyle): string {
-  return `linear-gradient(120deg, ${c.stops[0]}, ${c.stops[1]} 55%, ${c.stops[2]})`;
+  const base = `linear-gradient(60deg, ${c.stops[0]}, ${c.stops[1]} 55%, ${c.stops[2]})`;
+  const pattern = PATTERN_CSS[c.pattern];
+  return pattern ? `${pattern}, ${base}` : base;
 }
 
 const W = 1200;
