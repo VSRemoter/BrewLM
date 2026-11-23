@@ -22,7 +22,7 @@ BrewLM turns your own materials — PDFs, web pages, YouTube videos, notes, imag
 - **Students** — ingest course readings and lectures, drill yourself with flashcards, quizzes, mind maps and study guides generated from your sources, listen to a podcast of your notes, and work problems by hand in Drawings.
 - **Researchers & analysts** — upload papers and links, ask cited questions, produce briefing docs, and run web-powered Deep Research reports with citations.
 - **Writers & knowledge workers** — keep a folder of topic notebooks, chat with their contents, and move findings into markdown reports.
-- **Privacy-minded users** — it's local-first: no account, no cloud sync, no telemetry. Bring your own API key, or run fully offline with a local model.
+- **Privacy-minded users** — it's local-first: no account, no telemetry, and nothing leaves your computer unless you turn on the optional, end-to-end encrypted BrewLM Sync (and even then, any notebook or item can stay on this device only). Bring your own API key, or run fully offline with a local model.
 
 ---
 
@@ -38,13 +38,14 @@ BrewLM turns your own materials — PDFs, web pages, YouTube videos, notes, imag
 - Answers cite **your sources by title inline** (e.g. "…the effect was significant (Source: Week 4 lecture.pdf)").
 - **Retrieval over sources**: source text is chunked and indexed locally (embedded via OpenAI/OpenRouter or a local embedding model, with an offline BM25 fallback), so each reply draws on the most relevant passages of *all* sources — a 400-page PDF stays answerable without large-context token costs.
 - **Save to Sources**: hover any AI reply and save it as a source with one click, so a great answer becomes part of the notebook.
-- **@mention** sources or Studio outputs mid-prompt to focus the context; mentions persist across follow-ups.
+- **@mention** sources, Studio outputs or whole notebooks mid-prompt to focus the context, **from any notebook**: the @ menu searches them all (type `Notebook/` or `Folder/` to browse inside one). Mentions are saved by id, so renamed items still resolve, and a long mention sends its most relevant parts.
+- **Side-by-side chats** — open up to three chats at once, each with **its own model** (`/model` or the model menu under the composer). Drag a chat by its title to rearrange, drag the dividers to resize, or pick a preset layout (side by side, stacked, one wide on top…); the layout is saved per notebook.
 - **/ground** toggles source grounding per notebook — off means free-form answers from the model's own knowledge (no sources sent, no retrieval cost).
 - **/fetch <what you want to learn>** — finds web sources to learn from and lists them as cards: open any in your browser, add the ones you want to Sources (or Add all), ignore the rest.
 - **/search <query>** — one-shot web answer inline with numbered source links (provider web search, billed per query).
 - **Cost visibility**: prompt caching (Anthropic cache breakpoints, OpenRouter/OpenAI usage accounting) keeps repeated notebook context cheap, and `/details` shows tokens and cost under every reply.
 - Rich replies: Markdown, LaTeX math, Mermaid diagrams, inline SVG, and wide tables that spread past the chat column and scroll instead of overflowing.
-- Multiple chat threads per notebook with auto-titles, renaming, a `/queue` for lining up prompts and commands, a **stop** button, and a per-notebook **chat background image**.
+- Multiple chat threads per notebook with auto-titles, renaming, a `/queue` for lining up prompts and commands, a **stop** button, and a per-notebook **chat background** — a picture, or an **animated GIF or short video**, converted on your device into a small looping MP4 (pauses for reduced motion; "Animate backgrounds" turns motion off).
 
 ### Images in chat
 - **/image [ratio] <prompt>** generates a picture with your **Image model** (OpenRouter Image API) — only the prompt is sent, never your sources or chat, so each image costs just the image.
@@ -58,6 +59,7 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 - **Audio overview** — a podcast between a **Host** and **Co-Host** (or a solo narrator): deep-dive, brief, debate or critique, **~5, ~10 or ~20 minutes**. Longer episodes are outlined first and written part by part, so even small models produce coherent long episodes. Voiced by system voices, OpenAI, ElevenLabs, or **any OpenRouter text-to-speech model** (e.g. Voxtral).
 - **Report** — summary, study guide, briefing, FAQ, timeline, thorough analysis, or a fully custom prompt.
 - **Deep research** — plans searches, reads the web, and writes a cited report on any topic; pages it reads are imported as sources.
+- **Interactive pages** — describe what you want and BrewLM builds an animation, simulation or small game from your sources. Pages run in a sandbox with no network access, aim for one focused visual, and fit a narrow panel.
 - **Drawings** — a full-window [Excalidraw](https://excalidraw.com) sketchpad (pen, shapes, arrows, text, eraser, images) for quick notes, diagrams and working problems by hand. Autosaves, exports to PNG, follows light/dark themes, works offline — and drawings are **never sent to the AI**.
 - **Revise** any AI output with an instruction, replacing it or saving a revised copy.
 - One-click generation follows your **Studio Defaults**; the sliders icon on each card opens a customize dialog (sources, length, difficulty, focus…).
@@ -73,8 +75,10 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 ### Customization & organization
 - **Clone & Template**: `/clone "<title>" [yes|no]` duplicates a notebook exactly (sources + chats + Studio). **Use as template** on the homepage makes a sources-only starter copy.
 - **Folders** with `/move`, **star** pinning, renaming of chats and notebooks, per-notebook covers and chat backgrounds.
-- **12 themes** — Brew (default), Daylight, Midnight, Forest, Ocean, Copper, Wine, Rose, Matrix, Lilac, Sunset and Candy — and **6 interface fonts** (System, Serif, Rounded, Mono, Avenir, Typewriter), switchable instantly with `/theme` and `/font`.
-- **Settings**: Appearance (theme, font, text size, smooth scrolling, response details), AI Model (provider, keys, models, image & research models, temperature), Studio Defaults, Audio Voices (TTS provider, TTS models, saved voices), Usage & Cost (per-model token ledger with cost estimates), Data & Storage (backup export/import, Trash auto-empty, factory reset), Phone Pairing, and About & Updates. Everything saves instantly.
+- **Looks** (Settings → Appearance) — one pick sets the theme, fonts, corner shape, density, line spacing, reading width, chat style and code colors. Eight ship built in (House Blend, Morning Pour, Espresso Bar, Night Shift, Study Hall, Typewriter, Lavender Notes, Cold Brew Lab); save your own and share them as `BREWLOOK1` codes. A **Feel** slider adjusts corners and spacing together, **Match system** follows your computer's light and dark mode, and there are accessibility options (high contrast, strong focus rings, reduce motion).
+- **Themes** — Brew (default), Cream, Rose Latte, Lavender Latte, Espresso, Dark Roast, Coffee Cherry, Matcha, Cold Brew, or your own Custom Blend — and **6 interface fonts** (System, Serif, Rounded, Mono, Avenir, Typewriter), switchable instantly with `/theme` and `/font`.
+- **Notebook colors** tint a notebook's Home card and accent; ready-made covers live in the Add cover picker; the app icon can be recolored.
+- **Settings**: Appearance (Looks, theme, font, text size, smooth scrolling, response details), AI Model (provider, keys, models, image & research models, temperature), Local Models (local server, built-in transcription and voices), Studio Defaults, Audio Voices (TTS provider, TTS models, saved voices), Usage & Cost (per-model token ledger with cost estimates), Data & Storage (backup export/import, the largest items and what they take up in Sync, Trash auto-empty, factory reset), Phone Pairing, Sync, Sharing (your published links), and About & Updates. Everything saves instantly.
 
 ### Pair your phone
 - **Settings → Phone Pairing** (or the phone icon in a notebook header) shows a QR code + 6-digit PIN, valid for ~20 minutes. Scan it from anywhere — cellular included — and a secure cloudflared tunnel pairs the device. No app to install, no account.
@@ -88,9 +92,15 @@ Every output is saved to the Studio panel and can be viewed, revised, downloaded
 - Safety: every linked device is listed with **one-tap revoke** and a **recent activity log** (per-device revocable keys, rate limits on AI actions), the phone page runs under a strict Content-Security-Policy (no inline or outside scripts), and **your API keys never leave your computer**.
 - The phone talks to BrewLM on your computer, so the computer must be on, awake and running BrewLM with sharing started. The tunnel address changes each time sharing starts, so the phone re-pairs after a restart. (For using BrewLM with the computer off, there's the web app with BrewLM Sync.)
 
+### BrewLM Sync and the web app (optional)
+- **Settings → Sync** signs in by email and syncs your library across computers, and to the web app at [app.brewlm.com](https://app.brewlm.com) for phones and tablets, **even with your main computer off**. Everything is **end-to-end encrypted** with your Sync password (plus a printable recovery key); the server never sees your notebooks or keys. New accounts start with a 14-day trial; plans are on [brewlm.com/pricing](https://brewlm.com/pricing).
+- **Keep anything on this device only**: choose "This device only" for a notebook when you create or edit it, or use the cloud icon on a single source, chat or Studio output. Sync never uploads it; if it already synced, it's removed from the server and your other devices once, and stays here. Settings → Sync can make new notebooks start out local. (Desktop only: a browser can clear its storage.)
+- **Built to keep going**: when your storage is full, deletions and changes that fit still sync and the rest waits for space; files over 100 MB stay on the device; big uploads and downloads are spread out so other devices' changes keep arriving.
+- **Share a notebook** as a read-only link that anyone can open in the browser, no account needed, and "Save a copy" into their own BrewLM. The key is in the link itself, so the server can't read what you shared. Items you keep on this device only are left out.
+
 ### Local-first, bring your own keys
 - Everything — notebooks, sources, chats, Studio outputs, settings and API keys — lives in one SQLite file, `brewlm.db`, in the app data folder (on macOS: `~/Library/Application Support/com.brewlm.app/`), with media (audio overviews, images, covers) as files in `blobs/` beside it. Schema migrations run automatically at startup; **Data & Storage → Export backup** saves both as one `.zip` (older `.db` backups still import).
-- AI calls go straight from your computer to the provider you chose; nothing is proxied through a BrewLM server.
+- AI calls go straight from your computer to the provider you chose; nothing is proxied through a BrewLM server. With a local model, transcription (whisper.cpp, built in) and podcast voices (Kokoro, built in) run on your computer too.
 
 ---
 
@@ -111,7 +121,7 @@ Then add an API key (or connect a local model) in **Settings** on first launch �
 ### Option 2 — Build from source
 
 #### Requirements
-- [Node.js](https://nodejs.org/) 20+
+- [Node.js](https://nodejs.org/) 22+
 - [Rust](https://rustup.rs/) (Tauri 2 toolchain)
 - An API key for OpenRouter, OpenAI or Anthropic — or a local model server (Ollama, LM Studio, llama.cpp). TTS keys are optional.
 
@@ -136,7 +146,7 @@ npm run tauri build
 ```
 Produces a native bundle for your OS in `src-tauri/target/release/bundle/` (`.dmg` on macOS, `.msi`/`.exe` on Windows, `.AppImage`/`.deb` on Linux).
 
-**Maintainers:** phone pairing tunnels run through [cloudflared](https://github.com/cloudflare/cloudflared) (BSD-3-Clause © Cloudflare), bundled as a Tauri sidecar. Run `bash scripts/fetch-sidecars.sh` once before `tauri build` (the CI release workflow does this automatically). Built-in transcription runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT © The ggml authors), also a sidecar: run `bash scripts/build-whisper.sh` once before `tauri dev` or `tauri build` (it needs cmake; CI runs it too). Its speech models aren't bundled: the app downloads them on request from Hugging Face and checks them against SHA-256 sums pinned in `src-tauri/src/whisper.rs`. In dev (`tauri dev`) any `cloudflared` on PATH works — e.g. `brew install cloudflared`; Windows builds currently fall back to PATH (see the script header). Pushing a tag like `v0.x.y` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
+**Maintainers:** phone pairing tunnels run through [cloudflared](https://github.com/cloudflare/cloudflared) (BSD-3-Clause © Cloudflare), bundled as a Tauri sidecar. Run `bash scripts/fetch-sidecars.sh` once before `tauri build` (the CI release workflow does this automatically). Built-in transcription runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT © The ggml authors), also a sidecar: run `bash scripts/build-whisper.sh` once before `tauri dev` or `tauri build` (it needs cmake; CI runs it too). Its speech models aren't bundled: the app downloads them on request from Hugging Face and checks them against SHA-256 sums pinned in `src-tauri/src/whisper.rs`. In dev (`tauri dev`) any `cloudflared` on PATH works — e.g. `brew install cloudflared`; Windows builds currently fall back to PATH (see the script header). Pushing a tag like `v5.9.0` runs the *Release* workflow (`.github/workflows/release.yml`), which builds macOS, Windows and Linux installers in CI and attaches them to a draft GitHub Release. Review the draft, then publish.
 
 **In-app updates:** the desktop app updates itself (Settings → About & Updates, or the banner on the homepage) from the `latest.json` each release carries. The bundles are signed with the updater key whose public half is in `tauri.conf.json` (`plugins.updater.pubkey`); CI reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets. A local `tauri build` needs the same two environment variables set, or it stops at the signing step. Losing the private key means installed apps can no longer update in place, so keep a backup of it.
 
@@ -195,7 +205,8 @@ Type `/` in chat to open the palette with autocomplete.
 ## Architecture at a glance
 
 - **Tauri 2 + React 19 + TypeScript + Vite** frontend; Tailwind CSS 4 design system.
-- **SQLite** (`@tauri-apps/plugin-sql`) as the data store — notebooks, folders, sources, chats, artifacts, settings, paired devices, and Trash (`trashed_at`) soft-delete. Media lives in a content-addressed file store (`src-tauri/src/blobs.rs`, `src/lib/blobs.ts`) served to the webview over a `brewblob://` scheme; rows hold `brewblob:<sha256>.<ext>` references. Audio overviews are stored as AAC `.m4a` (`src/lib/audioEncode.ts`). Triggers record row changes in `sync_meta`/`sync_outbox` for the upcoming BrewLM Sync.
+- **SQLite** (`@tauri-apps/plugin-sql`) as the data store — notebooks, folders, sources, chats, artifacts, settings, paired devices, and Trash (`trashed_at`) soft-delete. Media lives in a content-addressed file store (`src-tauri/src/blobs.rs`, `src/lib/blobs.ts`) served to the webview over a `brewblob://` scheme; rows hold `brewblob:<sha256>.<ext>` references. Audio overviews are stored as AAC `.m4a` (`src/lib/audioEncode.ts`). Triggers record row changes in `sync_meta`/`sync_outbox` for BrewLM Sync (`src/lib/sync.ts`: encrypted records and files, last-writer-wins on hybrid logical clocks; pulled changes are applied by `src-tauri/src/sync.rs` on desktop and `src/lib/syncApply.ts` on the web). Items kept on this device only are listed in `sync_local` (`src/lib/localOnly.ts`).
+- **Web app**: the same React app built for the browser (`npm run build:web`, platform layer in `src/platform/`), with SQLite in WebAssembly; deployed to app.brewlm.com with `npm run deploy:web`. The sync server is in `sync-server/` (Cloudflare Workers).
 - **AI calls** happen in the webview via `fetch` with your keys (never proxied); Tauri plugins supply native file dialogs, filesystem access and CORS-free page fetching.
 - **Studio**: pipelines in `src/lib/studio.ts` (prompts), `audioScript.ts` (part-by-part podcast scripts), `tts.ts`, `research.ts` and `rag.ts`; running generations are tracked in `studioJobs.ts` so several run at once. Playback lives in `src/components/AudioPlayer.tsx`; Drawings use Excalidraw, lazily loaded from `DrawingCanvas.tsx`.
 - **Phone sharing**: a small embedded web server (`src-tauri/src/server.rs`, axum) serves the phone page (`src-tauri/mobile.html` + `mobile.js`, under a strict CSP) and a device-key-authenticated API over the local DB; a `cloudflared` quick tunnel makes it reachable anywhere. Phone requests that need the app — chat, Studio, Revise, link and file imports, deletes and other edits — land in a `jobs` table that the desktop webview drains (`src/lib/jobRunner.ts`) with the desktop's own code (chat commands in `src/lib/chatTurns.ts` and Revise in `src/lib/revise.ts` are shared with the desktop UI); open desktop screens refresh after phone changes as they do after Sync. Replies on the phone are drawn by the desktop's renderer, bundled by `scripts/build-phone-render.mjs` (runs on `npm install`, `npm run dev` and `npm run build`) and embedded by `src-tauri/build.rs`; interactive pages run in `public/sandbox.html` with its own no-network policy.
