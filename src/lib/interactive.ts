@@ -49,6 +49,22 @@ export interface StoryboardVariety {
   prior?: string;
 }
 
+/**
+ * Who the model is while it plans a storyboard. Replaces the chat persona and
+ * its rules (be concise, cite sources, write LaTeX) in the grounded system
+ * prompt: the plan feeds a page that shows no citations and can't render LaTeX.
+ */
+export const STORYBOARD_ROLE = {
+  persona:
+    "You plan interactive web pages built from the user's sources. You write the storyboard a developer will build in one pass — not the code.",
+  rules: [
+    "- Take facts from the user's sources; mark anything else \"(general knowledge)\".",
+    "- Write math and symbols in plain text and Unicode (√d_k, QKᵀ, x², ≤, ℝ), never LaTeX — the page can't render it.",
+    "- No source citations; the page doesn't show them.",
+    "- Plan one focused page that can be built well, not everything the sources cover.",
+  ].join("\n"),
+};
+
 export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "topic">, variety: StoryboardVariety = {}): string {
   const lean = [
     variety.format ? `Lean toward ${variety.format}` : "",
@@ -64,30 +80,44 @@ export function buildStoryboardPrompt(opts: Pick<InteractiveOptions, "topic">, v
 
 ${request}${prior}
 
+Build it around ONE idea and ONE main visual — an animation, diagram, simulation or game board the user watches or plays with. Everything else on the page supports that visual. Size it to what can be built well as a single page: a focused page that fully works beats an ambitious one that's half built.
+
 Write the storyboard for it in markdown — not the code. Include:
 1. **Title**, the **format** (e.g. guided animation, simulation, game, web app) and a one-sentence goal.
-2. **Visual layout** — what is on screen (objects, labels, axes, colors and what each color means).
-3. **Flow** — the scenes, steps, challenges or views in order: what is shown, what moves or changes, and any captions, answers or feedback.
-4. **Key facts and values** — every number, unit, threshold and named structure the page must show, exactly as my sources give them.
-5. **Controls** — each button, slider, toggle or input, with ranges, defaults and what it changes.
+2. **Main visual** — what it shows, how it's drawn, what moves or changes, and what each color means. Then what sits around it: a caption or feedback line and a few controls. Keep the surroundings light — no side panels of readouts.
+3. **Flow** — the steps, scenes, rounds or states in order (usually 3–7): what changes on screen, and the caption or feedback for each.
+4. **Key facts and values** — the numbers, units, thresholds and named structures the page uses, exactly as my sources give them. Only what the page needs, and show a value where it explains something.
+5. **Controls** — only the few that change something the user can see (usually 2–5), with ranges, defaults and what each changes.
 6. **Takeaways** — 3 short points the user should leave with.
 
-Use the facts in my sources. Where the page needs a detail my sources don't give (e.g. a standard value), use the standard textbook value and mark it "(general knowledge)". Keep it under 900 words.`;
+Use the facts in my sources. Where the page needs a detail my sources don't give (e.g. a standard value), use the standard textbook value and mark it "(general knowledge)". Keep it under 700 words.`;
 }
 
 /** Instructions for the build pass; the storyboard goes in the user message. */
-export const PAGE_SYSTEM = `You build single-file interactive web pages — web apps, animations, games, simulations and more. You follow the storyboard you are given exactly — its format, facts, values, labels and order.
+export const PAGE_SYSTEM = `You build single-file interactive web pages — web apps, animations, games, simulations and more. You follow the storyboard you are given — its format, facts, values, labels and order — and build all of it: if something must be simplified, simplify how it looks, not whether it works.
 
 Hard requirements:
 - Output ONE complete HTML document and nothing else: start with <!DOCTYPE html>, end with </html>. No markdown fences, no commentary.
 - Everything inline: CSS in <style>, JavaScript in <script>. No external resources of any kind — no CDNs, libraries, web fonts, images or network requests. They are blocked and the page breaks. Draw with SVG, Canvas and CSS; animate with requestAnimationFrame or CSS transitions. Use the system font stack.
 - The page runs in a sandbox: do not use localStorage, sessionStorage, cookies, alert, confirm, prompt, window.open or forms.
-- Fill the viewport and work from 320px wide up to a full desktop screen. No horizontal scrolling. Readable text (at least 13px), large click targets.
-- Theming: define every color as a CSS variable on :root (light palette) and override them under :root[data-theme="dark"]. The host sets data-theme on <html>. Use a clear, restrained palette; color-code meaningfully and add a legend.
-- Controls that fit the format, as the storyboard describes them. Sensible defaults, not a checklist: animations usually want Play/Pause, stepping, Restart and a step indicator (Space toggles play, ←/→ step; start paused on step 1); simulations want labelled sliders/toggles with live values and units and a Reset; games want instant feedback explaining why and a visible score. Add only what this page needs.
-- Design the page around this storyboard's own idea: let its layout, visual style and interaction follow from the content rather than a stock template.
-- Label every structure and show values with units. Be accurate to the storyboard.
-- Plain, robust JavaScript: wrap it in an IIFE, guard against null elements, no console errors. Keep the code compact — no dead code or long comments.`;
+- Fill the viewport and work from 320px wide up to a full desktop screen. It is often shown in a narrow side panel (about 400–600px), so make the layout fit the width rather than hiding what doesn't:
+  - Grid columns that shrink: minmax(0,1fr), never a bare 1fr. Give flex and grid children min-width: 0.
+  - Rows of buttons or chips use flex-wrap. Size drawings (SVG viewBox, canvas) to their container, with max-width: 100%.
+  - Stack anything beside the main visual under it below about 760px wide.
+  - Text inside drawings must stay readable when they shrink: at least 12px as rendered, not just in viewBox units. Below about 600px, rearrange the drawing (stack its rows, fewer columns), drop secondary labels or move them into the caption — never just scale the whole drawing down until its text is tiny.
+  - Never set overflow hidden or clip on html, body or a full-page wrapper to hide sideways overflow — fix the width instead.
+- Readable text (at least 13px), large click targets.
+- Theming: define every color as a CSS variable on :root (light palette) and override them under :root[data-theme="dark"]. The host sets data-theme on <html>.
+- Math and symbols as plain text, Unicode or <sup>/<sub> — never LaTeX syntax; nothing renders it.
+- Plain, robust JavaScript: wrap it in an IIFE, guard against null elements, no console errors. Readable code — small named functions, no dead code.
+
+Design:
+- The main visual is the page. Give it most of the space and put it first; it should explain the idea on its own, with labels and units where the user needs them.
+- Keep everything else light: controls in one compact row or bar next to the visual, step text and feedback in one caption area. No dashboards — no side panels full of readouts, tables of values or grids of boxed cards.
+- Clear hierarchy: one accent color for what matters now, muted colors elsewhere, generous spacing, few borders. Add a legend only when colors encode something the labels don't already say.
+- Motion that explains: smooth, eased transitions that show cause and effect, at a pace the user can follow.
+- Controls that fit the format, as the storyboard describes them: animations usually want Play/Pause, stepping, Restart and a step indicator (Space toggles play, ←/→ step; start paused on step 1); simulations want labelled sliders/toggles with live values and units and a Reset; games want instant feedback explaining why and a visible score. Add only what this page needs.
+- Let the layout and visual style follow from this storyboard's idea rather than a stock template.`;
 
 export function buildPagePrompt(storyboard: string): string {
   return `Storyboard:\n\n${storyboard.trim()}\n\nBuild the page now. Output only the HTML document.`;
@@ -95,7 +125,7 @@ export function buildPagePrompt(storyboard: string): string {
 
 /** Revision contract (the current HTML is passed as the content to revise). */
 export const INTERACTIVE_REVISE_FORMAT =
-  "Return ONLY the complete revised HTML document — start with <!DOCTYPE html>, end with </html>, no markdown fences or commentary. Keep every hard requirement: fully self-contained (no external resources or network), no storage/alert/forms, CSS color variables with a :root[data-theme=\"dark\"] override.";
+  "Return ONLY the complete revised HTML document — start with <!DOCTYPE html>, end with </html>, no markdown fences or commentary. Keep every hard requirement: fully self-contained (no external resources or network), no storage/alert/forms, CSS color variables with a :root[data-theme=\"dark\"] override, and a layout that fits a narrow panel (minmax(0,1fr) columns, wrapping rows, no overflow hidden on html/body).";
 
 /**
  * Pull the HTML document out of a model reply (fences, preamble). Throws when
@@ -169,11 +199,26 @@ const PAGE_CSP =
 export const SANDBOX_READY = "brewlm-sandbox-ready";
 export const SANDBOX_PAGE = "brewlm-sandbox-page";
 
-/** The page as the iframe gets it: CSP, theme and an error reporter injected at the top of <head>. */
-export function sandboxDoc(html: string, dark: boolean): string {
+/**
+ * Safety net for pages that are wider than the frame: models often hide
+ * sideways overflow on html/body, which cuts the page off with no way to
+ * reach it. Scrolling instead shows nothing extra when the page fits.
+ * !important because the page's own rules come after this one.
+ */
+export const PAGE_SCROLL_STYLE = "<style>html,body{overflow-x:auto!important}</style>";
+
+/**
+ * The page as the iframe gets it: CSP, theme, a scroll safety net and an
+ * error reporter injected at the top of <head>. `zoom` is the app's Text size:
+ * the frame cancels the app's zoom (WebKit lays a zoomed iframe out wider than
+ * the box it draws into, cutting off the right side), so the page zooms itself.
+ */
+export function sandboxDoc(html: string, dark: boolean, zoom = 1): string {
   const theme = dark ? "dark" : "light";
+  const zoomStyle = zoom !== 1 ? `\n<style>html{zoom:${zoom}}</style>` : "";
   const head = `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">
 <meta name="color-scheme" content="${theme}">
+${PAGE_SCROLL_STYLE}${zoomStyle}
 <script>(function(){document.documentElement.setAttribute("data-theme","${theme}");
 var send=function(m){try{parent.postMessage({type:"${INTERACTIVE_ERROR_MESSAGE}",message:String(m).slice(0,400)},"*")}catch(e){}};
 addEventListener("error",function(e){send((e.message||"Script error")+(e.lineno?" (line "+e.lineno+")":""))});

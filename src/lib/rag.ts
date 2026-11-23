@@ -844,6 +844,8 @@ async function condenseNotebookOnce(
 }
 
 /** System-prompt wrapper for condensed notebook notes (shared by all tools). */
-export function condensedSystemPrompt(notes: string): string {
+export function condensedSystemPrompt(notes: string, role?: { persona: string; rules: string }): string {
+  if (role)
+    return `${role.persona}\n\n# Rules\n${role.rules}\n\nBelow are condensed notes covering EVERY source in the notebook (produced by a full pass over the material). Treat them as the authoritative content of the notebook.\n\n${notes}`;
   return `You are BrewLM, a thoughtful study assistant. Below are condensed notes covering EVERY source in the notebook (produced by a full pass over the material). Treat them as the authoritative content of the notebook; cite facts to the listed source titles.\n\n${notes}`;
 }

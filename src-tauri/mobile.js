@@ -1599,6 +1599,7 @@ function pageDoc(html, dark) {
   const theme = dark ? 'dark' : 'light';
   const head = `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">
 <meta name="color-scheme" content="${theme}">
+<style>html,body{overflow-x:auto!important}</style>
 <script>(function(){document.documentElement.setAttribute("data-theme","${theme}");
 var send=function(m){try{parent.postMessage({type:"${PAGE_ERROR}",message:String(m).slice(0,400)},"*")}catch(e){}};
 addEventListener("error",function(e){send((e.message||"Script error")+(e.lineno?" (line "+e.lineno+")":""))});

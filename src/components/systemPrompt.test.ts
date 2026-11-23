@@ -14,6 +14,23 @@ const a = src("a", "Alpha", "alpha text", 1);
 const b = src("b", "Beta", "beta text", 2);
 const mentionB = { id: "b", title: "Beta", group: "source", type: "text", text: "beta text" } as never;
 
+describe("system prompt role", () => {
+  const role = { persona: "You plan pages.", rules: "- No LaTeX." };
+
+  it("replaces the chat persona and rules but keeps the sources", () => {
+    const prompt = buildSystemPrompt([a, b], [], undefined, { whole: true, role });
+    expect(prompt.startsWith("You plan pages.")).toBe(true);
+    expect(prompt).toContain("# Rules\n- No LaTeX.");
+    expect(prompt).not.toContain("study assistant");
+    expect(prompt).not.toContain("# Default rules");
+    expect(prompt).toContain("### Alpha");
+  });
+
+  it("leaves the chat prompt unchanged without one", () => {
+    expect(buildSystemPrompt([a], [], undefined, { whole: true })).toContain("You are BrewLM, a thoughtful study assistant.");
+  });
+});
+
 describe("system prompt for caching", () => {
   it("whole notebook: every source, oldest first, whatever order the UI passes", () => {
     const one = buildSystemParts([b, a], [], undefined, { whole: true });

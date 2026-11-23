@@ -69,6 +69,7 @@ import {
   INTERACTIVE_REVISE_FORMAT,
   buildPagePrompt,
   PAGE_SYSTEM,
+  STORYBOARD_ROLE,
   buildStoryboardPrompt,
   parseInteractive,
   writePage,
@@ -243,17 +244,23 @@ const StudioPanel = forwardRef<
   const groundedSystem = async (
     scoped: Source[],
     query: string,
-    opts: { exhaustive?: boolean; onPhase?: (phase: string) => void; signal?: AbortSignal } = {}
+    opts: {
+      exhaustive?: boolean;
+      onPhase?: (phase: string) => void;
+      signal?: AbortSignal;
+      /** Replaces the chat persona and rules (see buildSystemParts). */
+      role?: { persona: string; rules: string };
+    } = {}
   ): Promise<string> => {
     await ensureIndexed(scoped, settings);
     if (opts.exhaustive && sourceChars(scoped) > MAP_REDUCE_THRESHOLD) {
       const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase, opts.signal);
-      return condensedSystemPrompt(notes);
+      return condensedSystemPrompt(notes, opts.role);
     }
     await ensureServerContext(settings, { load: true });
     const budget = contextBudget(settings);
     const retrieved = await rankChunks(scoped, query, settings, budget.sources);
-    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget });
+    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget, role: opts.role });
   };
 
   /** Prompt-usable source text; over the threshold, reports condense exhaustively. */
@@ -467,6 +474,7 @@ const StudioPanel = forwardRef<
         exhaustive: true,
         onPhase: job.setPhase,
         signal: job.signal,
+        role: STORYBOARD_ROLE,
       });
       job.setPhase("Planning the storyboard…");
       const storyboard = (
