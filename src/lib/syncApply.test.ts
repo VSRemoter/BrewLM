@@ -82,6 +82,18 @@ describe("applying pulled changes", () => {
     expect(count(c, "SELECT count(*) AS n FROM sync_outbox")).toBe(0);
   });
 
+  it("never lets our own upload, echoed back, undo a newer edit", () => {
+    const c = db();
+    // Last upload's version ran ahead of this clock (another device's was ahead)...
+    const uploaded = `${String(7000).padStart(13, "0")}:0003:${ME}`;
+    c.run("INSERT INTO sync_meta VALUES ('chats', 'c1', 1000, 0, ?)", [uploaded]);
+    // ...and the edit made since has an earlier wall-clock time.
+    c.run("INSERT INTO sync_outbox VALUES ('chats', 'c1', 5000)");
+    const echo = { ...change("c1", 7000, { id: "c1", notebook_id: "n1", title: "Uploaded before" }), hlc: uploaded };
+    expect(applyChanges(c, ME, [echo]).applied).toEqual([]);
+    expect(title(c, "c1")).toBe("Local title");
+  });
+
   it("handles deletes, inserts and rows it shouldn't trust", () => {
     const c = db();
     applyChanges(c, ME, [change("c1", 9000), change("c2", 9000, { id: "c2", notebook_id: "n1", title: "New" })]);

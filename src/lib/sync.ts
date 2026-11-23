@@ -38,6 +38,7 @@
 import { platform } from "../platform";
 import { BLOB_PREFIX, blobRefsIn, markArrived, MAX_SYNC_FILE_BYTES, mediaBytes, mediaFileSize, putBlob } from "./blobs";
 import { getDb, referencedBlobRefs, SYNCED_TABLES, uid } from "./db";
+import { isLocalRow, loadLocalScope, onLocalOnlyChange } from "./localOnly";
 import {
   createEnvelope,
   decryptBlob,
@@ -147,6 +148,8 @@ export interface SyncStatus {
   account?: AccountInfo;
   /** Files on this device too large to sync (over MAX_SYNC_FILE_BYTES); they stay here. */
   tooLarge?: number;
+  /** The plan's storage is full: changes that don't fit wait; the rest keeps syncing. */
+  storageFull?: boolean;
 }
 
 /** How often the outbox is checked (locally — no request unless there's something to send). */
@@ -354,6 +357,11 @@ async function putRemoteBlob(cfg: SyncConfig, id: string, bytes: Uint8Array): Pr
 
 /** The server's latest count of this vault's storage, shown in Settings → Sync right away. */
 function noteUsage(usedBytes: number | undefined): void {
+  // Space freed (deletions, a sweep): what waited for it can try again now.
+  if (typeof usedBytes === "number") {
+    if (full.at && lastUsedBytes >= 0 && usedBytes < lastUsedBytes) void clearFull();
+    lastUsedBytes = usedBytes;
+  }
   const acct = status.account;
   if (typeof usedBytes !== "number" || !acct || acct.usedBytes === usedBytes) return;
   setStatus({ account: { ...acct, usedBytes } });
@@ -447,6 +455,47 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       if (p.tbl === "settings" && !syncsSetting(p.id, syncKeys)) continue;
       batch.push({ tbl: p.tbl, row_id: p.id, hlc: c.hlc, deleted: p.deleted, row: p.row });
     }
+    // Items kept on this device (localOnly.ts) aren't removed by another
+    // device; an edit from one is taken here (and left alone on the server).
+    const echoes: { tbl: string; row_id: string }[] = [];
+    if (batch.length > 0) {
+      const d = await getDb();
+      const scope = await loadLocalScope();
+      // A deletion carries no row: whether it's inside a local notebook or chat
+      // is read from this device's copy (one query per table, and only when
+      // something here is local at all).
+      const stored = new Map<string, Record<string, unknown>>();
+      if (scope.notebooks.size > 0 || scope.chats.size > 0) {
+        const byTable = new Map<string, string[]>();
+        for (const c of batch)
+          if (c.deleted && c.tbl !== "notebooks" && c.tbl !== "settings")
+            byTable.set(c.tbl, [...(byTable.get(c.tbl) ?? []), c.row_id]);
+        for (const [tbl, ids] of byTable) {
+          const pk = SYNCED_TABLES[tbl];
+          for (let i = 0; i < ids.length; i += 500) {
+            const part = ids.slice(i, i + 500);
+            const found = await d.select<Record<string, unknown>[]>(
+              `SELECT * FROM ${tbl} WHERE ${pk} IN (${part.map((_, j) => `$${j + 1}`).join(", ")})`,
+              part
+            );
+            for (const r of found) stored.set(`${tbl}:${r[pk]}`, r);
+          }
+        }
+      }
+      const keep: typeof batch = [];
+      for (const c of batch) {
+        const here = c.deleted ? stored.get(`${c.tbl}:${c.row_id}`) : c.row;
+        if (!isLocalRow(scope, c.tbl, c.row_id, here)) keep.push(c);
+        else if (c.deleted)
+          await d.execute("INSERT OR IGNORE INTO sync_local_gone (tbl, row_id) VALUES ($1, $2)", [c.tbl, c.row_id]);
+        else {
+          keep.push(c);
+          // Our own earlier upload coming back says nothing about other devices.
+          if (!c.hlc.endsWith(`:${device}`)) echoes.push(c);
+        }
+      }
+      batch.splice(0, batch.length, ...keep);
+    }
     if (batch.length > 0) {
       const { applied } = await platform.sync.apply(device, batch);
       for (const i of applied) {
@@ -459,6 +508,15 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
         if (row) for (const ref of blobRefsIn(JSON.stringify(row))) media.wanted.add(ref.slice(BLOB_PREFIX.length));
       }
     }
+    if (echoes.length > 0) {
+      // Another device sent it after this one stopped syncing it: that device
+      // wants it synced. Its copy stays on the server (removing it again would
+      // make that device delete its own copy, if it no longer keeps it local);
+      // this device just never sends anything for it.
+      const d = await getDb();
+      for (const c of echoes)
+        await d.execute("INSERT OR IGNORE INTO sync_local_gone (tbl, row_id) VALUES ($1, $2)", [c.tbl, c.row_id]);
+    }
     cursor = res.cursor;
     await setState("cursor", String(cursor));
     if (!res.more) return;
@@ -470,16 +528,71 @@ async function pull(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
 /** Rows too big to send at all (kept in the outbox and logged once). */
 const oversized = new Set<string>();
 
+/**
+ * The server said storage is full. Instead of failing every cycle (which
+ * also stopped edits elsewhere from uploading, and the sweep that frees
+ * space from running), what doesn't fit waits: those records stay in the
+ * outbox, listed in `sync_held` (db.ts), and files stay in `media.toUpload`;
+ * everything else (deletions, small edits that fit) keeps syncing. Retried
+ * after FULL_RETRY_MS, or as soon as the server reports less storage used.
+ */
+const full = { at: 0 };
+/** The server's last storage figure, to notice space being freed (-1 = none yet). */
+let lastUsedBytes = -1;
+const FULL_RETRY_MS = 5 * 60_000;
+
+/**
+ * How long one cycle spends uploading files. A big upload (a large notebook
+ * synced again) is spread over several cycles, so other devices' changes are
+ * still pulled every minute or so instead of waiting hours. 0 = no limit.
+ */
+const CYCLE_UPLOAD_MS = 60_000;
+let uploadDeadline = 0;
+const pastUploadBudget = () => uploadDeadline > 0 && Date.now() > uploadDeadline;
+
+const isStorageFull = (e: unknown) => e instanceof Error && /HTTP 413 Your sync storage is full/.test(e.message);
+
+/** Outbox rows that aren't waiting on free space (SQL, for `sync_outbox o`). */
+const NOT_HELD = "NOT EXISTS (SELECT 1 FROM sync_held h WHERE h.tbl = o.tbl AND h.row_id = o.row_id)";
+
+function noteFull(): void {
+  if (!full.at) log("sync storage is full: changes that don't fit wait until space frees up", true);
+  full.at = Date.now();
+  setStatus({ storageFull: true });
+}
+
+async function hold(labels: { tbl: string; row_id: string }[]): Promise<void> {
+  // Space was freed meanwhile (this push's deletions): they simply go again.
+  if (!full.at) return;
+  const d = await getDb();
+  for (const l of labels) await d.execute("INSERT OR IGNORE INTO sync_held (tbl, row_id) VALUES ($1, $2)", [l.tbl, l.row_id]);
+}
+
+async function clearFull(): Promise<void> {
+  if (!full.at) return;
+  full.at = 0;
+  await (await getDb()).execute("DELETE FROM sync_held");
+  setStatus({ storageFull: false });
+  wakeSoon = true;
+}
+
+/** Things wait (rather than being retried every few seconds) while storage is full. */
+async function storageFullNow(): Promise<boolean> {
+  if (full.at && Date.now() - full.at >= FULL_RETRY_MS) await clearFull();
+  return full.at > 0;
+}
+
 /** Push the outbox; returns how many records the server accepted. */
 async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clock): Promise<number> {
   const d = await getDb();
   const syncKeys = (await getState("sync_api_keys")) !== "0";
   let accepted = 0;
+  await storageFullNow(); // time to try what was waiting on space again?
   for (;;) {
     const skip = [...oversized];
     const entries = await d.select<{ tbl: string; row_id: string; changed_at: number }[]>(
-      `SELECT tbl, row_id, changed_at FROM sync_outbox
-       ${skip.length ? `WHERE (tbl || ':' || row_id) NOT IN (${skip.map((_, i) => `$${i + 1}`).join(", ")})` : ""}
+      `SELECT tbl, row_id, changed_at FROM sync_outbox o WHERE ${NOT_HELD}
+       ${skip.length ? `AND (tbl || ':' || row_id) NOT IN (${skip.map((_, i) => `$${i + 1}`).join(", ")})` : ""}
        ORDER BY changed_at LIMIT ${PUSH_BATCH}`,
       skip
     );
@@ -498,12 +611,22 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       for (const r of found) rows.set(`${tbl}:${r[pk]}`, r);
     }
 
-    // Notebooks opened from someone's shared link stay on this device, with everything in them.
-    const sharedHere = new Set(
-      (await d.select<{ id: string }[]>("SELECT id FROM notebooks WHERE share_id != ''")).map((r) => r.id)
-    );
-    const fromSharedLink = (tbl: string, row: Record<string, unknown> | undefined) =>
-      !!row && sharedHere.has(String(tbl === "notebooks" ? row.id : row.notebook_id ?? ""));
+    // What stays on this device (localOnly.ts: items kept local, notebooks
+    // from a shared link), and the version of each row the server last had.
+    const scope = await loadLocalScope();
+    const syncedAt = new Map<string, string>();
+    for (const tbl of new Set(entries.map((e) => e.tbl))) {
+      const ids = entries.filter((e) => e.tbl === tbl).map((e) => e.row_id);
+      const found = await d.select<{ row_id: string; hlc: string }[]>(
+        `SELECT row_id, hlc FROM sync_meta WHERE tbl = $1 AND row_id IN (${ids.map((_, i) => `$${i + 2}`).join(", ")})`,
+        [tbl, ...ids]
+      );
+      for (const r of found) syncedAt.set(`${tbl}:${r.row_id}`, r.hlc);
+    }
+    /** Local rows whose server copy this push removes. */
+    const removing = new Set<string>();
+    /** Rows that need no `sync_local_gone` entry any more. */
+    const ungone: string[] = [];
 
     const changes: { key: string; hlc: string; payload: string }[] = [];
     /** Each record's own file (rows too big for the change log), by key. */
@@ -512,21 +635,41 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
     const sentByKey = new Map<string, (typeof sent)[number]>();
     /** Records that may have let go of a file (deleted, or pointing at files): sweep after. */
     const mayFreeFiles = new Set<string>();
+    /** Deletions (they only ever free space), and the files each record points at, by key. */
+    const deletions = new Set<string>();
+    const filesOf = new Map<string, string[]>();
+    /** Rows that wait for free space this time. */
+    const waiting: { tbl: string; row_id: string }[] = [];
     let batchChars = 0;
     for (const e of entries) {
       // Big rows fill a push sooner; the rest wait for the next one.
       if (changes.length > 0 && batchChars >= PUSH_CHARS) break;
       const label = `${e.tbl}:${e.row_id}`;
       const row = rows.get(label);
+      const local = !!row && isLocalRow(scope, e.tbl, e.row_id, row);
+      // The server has no live copy: never sent, or already removed. (Settings
+      // are keyed by name, so another device may have sent the same one.)
+      const notOnServer = e.tbl !== "settings" && (!syncedAt.get(label) || scope.gone.has(label));
       if (
         !SYNCED_TABLES[e.tbl] ||
         (e.tbl === "settings" && !syncsSetting(e.row_id, syncKeys)) ||
-        fromSharedLink(e.tbl, row)
+        // Kept on this device, or deleted here before the server ever had it.
+        ((local || !row) && notOnServer)
       ) {
         sent.push({ ...e, hlc: null }); // never leaves this device: just clear it
+        if (!row && scope.gone.has(label)) ungone.push(label);
         continue;
       }
-      let json = JSON.stringify({ v: 1, tbl: e.tbl, id: e.row_id, deleted: !row, ...(row ? { row } : {}) });
+      // Kept local, but the server still has it: send a deletion instead.
+      if (local) removing.add(label);
+      else if (scope.gone.has(label)) ungone.push(label);
+      let json = JSON.stringify({
+        v: 1,
+        tbl: e.tbl,
+        id: e.row_id,
+        deleted: !row || local,
+        ...(row && !local ? { row } : {}),
+      });
       if (json.length > MAX_RECORD) {
         if (!oversized.has(label)) log(`${label} is too large to sync (${json.length} chars)`, true);
         oversized.add(label);
@@ -544,7 +687,14 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
           continue;
         }
         pointer = await hiddenId(keys, `rec:${await sha256Hex(bytes)}`);
-        await putRemoteBlob(cfg, pointer, await encryptBlob(keys, pointer, bytes));
+        try {
+          await putRemoteBlob(cfg, pointer, await encryptBlob(keys, pointer, bytes));
+        } catch (err) {
+          if (!isStorageFull(err)) throw err;
+          noteFull();
+          waiting.push(e);
+          continue;
+        }
         json = JSON.stringify({ v: 1, blob: pointer });
       }
       const key = await hiddenId(keys, label);
@@ -556,15 +706,47 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       sent.push(s);
       sentByKey.set(key, s);
       pointers.set(key, pointer);
+      if (!row || local) deletions.add(key);
+      filesOf.set(key, refs.map((r) => r.slice(BLOB_PREFIX.length)));
       // A row in a table that holds files may have dropped one (a cover
       // replaced, say); a big record's earlier copy is left behind.
-      if (!row || pointer || refs.length > 0 || FILE_TABLES.has(e.tbl)) mayFreeFiles.add(key);
+      if (!row || local || pointer || refs.length > 0 || FILE_TABLES.has(e.tbl)) mayFreeFiles.add(key);
     }
 
     // Files first, so a device that pulls these rows can fetch what they point at.
     await uploadMedia(cfg, keys);
+    /**
+     * Take a record out of this push; its row stays in the outbox. `forSpace`:
+     * it waits for free space (held); otherwise it's simply tried next cycle.
+     */
+    const holdBack = (k: string, forSpace: boolean) => {
+      const s = sentByKey.get(k)!;
+      sentByKey.delete(k);
+      sent.splice(sent.indexOf(s), 1);
+      if (forSpace) waiting.push(s);
+      const at = changes.findIndex((c) => c.key === k);
+      if (at >= 0) changes.splice(at, 1);
+    };
+    // A record whose files haven't gone up yet waits with them: until there's
+    // space, or for the next cycle (this one's upload time ran out).
+    let deferred = false;
+    for (const [k, names] of filesOf)
+      if (names.some((n) => media.toUpload.has(n) && !media.tooLarge.has(n))) {
+        holdBack(k, full.at > 0);
+        deferred ||= full.at === 0;
+      }
     if (changes.length > 0) {
-      const res = await api<{ accepted: number; stale: string[]; usedBytes?: number }>(cfg, "push", { device, changes });
+      let res: { accepted: number; stale: string[]; usedBytes?: number };
+      try {
+        res = await api(cfg, "push", { device, changes });
+      } catch (err) {
+        if (!isStorageFull(err)) throw err;
+        // The server refuses a batch that grows storage past the plan. Deletions
+        // only free space, so they go on their own; the rest waits.
+        noteFull();
+        for (const k of [...sentByKey.keys()]) if (!deletions.has(k)) holdBack(k, true);
+        res = changes.length > 0 ? await api(cfg, "push", { device, changes }) : { accepted: 0, stale: [] };
+      }
       accepted += res.accepted;
       noteUsage(res.usedBytes);
       // Stale = the server already holds a newer version; drop ours (it lost).
@@ -578,7 +760,20 @@ async function push(cfg: SyncConfig, keys: VaultKeys, device: string, clock: Clo
       if ([...mayFreeFiles].some((k) => sentByKey.get(k)?.hlc)) sweepWanted = true;
     }
     await platform.sync.markPushed(sent);
+    if (waiting.length > 0) await hold(waiting);
+    // Removed from the server: later edits to them send nothing.
+    const removed = sent.filter((s) => s.hlc !== null && removing.has(`${s.tbl}:${s.row_id}`));
+    for (const s of removed)
+      await d.execute("INSERT OR IGNORE INTO sync_local_gone (tbl, row_id) VALUES ($1, $2)", [s.tbl, s.row_id]);
+    if (removed.length > 0)
+      log(`removed ${removed.length} record${removed.length === 1 ? "" : "s"} kept on this device from the server`);
+    for (const label of ungone) {
+      const at = label.indexOf(":");
+      await d.execute("DELETE FROM sync_local_gone WHERE tbl = $1 AND row_id = $2", [label.slice(0, at), label.slice(at + 1)]);
+    }
     await setState("hlc_last", clock.toString());
+    // Rows left for next cycle would come straight back: end this push here.
+    if (deferred || pastUploadBudget()) return accepted;
   }
 }
 
@@ -632,6 +827,8 @@ async function scanMedia(): Promise<void> {
 async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   // Each file leaves the queue only once it's settled, so an error keeps the rest.
   for (const n of media.toUpload) if (media.onServer.has(n) || media.tooLarge.has(n)) media.toUpload.delete(n);
+  if (await storageFullNow()) return; // they wait for free space
+  if (pastUploadBudget()) return; // the next cycle carries on
   const pending = [...media.toUpload];
   for (let i = 0; i < pending.length; i += 1000) {
     const names = pending.slice(i, i + 1000);
@@ -639,6 +836,7 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
     const { missing } = await api<{ missing: string[] }>(cfg, "blobs/missing", { ids });
     const need = new Set(missing);
     for (const [j, name] of names.entries()) {
+      if (pastUploadBudget()) return;
       if (!need.has(ids[j])) {
         media.onServer.add(name);
         media.toUpload.delete(name);
@@ -670,6 +868,11 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
           markTooLarge(name, bytes.length);
           continue;
         }
+        // No room: this file and the rest wait (with the records pointing at them).
+        if (isStorageFull(e)) {
+          noteFull();
+          return;
+        }
         throw e;
       }
       media.onServer.add(name);
@@ -679,8 +882,56 @@ async function uploadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   }
 }
 
+/**
+ * Roughly how much syncing these would add to the server's storage: records
+ * (encrypted, in base64) plus the files the server doesn't have yet (files
+ * over the size limit never go up, so they don't count). `free` is what the
+ * plan has left; null when there's no plan to check against (dev builds).
+ */
+export async function storageNeeded(
+  fileNames: string[],
+  recordChars: number
+): Promise<{ bytes: number; files: number; free: number | null }> {
+  let missing = [...new Set(fileNames)];
+  if (cfg && vault) {
+    const c = cfg;
+    const keys = vault.keys;
+    const all = missing;
+    missing = [];
+    for (let i = 0; i < all.length; i += 1000) {
+      const names = all.slice(i, i + 1000);
+      const ids = await Promise.all(names.map((n) => fileId(keys, n)));
+      const need = new Set((await api<{ missing: string[] }>(c, "blobs/missing", { ids })).missing);
+      names.forEach((n, j) => need.has(ids[j]) && missing.push(n));
+    }
+  }
+  // base64 grows records by a third; keys and versions add a little more.
+  let bytes = Math.ceil(recordChars * 1.4);
+  let files = 0;
+  for (const n of missing) {
+    const size = await mediaFileSize(n);
+    if (size <= 0 || size > MAX_SYNC_FILE_BYTES) continue;
+    bytes += size;
+    files += 1;
+  }
+  const a = status.account;
+  return { bytes, files, free: a ? Math.max(0, a.limitBytes - a.usedBytes) : null };
+}
+
 /** Internals for sync.test.ts only. */
-export const syncTesting = { media, uploadMedia };
+export const syncTesting = {
+  media,
+  uploadMedia,
+  push,
+  pull,
+  newClock: (device: string) => new Clock(device),
+  isStorageFull: () => full.at > 0,
+  resetFull: async () => {
+    full.at = 1;
+    await clearFull();
+    lastUsedBytes = -1;
+  },
+};
 
 /**
  * The web app (on a phone) doesn't download every file up front: images come
@@ -712,14 +963,24 @@ async function fetchFile(cfg: SyncConfig, keys: VaultKeys, name: string): Promis
 }
 
 /** Download files rows point at that this device lacks; returns how many landed. */
+/** The last download stopped at its time limit: the next cycle shouldn't wait. */
+let downloadsLeft = false;
+
 async function downloadMedia(cfg: SyncConfig, keys: VaultKeys): Promise<number> {
+  downloadsLeft = false;
   if (media.wanted.size === 0) return 0;
   const now = Date.now();
   const due = [...media.wanted].filter((n) => downloadsUpFront(n) && (media.retryAt.get(n) ?? 0) <= now);
   if (due.length === 0) return 0;
   const absent = new Set(await platform.blobs.missing(due));
   let landed = 0;
+  // Like uploads, a big download is spread over cycles (the rest stays wanted).
+  const until = now + CYCLE_UPLOAD_MS;
   for (const name of due) {
+    if (Date.now() > until) {
+      downloadsLeft = true;
+      break;
+    }
     if (!absent.has(name)) {
       media.wanted.delete(name); // already here
       continue;
@@ -848,9 +1109,15 @@ async function maybeSweep(cfg: SyncConfig, keys: VaultKeys): Promise<void> {
   const now = Date.now();
   const prompted = (sweepWanted && now - lastSweepAt >= SWEEP_GAP_MS) || (sweepAgainAt > 0 && now >= sweepAgainAt);
   if (!prompted && now - Number((await getState("swept_at")) || 0) < SWEEP_EVERY_MS) return;
-  // Only from a complete, current view: every record read, nothing waiting to go up.
-  if ((await getState("record_blobs")) !== cfg.vault || unreadable.size > 0 || media.toUpload.size > 0) return;
-  const pending = await (await getDb()).select<{ k: string }[]>("SELECT tbl || ':' || row_id AS k FROM sync_outbox");
+  // Only from a complete, current view: every record read, nothing waiting to
+  // go up — except what waits for free space, or a full vault could never
+  // free any (their files are on this device, so they're counted live anyway).
+  const waitingForSpace = full.at > 0;
+  if ((await getState("record_blobs")) !== cfg.vault || unreadable.size > 0 || (media.toUpload.size > 0 && !waitingForSpace))
+    return;
+  const pending = await (await getDb()).select<{ k: string }[]>(
+    `SELECT tbl || ':' || row_id AS k FROM sync_outbox o WHERE ${NOT_HELD}`
+  );
   if (pending.some((r) => !oversized.has(r.k))) return;
 
   const d = await getDb();
@@ -987,13 +1254,22 @@ if (import.meta.hot) {
 /** Set when the window regains focus: fetch other devices' changes on the next tick. */
 let wakeSoon = false;
 if (typeof window !== "undefined") window.addEventListener("focus", () => (wakeSoon = true));
+// Kept local or synced again: act on it now. A row skipped as too large may
+// now only need removing from the server (a small deletion), so look again.
+onLocalOnlyChange(() => {
+  oversized.clear();
+  wakeSoon = true;
+});
 
 /** Is there anything this device should send now? (local checks only) */
 async function somethingToSend(): Promise<boolean> {
+  if (downloadsLeft) return true;
   if (status.account?.canSync === false) return false;
-  if (media.toUpload.size > 0) return true;
+  const fullNow = await storageFullNow();
+  if (media.toUpload.size > 0 && !fullNow) return true;
+  // Newest first: rows that can't go (too large, waiting for space) pile up at the old end.
   const rows = await (await getDb()).select<{ k: string }[]>(
-    "SELECT tbl || ':' || row_id AS k FROM sync_outbox LIMIT 100"
+    `SELECT tbl || ':' || row_id AS k FROM sync_outbox o WHERE ${NOT_HELD} ORDER BY changed_at DESC LIMIT 100`
   );
   return rows.some((r) => !oversized.has(r.k));
 }
@@ -1029,6 +1305,7 @@ function loop(): void {
       const landed = await downloadMedia(c, keys);
       if (landed > 0) for (const t of MEDIA_TABLES) changed.tables.add(t);
       const before = media.uploaded;
+      uploadDeadline = Date.now() + CYCLE_UPLOAD_MS;
       // Without a plan the account is read-only: keep pulling, hold uploads.
       const canUpload = status.account?.canSync !== false;
       const sent = canUpload ? await push(c, keys, device, clk) : 0;
@@ -1083,6 +1360,10 @@ async function resendEverything(): Promise<void> {
   media.tooLarge.clear();
   setStatus({ tooLarge: 0 });
   oversized.clear();
+  // Another vault, or a fresh copy of this one: its storage starts over.
+  full.at = 1; // makes clearFull run
+  await clearFull();
+  lastUsedBytes = -1;
   unreadable.clear();
 }
 
@@ -1159,6 +1440,9 @@ export function shareServer(): { url: string; session: string } | null {
 export async function refreshAccount(): Promise<void> {
   if (!account) return;
   const me = await accountApi<AccountInfo>("/v1/me", "GET", undefined, account.session);
+  // A bigger plan (or more room): what waited for space tries again now.
+  const before = status.account;
+  if (full.at && before && me.limitBytes - me.usedBytes > before.limitBytes - before.usedBytes) await clearFull();
   setStatus({ account: me });
 }
 

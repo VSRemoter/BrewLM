@@ -47,6 +47,8 @@ export interface SnapshotOptions {
   includeArtifacts?: boolean;
   /** Chats, their messages and the images those messages show (default false). */
   includeChats?: boolean;
+  /** Leave out sources, chats and studio outputs kept on this device only (shared links). */
+  leaveOutLocal?: boolean;
 }
 
 const IMAGE_REF_RE = /brewimg:([a-zA-Z0-9-]+)/g;
@@ -61,26 +63,38 @@ export async function readSnapshot(notebookId: string, opts: SnapshotOptions = {
   const d = await getDb();
   const [nb] = await d.select<Notebook[]>("SELECT * FROM notebooks WHERE id = $1", [notebookId]);
   if (!nb) throw new Error("Notebook not found");
-  const sources = await d.select<Source[]>(
-    "SELECT * FROM sources WHERE notebook_id = $1 ORDER BY created_at ASC",
-    [notebookId]
+  // Single items kept on this device only (localOnly.ts) stay out when asked.
+  const kept = opts.leaveOutLocal
+    ? new Set((await d.select<{ k: string }[]>("SELECT tbl || ':' || row_id AS k FROM sync_local")).map((r) => r.k))
+    : new Set<string>();
+  const shown = <T extends { id: string }>(tbl: string, rows: T[]) => rows.filter((r) => !kept.has(`${tbl}:${r.id}`));
+  const sources = shown(
+    "sources",
+    await d.select<Source[]>("SELECT * FROM sources WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
   );
   const chunks = await d.select<SourceChunk[]>(
     "SELECT * FROM source_chunks WHERE notebook_id = $1 ORDER BY source_id, seq",
     [notebookId]
   );
-  const artifacts =
+  const artifacts = shown(
+    "artifacts",
     opts.includeArtifacts ?? true
       ? await d.select<Artifact[]>("SELECT * FROM artifacts WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
-      : [];
-  const chats = opts.includeChats
-    ? await d.select<Chat[]>("SELECT * FROM chats WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
-    : [];
+      : []
+  );
+  const chats = shown(
+    "chats",
+    opts.includeChats
+      ? await d.select<Chat[]>("SELECT * FROM chats WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
+      : []
+  );
   const messages = (
     opts.includeChats
       ? await d.select<ChatMessage[]>("SELECT * FROM messages WHERE notebook_id = $1 ORDER BY created_at ASC", [notebookId])
       : []
-  ).map((m) => ({ ...m, mentions: ownMentions(m.mentions, notebookId) }));
+  )
+    .filter((m) => !m.chat_id || !kept.has(`chats:${m.chat_id}`))
+    .map((m) => ({ ...m, mentions: ownMentions(m.mentions, notebookId) }));
 
   // Images belong to the messages that show them (a clone's messages may point
   // at rows of the original notebook, so look them up by id, not notebook).
@@ -230,6 +244,10 @@ export interface WriteOptions {
   title?: string;
   folderId?: string;
   starred?: number;
+  /** Keep the new notebook on this device only (localOnly.ts). */
+  localOnly?: boolean;
+  /** Items in the snapshot kept on this device, as `tbl:<id in the snapshot>`: their copies are too. */
+  localItems?: string[];
 }
 
 /**
@@ -251,7 +269,21 @@ export async function writeSnapshot(snap: NotebookSnapshot, opts: WriteOptions =
     created_at: now,
     updated_at: now,
   };
-  const s = remapSnapshot(snap, nb.id);
+  const newIds = new Map<string, string>();
+  const s = remapSnapshot(snap, nb.id, (old) => {
+    const id = uid();
+    newIds.set(old, id);
+    return id;
+  });
+  // Marked before any row exists, so no sync cycle uploads part of it first.
+  const marks: [string, string][] = opts.localOnly ? [["notebooks", nb.id]] : [];
+  for (const label of opts.localItems ?? []) {
+    const at = label.indexOf(":");
+    const id = newIds.get(label.slice(at + 1));
+    if (id) marks.push([label.slice(0, at), id]);
+  }
+  for (const [tbl, id] of marks)
+    await (await getDb()).execute("INSERT OR IGNORE INTO sync_local (tbl, row_id) VALUES ($1, $2)", [tbl, id]);
   try {
     await insertRows(s);
     await insertNotebook(nb);
@@ -415,5 +447,13 @@ export async function cloneNotebook(
   const [src] = await d.select<Notebook[]>("SELECT * FROM notebooks WHERE id = $1", [srcId]);
   if (!src) throw new Error("Notebook not found");
   const snap = await readSnapshot(srcId, opts);
-  return writeSnapshot(snap, { title, folderId: src.folder_id, starred: src.starred });
+  // A copy of something kept on this device stays on it too: the notebook, or single items in it.
+  const marks = (await d.select<{ k: string }[]>("SELECT tbl || ':' || row_id AS k FROM sync_local")).map((r) => r.k);
+  return writeSnapshot(snap, {
+    title,
+    folderId: src.folder_id,
+    starred: src.starred,
+    localOnly: marks.includes(`notebooks:${srcId}`),
+    localItems: marks.filter((k) => !k.startsWith("notebooks:")),
+  });
 }

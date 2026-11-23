@@ -370,6 +370,45 @@ async function ensureSyncTracking(db: SqlDb): Promise<void> {
       PRIMARY KEY (tbl, row_id)
     ) WITHOUT ROWID`);
 
+  // Items kept on this device only (localOnly.ts). Never synced themselves.
+  // sync_local: what the user marked (a notebook covers everything in it, a
+  // chat its messages). sync_local_gone: rows of those items whose server
+  // copy has been removed (or never existed past a deletion), so editing
+  // them sends nothing.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_local (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_local_gone (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
+  // Outbox rows waiting because the server's storage was full (sync.ts):
+  // retried on every launch, so the table starts empty.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS sync_held (
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      PRIMARY KEY (tbl, row_id)
+    ) WITHOUT ROWID`);
+  await db.execute("DELETE FROM sync_held");
+  // Forget marks of items deleted since (once nothing about them waits to go up).
+  for (const tbl of ["notebooks", "sources", "chats", "artifacts"]) {
+    await db.execute(
+      `DELETE FROM sync_local WHERE tbl = '${tbl}' AND row_id NOT IN (SELECT id FROM ${tbl})
+         AND row_id NOT IN (SELECT row_id FROM sync_outbox WHERE tbl = '${tbl}')`
+    );
+  }
+  await db.execute(
+    `DELETE FROM sync_local_gone WHERE NOT EXISTS (
+       SELECT 1 FROM sync_meta m WHERE m.tbl = sync_local_gone.tbl AND m.row_id = sync_local_gone.row_id AND m.deleted = 0)
+     AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = sync_local_gone.tbl AND o.row_id = sync_local_gone.row_id)`
+  );
+
   const quiet = "NOT EXISTS (SELECT 1 FROM sync_state WHERE key = 'applying' AND value = '1')";
   for (const [table, pk] of Object.entries(SYNCED_TABLES)) {
     for (const [op, ref, deleted] of [
@@ -435,12 +474,17 @@ export async function restoreNotebook(id: string): Promise<void> {
 export async function createNotebook(
   title: string,
   description = "",
-  folderId = ""
+  folderId = "",
+  /** Keep it on this device only (never uploaded by Sync). */
+  localOnly = false
 ): Promise<Notebook> {
   const d = await getDb();
   const now = Date.now();
+  const id = uid();
+  // Marked before the row exists, so no sync cycle can catch it in between.
+  if (localOnly) await d.execute("INSERT OR IGNORE INTO sync_local (tbl, row_id) VALUES ('notebooks', $1)", [id]);
   const nb: Notebook = {
-    id: uid(),
+    id,
     title,
     description,
     starred: 0,
@@ -962,16 +1006,25 @@ export async function pruneOrphanBlobs(): Promise<void> {
 export async function referencedBlobRefs(opts: { synced?: boolean } = {}): Promise<string[]> {
   const d = await getDb();
   const has = (col: string) => `instr(${col}, 'brewblob:') > 0`;
-  const own = opts.synced ? " AND share_id = ''" : "";
-  const ownChild = opts.synced ? " AND notebook_id NOT IN (SELECT id FROM notebooks WHERE share_id != '')" : "";
+  // Synced only: leave out what stays on this device (shared-link notebooks,
+  // and items kept local — see localOnly.ts), so their files aren't uploaded
+  // or kept on the server.
+  const localNb = "(SELECT id FROM notebooks WHERE share_id != '' UNION SELECT row_id FROM sync_local WHERE tbl = 'notebooks')";
+  const marked = (tbl: string) => `(SELECT row_id FROM sync_local WHERE tbl = '${tbl}')`;
+  const own = opts.synced ? ` AND id NOT IN ${localNb}` : "";
+  const ownChild = (tbl: string, inChat = false) =>
+    opts.synced
+      ? ` AND notebook_id NOT IN ${localNb} AND id NOT IN ${marked(tbl)}` +
+        (inChat ? ` AND COALESCE(chat_id, '') NOT IN ${marked("chats")}` : "")
+      : "";
   const rows = await d.select<{ v: string }[]>(
     `SELECT cover AS v FROM notebooks WHERE ${has("cover")}${own}
      UNION ALL SELECT chat_bg FROM notebooks WHERE ${has("chat_bg")}${own}
      UNION ALL SELECT cover FROM folders WHERE ${has("cover")}
-     UNION ALL SELECT content FROM sources WHERE ${has("content")}${ownChild}
-     UNION ALL SELECT data FROM images WHERE ${has("data")}${ownChild}
-     UNION ALL SELECT data FROM artifacts WHERE ${has("data")}${ownChild}
-     UNION ALL SELECT content FROM messages WHERE ${has("content")}${ownChild}`
+     UNION ALL SELECT content FROM sources WHERE ${has("content")}${ownChild("sources")}
+     UNION ALL SELECT data FROM images WHERE ${has("data")}${ownChild("images", true)}
+     UNION ALL SELECT data FROM artifacts WHERE ${has("data")}${ownChild("artifacts")}
+     UNION ALL SELECT content FROM messages WHERE ${has("content")}${ownChild("messages", true)}`
   );
   return [...new Set(rows.flatMap((r) => blobRefsIn(r.v)))];
 }
@@ -1232,6 +1285,9 @@ export async function clearAllData(): Promise<void> {
     "sync_outbox",
     "sync_state",
     "sync_record_blobs",
+    "sync_local",
+    "sync_local_gone",
+    "sync_held",
   ]) {
     await d.execute(`DELETE FROM ${t}`);
   }

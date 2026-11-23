@@ -26,6 +26,7 @@ import { confirmAction } from "./ConfirmDialog";
 import SourceViewModal from "./SourceViewModal";
 import { SOURCE_TYPE_ICON } from "./sourceIcons";
 import { IconButton, Modal, PrimaryButton } from "./ui";
+import { LocalOnlyToggle, useLocalOnly } from "./LocalOnly";
 
 const TYPE_ICON = SOURCE_TYPE_ICON;
 
@@ -48,6 +49,7 @@ export default function SourcesPanel({
   readOnly?: boolean;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const localOnly = useLocalOnly();
   const dragDepth = useRef(0);
   const [dragActive, setDragActive] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -268,6 +270,9 @@ export default function SourcesPanel({
                         : sourcePreview(s.content)}
                   </span>
                 </button>
+              )}
+              {!isRenaming && !readOnly && (
+                <LocalOnlyToggle state={localOnly} tbl="sources" id={s.id} title={s.title} notebookId={s.notebook_id} />
               )}
               {!isRenaming && (
                 <button

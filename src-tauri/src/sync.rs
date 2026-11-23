@@ -175,18 +175,21 @@ pub async fn apply(
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
-        let local = match pending {
-            Some(ms) => Some(local_hlc(ms, device_id)),
-            None => sqlx::query("SELECT hlc, changed_at FROM sync_meta WHERE tbl = ? AND row_id = ?")
-                .bind(&c.tbl)
-                .bind(&c.row_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?
-                .map(|r| {
-                    let h: String = r.get("hlc");
-                    if h.is_empty() { local_hlc(r.get("changed_at"), device_id) } else { h }
-                }),
+        let meta = sqlx::query("SELECT hlc, changed_at FROM sync_meta WHERE tbl = ? AND row_id = ?")
+            .bind(&c.tbl)
+            .bind(&c.row_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|r| (r.get::<String, _>("hlc"), r.get::<i64, _>("changed_at")));
+        // A pending edit is newer than every version this device synced, even
+        // when its wall-clock time isn't (this device's clock behind another's):
+        // the server echoing our own last upload must never undo it.
+        let local = match (pending, meta) {
+            (Some(ms), Some((h, _))) if !h.is_empty() => Some(std::cmp::max(local_hlc(ms, device_id), h)),
+            (Some(ms), _) => Some(local_hlc(ms, device_id)),
+            (None, Some((h, ms))) => Some(if h.is_empty() { local_hlc(ms, device_id) } else { h }),
+            (None, None) => None,
         };
         if local.as_deref().is_some_and(|l| l >= c.hlc.as_str()) {
             continue;
@@ -390,6 +393,24 @@ mod tests {
         assert_eq!(title(&mut c, "c1").await.as_deref(), Some("Newer remote"));
         let outbox: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_outbox").fetch_one(&mut c).await.unwrap();
         assert_eq!(outbox, 0);
+    }
+
+    #[tokio::test]
+    async fn own_upload_echoed_back_never_undoes_a_newer_edit() {
+        let (mut c, _d) = db().await;
+        // Last upload's version ran ahead of this clock (another device's was ahead)...
+        sqlx::query("INSERT INTO sync_meta VALUES ('chats', 'c1', 1000, 0, ?)")
+            .bind(format!("{:013}:0003:{ME}", 7000))
+            .execute(&mut c)
+            .await
+            .unwrap();
+        // ...and the edit made since has an earlier wall-clock time.
+        sqlx::query("INSERT INTO sync_outbox VALUES ('chats', 'c1', 5000)").execute(&mut c).await.unwrap();
+        let mut echo = change("c1", 7000, Some(json!({"id": "c1", "notebook_id": "n1", "title": "Uploaded before"})));
+        echo.hlc = format!("{:013}:0003:{ME}", 7000);
+        let r = apply(&mut c, ME, &[echo]).await.unwrap();
+        assert!(r.applied.is_empty());
+        assert_eq!(title(&mut c, "c1").await.as_deref(), Some("Local title"));
     }
 
     #[tokio::test]

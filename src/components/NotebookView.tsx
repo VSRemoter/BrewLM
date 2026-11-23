@@ -64,6 +64,7 @@ import { IconButton, Modal } from "./ui";
 import { onRemoteChanges } from "../lib/sync";
 import { platform } from "../platform";
 import { NARROW, useMediaQuery } from "../lib/usePhone";
+import { LocalOnlyBadge, toggleLocalOnly, useLocalOnly } from "./LocalOnly";
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
 const LS = { left: "om.panel.left", right: "om.panel.right", split: "om.split.left" };
@@ -140,6 +141,7 @@ export default function NotebookView({
   const [shareOpen, setShareOpen] = useState(false);
   /** Opened from someone's link: their sources and outputs can't be changed here. */
   const readOnly = !!notebook.share_id;
+  const localOnly = useLocalOnly();
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const saved = useMemo(() => loadSaved(notebook.id), [notebook.id]);
@@ -514,6 +516,15 @@ export default function NotebookView({
         className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-[14px] font-semibold tracking-tight outline-none hover:bg-hover-soft focus:bg-hover-soft"
         aria-label="Notebook title"
       />
+      {localOnly.enabled && localOnly.isLocal("notebooks", notebook.id) && (
+        <button
+          onClick={() => void toggleLocalOnly("notebooks", notebook.id, notebook.title, false)}
+          className="shrink-0 rounded-md px-1.5 py-1 hover:bg-hover-soft"
+          title="Kept on this device only. Click to sync this notebook to your other devices again"
+        >
+          <LocalOnlyBadge />
+        </button>
+      )}
       {!readOnly && (
         <IconButton onClick={() => setShareOpen(true)} label="Share notebook">
           <Share2 size={15} strokeWidth={1.8} />

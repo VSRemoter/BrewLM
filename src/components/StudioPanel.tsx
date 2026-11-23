@@ -92,6 +92,7 @@ import {
 } from "./StudioCustomize";
 import { FormField, GhostButton, inputClass, Modal, PrimaryButton, Spinner, textareaClass } from "./ui";
 import { Toggle } from "./settings/controls";
+import { LocalOnlyToggle, useLocalOnly } from "./LocalOnly";
 
 const TOOLS: {
   kind: ArtifactKind;
@@ -179,6 +180,7 @@ const StudioPanel = forwardRef<
 }, ref) {
   /** This notebook's generations in flight — several can run at once. */
   const jobs = useStudioJobs(notebookId);
+  const localOnly = useLocalOnly();
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Artifact | null>(null);
   /** The drawing open in the sketchpad (takes over the panel like `viewing`). */
@@ -1070,6 +1072,17 @@ const StudioPanel = forwardRef<
                           <span className="block text-[11px] text-ink-3">{subtitle}</span>
                         </span>
                       </button>
+                      {!readOnly && (
+                        <LocalOnlyToggle
+                          state={localOnly}
+                          tbl="artifacts"
+                          id={a.id}
+                          title={a.title}
+                          notebookId={a.notebook_id}
+                          size={12.5}
+                          className="p-1"
+                        />
+                      )}
                       <button
                         onClick={async () => {
                           await setArtifactPinned(a.id, !a.pinned);

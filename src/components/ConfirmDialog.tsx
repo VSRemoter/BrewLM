@@ -12,6 +12,8 @@ export interface ConfirmOptions {
   message: ReactNode;
   /** Label of the destructive button. Default: "Delete". */
   confirmLabel?: string;
+  /** Just tell: one "OK" button, and the answer is always false. */
+  notice?: boolean;
 }
 
 type Request = ConfirmOptions & { resolve: (ok: boolean) => void };
@@ -72,14 +74,16 @@ export function ConfirmHost() {
             onClick={() => close(false)}
             className="rounded-full border border-edge bg-panel px-4 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-hover"
           >
-            Cancel
+            {req.notice ? "OK" : "Cancel"}
           </button>
-          <button
-            onClick={() => close(true)}
-            className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
-          >
-            {req.confirmLabel ?? "Delete"}
-          </button>
+          {!req.notice && (
+            <button
+              onClick={() => close(true)}
+              className="rounded-full bg-danger px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-85"
+            >
+              {req.confirmLabel ?? "Delete"}
+            </button>
+          )}
         </>
       }
     >

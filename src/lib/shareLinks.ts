@@ -200,7 +200,8 @@ export async function publishShare(
   onProgress?: (p: Progress) => void
 ): Promise<ShareRow> {
   signedIn();
-  const snapshot = await readSnapshot(notebookId, { includeChats: opts.includeChats });
+  // Single items the owner keeps on this device only aren't published either.
+  const snapshot = await readSnapshot(notebookId, { includeChats: opts.includeChats, leaveOutLocal: true });
   const row: ShareRow = existing
     ? { ...existing }
     : {

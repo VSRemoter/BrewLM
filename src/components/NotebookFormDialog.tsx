@@ -3,7 +3,7 @@
  * an optional cover across the top, a large borderless title, a quiet
  * description, then properties (the folder a notebook lives in) as rows.
  */
-import { FolderClosed, House, ImagePlus, Trash2 } from "lucide-react";
+import { Cloud, CloudOff, FolderClosed, House, ImagePlus, Trash2 } from "lucide-react";
 import { useRef } from "react";
 import { mediaSrc } from "../lib/blobs";
 import type { Folder } from "../lib/types";
@@ -20,6 +20,7 @@ export default function NotebookFormDialog({
   onPickCover,
   onRemoveCover,
   folder,
+  syncTo,
   submitLabel,
   onSubmit,
   onClose,
@@ -36,6 +37,8 @@ export default function NotebookFormDialog({
   onRemoveCover: () => void;
   /** Notebooks only: which folder it lives in ("" = none). */
   folder?: { value: string; options: Folder[]; onChange: (id: string) => void };
+  /** Notebooks only, while Sync is on (desktop): sync it, or keep it on this device. */
+  syncTo?: { localOnly: boolean; onChange: (localOnly: boolean) => void };
   submitLabel: string;
   onSubmit: () => void;
   onClose: () => void;
@@ -145,6 +148,23 @@ export default function NotebookFormDialog({
                       label: f.name,
                       icon: <FolderClosed size={14} strokeWidth={1.8} />,
                     })),
+                  ]}
+                />
+              </div>
+            </PropertyRow>
+          </div>
+        )}
+        {syncTo && (
+          <div className={folder ? "mt-1" : "mt-3 border-t border-edge-soft pt-3"}>
+            <PropertyRow inline label="Sync" icon={<Cloud size={14} strokeWidth={1.8} />}>
+              <div className="-mx-2">
+                <SelectMenu
+                  label="Sync"
+                  value={syncTo.localOnly ? "local" : "all"}
+                  onChange={(v) => syncTo.onChange(v === "local")}
+                  options={[
+                    { id: "all", label: "All your devices", icon: <Cloud size={14} strokeWidth={1.8} /> },
+                    { id: "local", label: "This device only", icon: <CloudOff size={14} strokeWidth={1.8} /> },
                   ]}
                 />
               </div>

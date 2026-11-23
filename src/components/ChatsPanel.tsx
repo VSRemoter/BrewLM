@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { formatTime } from "../lib/source";
 import type { Chat } from "../lib/types";
 import { IconButton } from "./ui";
+import { LocalOnlyToggle, useLocalOnly } from "./LocalOnly";
 
 export default function ChatsPanel({
   chats,
@@ -29,6 +30,7 @@ export default function ChatsPanel({
     () => [...chats].sort((a, b) => (b.pinned ?? 0) - (a.pinned ?? 0)),
     [chats]
   );
+  const localOnly = useLocalOnly();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -137,6 +139,15 @@ export default function ChatsPanel({
                         {paneNo > 0 && ` · pane ${paneNo}`}
                       </span>
                     </button>
+                    <LocalOnlyToggle
+                      state={localOnly}
+                      tbl="chats"
+                      id={chat.id}
+                      title={chat.title}
+                      notebookId={chat.notebook_id}
+                      className="p-1"
+                    />
+
                     <button
                       onClick={() => onPin(chat.id, !chat.pinned)}
                       className={`shrink-0 rounded p-1 transition-all hover:text-ink ${

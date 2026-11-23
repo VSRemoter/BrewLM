@@ -35,6 +35,7 @@ import {
   waitForSignIn,
 } from "../../lib/sync";
 import { formatTime } from "../../lib/source";
+import { newNotebooksLocal, setNewNotebooksLocal } from "../../lib/localOnly";
 import { GhostButton, Modal, PrimaryButton } from "../ui";
 import { Card, Footnote, Row, SectionTitle, Toggle } from "./controls";
 import { platform } from "../../platform";
@@ -678,6 +679,8 @@ function OnCard({ status }: { status: SyncStatus }) {
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [confirmNewKey, setConfirmNewKey] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [newLocal, setNewLocal] = useState(false);
+  useEffect(() => void newNotebooksLocal().then(setNewLocal).catch(() => {}), []);
 
   const run = async (what: string, fn: () => Promise<void>) => {
     setBusy(what);
@@ -712,13 +715,17 @@ function OnCard({ status }: { status: SyncStatus }) {
           desc={
             status.error
               ? `Couldn't sync: ${status.error}`
+              : status.storageFull
+                ? "Your sync storage is full. Changes that fit keep syncing; the rest waits here until you free up space or choose a bigger plan."
               : (status.lastSyncAt ? `Up to date · last synced ${formatTime(status.lastSyncAt)}` : "Syncing…") +
                 (status.tooLarge
                   ? ` · ${status.tooLarge === 1 ? "1 file is" : `${status.tooLarge} files are`} over 100 MB, too large to sync: ${status.tooLarge === 1 ? "it stays" : "they stay"} on this device (Data & Storage lists ${status.tooLarge === 1 ? "it" : "them"})`
                   : "")
           }
         >
-          <span className={`inline-block h-2 w-2 rounded-full ${status.error ? "bg-danger" : "bg-accent"}`} />
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${status.error || status.storageFull ? "bg-danger" : "bg-accent"}`}
+          />
         </Row>
         <Row label="Add a device" desc="Show a one-time code to scan or type on your new device, instead of your password.">
           <GhostButton onClick={() => setAdding(true)}>Add a device…</GhostButton>
@@ -729,6 +736,21 @@ function OnCard({ status }: { status: SyncStatus }) {
         >
           <Toggle checked={status.syncApiKeys} onChange={(v) => void setSyncApiKeys(v)} label="Sync API keys" />
         </Row>
+        {platform.kind === "desktop" && (
+          <Row
+            label="Sync new notebooks"
+            desc={`Off: new notebooks start out on this ${HERE} only. Change any notebook in its Edit dialog, and single sources, chats and studio outputs with the cloud icon on their row.`}
+          >
+            <Toggle
+              checked={!newLocal}
+              onChange={(v) => {
+                setNewLocal(!v);
+                void setNewNotebooksLocal(!v);
+              }}
+              label="Sync new notebooks"
+            />
+          </Row>
+        )}
         <Row label="Sync password" desc="Change it on every device at once." alignTop={changing}>
           {changing ? (
             <form onSubmit={savePassword} className="flex flex-col items-end gap-2">

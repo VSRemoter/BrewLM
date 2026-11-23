@@ -56,20 +56,23 @@ export function applyChanges(db: SyncSqlite, deviceId: string, changes: RemoteCh
       const pk = Object.prototype.hasOwnProperty.call(SYNCED_TABLES, c.tbl) ? SYNCED_TABLES[c.tbl] : undefined;
       if (!pk) return;
 
-      // Local version: a pending edit beats the last synced HLC.
+      // Local version: a pending edit beats the last synced HLC. It's newer than
+      // every version this device synced, even when its wall-clock time isn't
+      // (this clock behind another device's): the server echoing our own last
+      // upload must never undo it.
       const [pending] = db.all<{ changed_at: number }>(
         "SELECT changed_at FROM sync_outbox WHERE tbl = ? AND row_id = ?",
         [c.tbl, c.row_id]
       );
+      const [meta] = db.all<{ hlc: string; changed_at: number }>(
+        "SELECT hlc, changed_at FROM sync_meta WHERE tbl = ? AND row_id = ?",
+        [c.tbl, c.row_id]
+      );
       let local: string | undefined;
-      if (pending) local = localHlc(pending.changed_at, deviceId);
-      else {
-        const [meta] = db.all<{ hlc: string; changed_at: number }>(
-          "SELECT hlc, changed_at FROM sync_meta WHERE tbl = ? AND row_id = ?",
-          [c.tbl, c.row_id]
-        );
-        if (meta) local = meta.hlc || localHlc(meta.changed_at, deviceId);
-      }
+      if (pending) {
+        local = localHlc(pending.changed_at, deviceId);
+        if (meta?.hlc && meta.hlc > local) local = meta.hlc;
+      } else if (meta) local = meta.hlc || localHlc(meta.changed_at, deviceId);
       if (local !== undefined && local >= c.hlc) return;
 
       if (c.deleted) {

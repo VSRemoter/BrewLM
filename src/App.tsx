@@ -14,7 +14,8 @@ import { NARROW, useMediaQuery } from "./lib/usePhone";
 import SettingsPage from "./components/settings/SettingsPage";
 import { startJobRunner } from "./lib/jobRunner";
 import { migrateMedia } from "./lib/mediaMigration";
-import { onRemoteChanges, startSync } from "./lib/sync";
+import { getSyncStatus, onRemoteChanges, startSync } from "./lib/sync";
+import { newNotebooksLocal } from "./lib/localOnly";
 import { cloneNotebook } from "./lib/share";
 import { cleanUpShares, parseShareUrl } from "./lib/shareLinks";
 import {
@@ -243,8 +244,11 @@ export default function App() {
   const mounted = narrow ? (active ? [active.id] : []) : tabs.loaded;
   const showStrip = !narrow && (tabs.ids.length > 0 || active !== null);
 
-  const createAndOpen = async (title: string, description = "", folderId = "", cover = "") => {
-    const nb = await createNotebook(title, description, folderId);
+  const createAndOpen = async (title: string, description = "", folderId = "", cover = "", localOnly?: boolean) => {
+    // Made without the dialog (quick switcher): Settings → Sync's default.
+    const local =
+      localOnly ?? (platform.kind === "desktop" && getSyncStatus().state === "on" && (await newNotebooksLocal()));
+    const nb = await createNotebook(title, description, folderId, local);
     if (cover) await setNotebookCover(nb.id, cover);
     await refresh();
     openTab(nb.id);

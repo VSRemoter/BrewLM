@@ -32,6 +32,8 @@ import { BrewIcon } from "./BrewIcon";
 import { GhostButton, IconButton, Modal, PrimaryButton } from "./ui";
 import UpdateAction from "./UpdateAction";
 import NotebookFormDialog from "./NotebookFormDialog";
+import { LocalOnlyBadge, toggleLocalOnly, useLocalOnly } from "./LocalOnly";
+import { newNotebooksLocal } from "../lib/localOnly";
 
 /** Custom DnD payload so folder drop targets ignore OS files and other drags. */
 const DND_NOTEBOOK = "application/x-notebook-id";
@@ -109,7 +111,7 @@ export default function Home({
   folders: Folder[];
   /** `background`: ⌘/Ctrl- or middle-click — open in a tab without switching to it. */
   onOpen: (id: string, background?: boolean) => void;
-  onCreate: (title: string, description: string, folderId: string, cover: string) => void;
+  onCreate: (title: string, description: string, folderId: string, cover: string, localOnly: boolean) => void;
   /** Move to Trash (soft delete — restorable). */
   onTrash: (id: string) => void;
   /** Restore from the Trash back to the homepage. */
@@ -148,6 +150,9 @@ export default function Home({
   const [description, setDescription] = useState("");
   const [createCover, setCreateCover] = useState("");
   const [createFolderId, setCreateFolderId] = useState("");
+  const [createLocal, setCreateLocal] = useState(false);
+  const [editLocal, setEditLocal] = useState(false);
+  const localOnly = useLocalOnly();
   const phone = usePhone();
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Notebook | null>(null);
@@ -259,13 +264,15 @@ export default function Home({
   /** New notebook starts in the folder being viewed, if any. */
   const openCreate = () => {
     setCreateFolderId(viewing?.id ?? "");
+    setCreateLocal(false);
+    if (localOnly.enabled) void newNotebooksLocal().then(setCreateLocal).catch(() => {});
     setCreating(true);
   };
 
   const submit = () => {
     const t = title.trim();
     if (!t) return;
-    onCreate(t, description.trim(), createFolderId, createCover);
+    onCreate(t, description.trim(), createFolderId, createCover, localOnly.enabled && createLocal);
     setTitle("");
     setDescription("");
     setCreateCover("");
@@ -278,10 +285,13 @@ export default function Home({
     setEditDescription(nb.description);
     setEditCover(nb.cover);
     setEditFolderId(nb.folder_id);
+    setEditLocal(localOnly.isLocal("notebooks", nb.id));
   };
 
   const submitEdit = () => {
     if (!editing) return;
+    if (localOnly.enabled && editLocal !== localOnly.isLocal("notebooks", editing.id))
+      void toggleLocalOnly("notebooks", editing.id, editTitle.trim() || editing.title, editLocal);
     const t = editTitle.trim();
     const d = editDescription.trim();
     if (t && (t !== editing.title || d !== editing.description)) {
@@ -509,7 +519,10 @@ export default function Home({
           )}
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-[11.5px] text-ink-3">{formatTime(nb.updated_at)}</span>
+          <span className="flex min-w-0 items-center gap-2 text-[11.5px] text-ink-3">
+            {formatTime(nb.updated_at)}
+            {localOnly.enabled && localOnly.isLocal("notebooks", nb.id) && <LocalOnlyBadge withText={false} />}
+          </span>
           {!selecting && actionCluster(nb, { star: 13, template: 12.5, pencil: 12.5, trash: 13 })}
         </div>
       </div>
@@ -566,7 +579,10 @@ export default function Home({
         )}
         {thumb(nb.cover, nb.title)}
         <div className="min-w-0">
-          <p className="truncate text-[13.5px] font-medium tracking-tight">{nb.title}</p>
+          <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium tracking-tight">
+            <span className="truncate">{nb.title}</span>
+            {localOnly.enabled && localOnly.isLocal("notebooks", nb.id) && <LocalOnlyBadge withText={false} />}
+          </p>
           {nb.description && (
             <p className="mt-0.5 hidden truncate text-[12px] text-ink-3 md:block">{nb.description}</p>
           )}
@@ -1403,6 +1419,7 @@ export default function Home({
           onPickCover={(f) => void pickCoverFile(setCreateCover, f)}
           onRemoveCover={() => setCreateCover("")}
           folder={{ value: createFolderId, options: folders, onChange: setCreateFolderId }}
+          syncTo={localOnly.enabled ? { localOnly: createLocal, onChange: setCreateLocal } : undefined}
           submitLabel="Create notebook"
           onSubmit={submit}
           onClose={() => setCreating(false)}
@@ -1421,6 +1438,11 @@ export default function Home({
           onPickCover={(f) => void pickCoverFile(setEditCover, f)}
           onRemoveCover={() => setEditCover("")}
           folder={{ value: editFolderId, options: folders, onChange: setEditFolderId }}
+          syncTo={
+            localOnly.enabled && !localOnly.isShared(editing.id)
+              ? { localOnly: editLocal, onChange: setEditLocal }
+              : undefined
+          }
           submitLabel="Save changes"
           onSubmit={submitEdit}
           onClose={() => setEditing(null)}
