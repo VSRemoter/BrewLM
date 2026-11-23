@@ -75,6 +75,8 @@ export interface Platform {
   fetch(url: string, init?: HttpInit): Promise<Response>;
   openUrl(url: string): Promise<void>;
   appVersion(): Promise<string>;
+  /** Desktop: swaps the Dock/taskbar icon while the app runs (PNG bytes). Web: the tab's icon. */
+  setAppIcon(png: Uint8Array): Promise<void>;
 
   /** Save dialog (desktop) or a download (web). Resolves to where it went, or null if cancelled. */
   saveFile(opts: { defaultName: string; filters?: FileFilter[]; data: Uint8Array | string }): Promise<string | null>;

@@ -1,4 +1,5 @@
 import type { OpenRouterRouting } from "./routing";
+import type { Look, LookPrefs } from "./look";
 
 export interface Notebook {
   id: string;
@@ -12,6 +13,8 @@ export interface Notebook {
   chat_bg: string;
   /** Readability overlay over chat_bg: 0–80 (percent of dark scrim). */
   chat_bg_dim: number;
+  /** Color id from notebookColors.ts: the homepage card's strip and the notebook's accent ("" = none). */
+  color: string;
   /** Folder this notebook lives in ("" = homepage root). */
   folder_id: string;
   /** 0 = live; otherwise the timestamp it was sent to the homepage Trash. */
@@ -289,6 +292,12 @@ export interface Settings {
   showReasoning: boolean;
   /** GIF and video chat backgrounds play; off, they hold their first frame. Per device (sync.ts LOCAL_SETTINGS). */
   animateBackgrounds: boolean;
+  /** Look-and-feel beyond theme and font: shape, density, chat style, accessibility… (look.ts). */
+  look: LookPrefs;
+  /** Looks the user saved or imported (look.ts). */
+  myLooks: Look[];
+  /** App icon variant id (appIcon.ts). Per device (sync.ts LOCAL_SETTINGS). */
+  appIcon: string;
 }
 
 export interface Flashcard {

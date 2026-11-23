@@ -34,6 +34,7 @@ import UpdateAction from "./UpdateAction";
 import NotebookFormDialog from "./NotebookFormDialog";
 import { LocalOnlyBadge, toggleLocalOnly, useLocalOnly } from "./LocalOnly";
 import { newNotebooksLocal } from "../lib/localOnly";
+import { notebookTintStyle } from "../lib/notebookColors";
 
 /** Custom DnD payload so folder drop targets ignore OS files and other drags. */
 const DND_NOTEBOOK = "application/x-notebook-id";
@@ -90,6 +91,7 @@ export default function Home({
   onUpdateDetails,
   onToggleStar,
   onSetCover,
+  onSetColor,
   onMoveNotebook,
   onCreateFolder,
   onUpdateFolder,
@@ -111,7 +113,7 @@ export default function Home({
   folders: Folder[];
   /** `background`: ⌘/Ctrl- or middle-click — open in a tab without switching to it. */
   onOpen: (id: string, background?: boolean) => void;
-  onCreate: (title: string, description: string, folderId: string, cover: string, localOnly: boolean) => void;
+  onCreate: (title: string, description: string, folderId: string, cover: string, color: string, localOnly: boolean) => void;
   /** Move to Trash (soft delete — restorable). */
   onTrash: (id: string) => void;
   /** Restore from the Trash back to the homepage. */
@@ -129,6 +131,8 @@ export default function Home({
   onUpdateDetails: (id: string, title: string, description: string) => void;
   onToggleStar: (id: string, starred: boolean) => void;
   onSetCover: (id: string, cover: string) => void;
+  /** Notebook color (notebookColors.ts id; "" = none). */
+  onSetColor: (id: string, color: string) => void;
   onMoveNotebook: (id: string, folderId: string) => void;
   onCreateFolder: (name: string, description: string, cover: string) => void;
   onUpdateFolder: (id: string, name: string, description: string) => void;
@@ -149,6 +153,7 @@ export default function Home({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [createCover, setCreateCover] = useState("");
+  const [createColor, setCreateColor] = useState("");
   const [createFolderId, setCreateFolderId] = useState("");
   const [createLocal, setCreateLocal] = useState(false);
   const [editLocal, setEditLocal] = useState(false);
@@ -159,6 +164,7 @@ export default function Home({
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editCover, setEditCover] = useState("");
+  const [editColor, setEditColor] = useState("");
   const [editFolderId, setEditFolderId] = useState("");
   const [folderModal, setFolderModal] = useState<{ folder: Folder | null } | null>(null);
   const [folderName, setFolderName] = useState("");
@@ -272,10 +278,11 @@ export default function Home({
   const submit = () => {
     const t = title.trim();
     if (!t) return;
-    onCreate(t, description.trim(), createFolderId, createCover, localOnly.enabled && createLocal);
+    onCreate(t, description.trim(), createFolderId, createCover, createColor, localOnly.enabled && createLocal);
     setTitle("");
     setDescription("");
     setCreateCover("");
+    setCreateColor("");
     setCreating(false);
   };
 
@@ -284,6 +291,7 @@ export default function Home({
     setEditTitle(nb.title);
     setEditDescription(nb.description);
     setEditCover(nb.cover);
+    setEditColor(nb.color ?? "");
     setEditFolderId(nb.folder_id);
     setEditLocal(localOnly.isLocal("notebooks", nb.id));
   };
@@ -299,6 +307,9 @@ export default function Home({
     }
     if (editCover !== editing.cover) {
       onSetCover(editing.id, editCover);
+    }
+    if (editColor !== (editing.color ?? "")) {
+      onSetColor(editing.id, editColor);
     }
     if (editFolderId !== editing.folder_id) {
       onMoveNotebook(editing.id, editFolderId);
@@ -495,6 +506,13 @@ export default function Home({
           {selected && <Check size={11} strokeWidth={3} />}
         </span>
       )}
+      {nb.color && (
+        <span
+          aria-hidden
+          className="nb-tint block h-1.5 w-full shrink-0"
+          style={{ ...notebookTintStyle(nb.color), background: "var(--nb-accent)" }}
+        />
+      )}
       {nb.cover && (
         <img
           src={mediaSrc(nb.cover)}
@@ -531,7 +549,7 @@ export default function Home({
   };
 
   /** List view: the notebook's cover, or a tile with its first letter. */
-  const thumb = (cover: string, title: string, muted = false) =>
+  const thumb = (cover: string, title: string, muted = false, color = "") =>
     cover ? (
       <img
         src={mediaSrc(cover)}
@@ -543,7 +561,8 @@ export default function Home({
       <span
         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-[14px] font-semibold text-accent ${
           muted ? "opacity-60 grayscale" : ""
-        }`}
+        } ${color ? "nb-tint nb-accent" : ""}`}
+        style={notebookTintStyle(color)}
       >
         {(title.trim()[0] ?? "?").toUpperCase()}
       </span>
@@ -577,7 +596,7 @@ export default function Home({
             {selected && <Check size={10} strokeWidth={3} />}
           </span>
         )}
-        {thumb(nb.cover, nb.title)}
+        {thumb(nb.cover, nb.title, false, nb.color)}
         <div className="min-w-0">
           <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium tracking-tight">
             <span className="truncate">{nb.title}</span>
@@ -960,7 +979,7 @@ export default function Home({
                               {selected && <Check size={10} strokeWidth={3} />}
                             </span>
                           )}
-                          {thumb(nb.cover, nb.title, true)}
+                          {thumb(nb.cover, nb.title, true, nb.color)}
                           <div className="min-w-0">
                             <p className="truncate text-[13.5px] font-medium tracking-tight text-ink-2">{nb.title}</p>
                             {nb.description && (
@@ -1418,6 +1437,7 @@ export default function Home({
           cover={createCover}
           onPickCover={(f) => void pickCoverFile(setCreateCover, f)}
           onRemoveCover={() => setCreateCover("")}
+          color={{ value: createColor, onChange: setCreateColor }}
           folder={{ value: createFolderId, options: folders, onChange: setCreateFolderId }}
           syncTo={localOnly.enabled ? { localOnly: createLocal, onChange: setCreateLocal } : undefined}
           submitLabel="Create notebook"
@@ -1437,6 +1457,7 @@ export default function Home({
           cover={editCover}
           onPickCover={(f) => void pickCoverFile(setEditCover, f)}
           onRemoveCover={() => setEditCover("")}
+          color={{ value: editColor, onChange: setEditColor }}
           folder={{ value: editFolderId, options: folders, onChange: setEditFolderId }}
           syncTo={
             localOnly.enabled && !localOnly.isShared(editing.id)

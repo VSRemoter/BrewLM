@@ -1,4 +1,4 @@
-import { Check, Columns2, LayoutPanelLeft, Rows2 } from "lucide-react";
+import { ArrowLeftRight, Check, Columns2, LayoutPanelLeft, PanelLeft, PanelRight, Rows2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { PRESETS, layoutRects, type Preset } from "../lib/chatLayout";
 import { IconButton } from "./ui";
@@ -25,9 +25,18 @@ function PresetThumb({ preset, count }: { preset: Preset; count: number }) {
   );
 }
 
+/** The notebook's side panels: which show, and which side each sits on (NotebookView). */
+export interface SidePanels {
+  sources: boolean;
+  studio: boolean;
+  swapped: boolean;
+  onToggle: (which: "sources" | "studio" | "swapped") => void;
+}
+
 /**
- * The chat header's layout button: add a chat beside or below this one, or
- * rearrange the open chats into a preset.
+ * The chat header's layout button: add a chat beside or below this one,
+ * rearrange the open chats into a preset, and show, hide or swap the side
+ * panels.
  */
 export default function ChatLayoutMenu({
   count,
@@ -35,6 +44,7 @@ export default function ChatLayoutMenu({
   current,
   onAdd,
   onPreset,
+  panels,
 }: {
   count: number;
   presets: Preset[];
@@ -42,6 +52,7 @@ export default function ChatLayoutMenu({
   /** Absent once the most chats are open. */
   onAdd?: (where: "right" | "bottom") => void;
   onPreset: (p: Preset) => void;
+  panels?: SidePanels;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -112,6 +123,32 @@ export default function ChatLayoutMenu({
             <p className="px-3 pb-1.5 pt-1 text-[11px] leading-snug text-ink-3">
               Drag a chat by its title to move it. Drop it on an edge to place it there, or in the middle to swap.
             </p>
+          )}
+          {panels && (
+            <>
+              <p className="mt-1 border-t border-edge-soft px-3 pb-1 pt-2 text-[10.5px] font-medium uppercase tracking-wide text-ink-3">
+                Side panels
+              </p>
+              {(
+                [
+                  ["sources", "Sources and chats", panels.swapped ? PanelRight : PanelLeft, panels.sources],
+                  ["studio", "Studio", panels.swapped ? PanelLeft : PanelRight, panels.studio],
+                  ["swapped", "Swap sides", ArrowLeftRight, panels.swapped],
+                ] as const
+              ).map(([id, label, Icon, on]) => (
+                <button
+                  key={id}
+                  role="menuitemcheckbox"
+                  aria-checked={on}
+                  className={item}
+                  onClick={() => panels.onToggle(id)}
+                >
+                  <Icon size={14} strokeWidth={1.8} />
+                  <span className="flex-1">{label}</span>
+                  {on && <Check size={13} strokeWidth={2.5} className="text-accent" />}
+                </button>
+              ))}
+            </>
           )}
         </div>
       )}

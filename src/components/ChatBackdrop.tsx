@@ -1,20 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { mediaSrc } from "../lib/blobs";
 import { isGifBackground, isVideoBackground } from "../lib/chatBackground";
-
-/** The OS asks for less motion (macOS/Windows/iOS accessibility setting). */
-function useReducedMotion(): boolean {
-  const query = "(prefers-reduced-motion: reduce)";
-  const [reduce, setReduce] = useState(() => window.matchMedia?.(query).matches ?? false);
-  useEffect(() => {
-    const mq = window.matchMedia?.(query);
-    if (!mq) return;
-    const on = () => setReduce(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return reduce;
-}
+import { useReducedMotion } from "../lib/motion";
 
 function usePageVisible(): boolean {
   const [visible, setVisible] = useState(() => !document.hidden);

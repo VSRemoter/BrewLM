@@ -20,7 +20,7 @@ function open() {
   const db = new sqlite3.oo1.DB(":memory:");
   const bind = (b?: unknown[]) => (b?.length ? (b as never) : undefined);
   for (const sql of [
-    "CREATE TABLE notebooks (id TEXT PRIMARY KEY, title TEXT, description TEXT, starred INTEGER, cover TEXT, chat_bg TEXT, chat_bg_dim INTEGER, folder_id TEXT, grounded INTEGER, constitution_on INTEGER, share_id TEXT, share_key TEXT, share_version INTEGER, shared_by TEXT, trashed_at INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER)",
+    "CREATE TABLE notebooks (id TEXT PRIMARY KEY, title TEXT, description TEXT, starred INTEGER, cover TEXT, chat_bg TEXT, chat_bg_dim INTEGER, color TEXT NOT NULL DEFAULT '', folder_id TEXT, grounded INTEGER, constitution_on INTEGER, share_id TEXT, share_key TEXT, share_version INTEGER, shared_by TEXT, trashed_at INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER)",
     "CREATE TABLE sources (id TEXT PRIMARY KEY, notebook_id TEXT, type TEXT, title TEXT, content TEXT, mime TEXT, pinned INTEGER, text TEXT, created_at INTEGER)",
     "CREATE TABLE source_chunks (id TEXT PRIMARY KEY, source_id TEXT, notebook_id TEXT, seq INTEGER, page INTEGER, text TEXT, embedding TEXT)",
     "CREATE TABLE artifacts (id TEXT PRIMARY KEY, notebook_id TEXT, kind TEXT, title TEXT, data TEXT, pinned INTEGER, usage TEXT, created_at INTEGER)",

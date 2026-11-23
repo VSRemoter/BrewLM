@@ -217,6 +217,9 @@ async function initDb(): Promise<SqlDb> {
     await db.execute("ALTER TABLE notebooks ADD COLUMN share_version INTEGER NOT NULL DEFAULT 0");
     await db.execute("ALTER TABLE notebooks ADD COLUMN shared_by TEXT NOT NULL DEFAULT ''");
   }
+  // notebooks gain color (an id from notebookColors.ts: the card's strip and the notebook's accent; "" = none).
+  if (!nbCols.some((c) => c.name === "color"))
+    await db.execute("ALTER TABLE notebooks ADD COLUMN color TEXT NOT NULL DEFAULT ''");
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_sources_nb ON sources(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_nb ON messages(notebook_id)`);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)`);
@@ -491,6 +494,7 @@ export async function createNotebook(
     cover: "",
     chat_bg: "",
     chat_bg_dim: 55,
+    color: "",
     folder_id: folderId,
     trashed_at: 0,
     grounded: 1,
@@ -568,6 +572,12 @@ export async function getNotebookConstitutionOn(id: string): Promise<number> {
 export async function setNotebookCover(id: string, cover: string): Promise<void> {
   const d = await getDb();
   await d.execute("UPDATE notebooks SET cover = $1 WHERE id = $2", [await storeMedia(cover), id]);
+}
+
+/** Set (or clear with "") the notebook's color (notebookColors.ts id). */
+export async function setNotebookColor(id: string, color: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE notebooks SET color = $1 WHERE id = $2", [color, id]);
 }
 
 /** Set (or clear with "") the chat background image (JPEG data URL or stored file). */

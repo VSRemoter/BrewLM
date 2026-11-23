@@ -25,10 +25,19 @@ export function applyZoom(): void {
   document.documentElement.style.setProperty("--om-zoom", String(zoom));
 }
 
+const listeners = new Set<() => void>();
+
+/** Calls `fn` after each zoom change; returns the unsubscribe (fits useSyncExternalStore). */
+export function subscribeZoom(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
 /** Clamps, persists, and applies. Returns the value actually set. */
 export function setZoom(v: number): number {
   zoom = clamp(Math.round(v * 100) / 100);
   localStorage.setItem(ZOOM_KEY, String(zoom));
   applyZoom();
+  listeners.forEach((fn) => fn());
   return zoom;
 }

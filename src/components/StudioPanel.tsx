@@ -69,6 +69,7 @@ import {
   INTERACTIVE_REVISE_FORMAT,
   buildPagePrompt,
   PAGE_SYSTEM,
+  STORYBOARD_ROLE,
   buildStoryboardPrompt,
   parseInteractive,
   writePage,
@@ -80,7 +81,7 @@ import type { Artifact, ArtifactKind, Settings, Source } from "../lib/types";
 import ArtifactView from "./ArtifactView";
 import { confirmAction } from "./ConfirmDialog";
 import DrawingView from "./DrawingView";
-import { isDarkTheme } from "../lib/themes";
+import { activeTheme, isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
@@ -165,6 +166,10 @@ const StudioPanel = forwardRef<
     onReadingChange?: (reading: boolean) => void;
     /** A notebook shared with you: outputs can be opened, not made, revised or deleted. */
     readOnly?: boolean;
+    /** Side panels swapped: Studio sits on the left. */
+    onLeft?: boolean;
+    /** Hidden from the layout (still mounted, so running jobs carry on). */
+    hidden?: boolean;
   }
 >(function StudioPanel({
   notebookId,
@@ -177,6 +182,8 @@ const StudioPanel = forwardRef<
   onOpenSettings,
   onReadingChange,
   readOnly = false,
+  onLeft = false,
+  hidden = false,
 }, ref) {
   /** This notebook's generations in flight — several can run at once. */
   const jobs = useStudioJobs(notebookId);
@@ -245,17 +252,23 @@ const StudioPanel = forwardRef<
   const groundedSystem = async (
     scoped: Source[],
     query: string,
-    opts: { exhaustive?: boolean; onPhase?: (phase: string) => void; signal?: AbortSignal } = {}
+    opts: {
+      exhaustive?: boolean;
+      onPhase?: (phase: string) => void;
+      signal?: AbortSignal;
+      /** Replaces the chat persona and rules (see buildSystemParts). */
+      role?: { persona: string; rules: string };
+    } = {}
   ): Promise<string> => {
     await ensureIndexed(scoped, settings);
     if (opts.exhaustive && sourceChars(scoped) > MAP_REDUCE_THRESHOLD) {
       const notes = await condenseNotebook(notebookId, scoped, settings, opts.onPhase, opts.signal);
-      return condensedSystemPrompt(notes);
+      return condensedSystemPrompt(notes, opts.role);
     }
     await ensureServerContext(settings, { load: true });
     const budget = contextBudget(settings);
     const retrieved = await rankChunks(scoped, query, settings, budget.sources);
-    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget });
+    return buildSystemPrompt(scoped, [], retrieved.length ? retrieved : undefined, { budget, role: opts.role });
   };
 
   /** Prompt-usable source text; over the threshold, reports condense exhaustively. */
@@ -469,6 +482,7 @@ const StudioPanel = forwardRef<
         exhaustive: true,
         onPhase: job.setPhase,
         signal: job.signal,
+        role: STORYBOARD_ROLE,
       });
       job.setPhase("Planning the storyboard…");
       const storyboard = (
@@ -836,7 +850,9 @@ const StudioPanel = forwardRef<
 
   return (
     <aside
-      className="anim-panel-right flex h-full shrink-0 flex-col border-l border-edge-soft bg-panel"
+      className={`${onLeft ? "anim-panel-left border-r" : "anim-panel-right border-l"} h-full shrink-0 flex-col border-edge-soft bg-panel ${
+        hidden ? "hidden" : "flex"
+      }`}
       style={{ width }}
     >
       {/* An opened output takes over the panel; Minimize brings the tools back. */}
@@ -848,7 +864,7 @@ const StudioPanel = forwardRef<
           onSourcesChanged={onSourcesChanged}
           onArtifactChanged={onArtifactsChanged}
           running={jobs.length}
-          dark={isDarkTheme(settings.theme)}
+          dark={isDarkTheme(activeTheme())}
           showDetails={settings.showDetails}
           onFixInteractive={(problem) => fixInteractive(artifacts.find((x) => x.id === viewing.id) ?? viewing, problem)}
         />
@@ -856,7 +872,7 @@ const StudioPanel = forwardRef<
         <DrawingView
           key={drawing.id}
           artifact={artifacts.find((x) => x.id === drawing.id) ?? drawing}
-          dark={isDarkTheme(settings.theme)}
+          dark={isDarkTheme(activeTheme())}
           onClose={() => {
             setDrawing(null);
             onArtifactsChanged();
