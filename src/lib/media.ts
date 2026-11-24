@@ -39,9 +39,23 @@ const VISION_MODELS: Record<Provider, string> = {
 };
 const OPENROUTER_AUDIO_MODEL = "google/gemini-2.5-flash";
 
-function visionModel(s: Settings, p: Provider): string {
+/**
+ * The model that reads an image on provider `p`. On OpenRouter, the chat
+ * model reads it when OpenRouter lists it as taking images; otherwise (or
+ * when the catalog can't be fetched) the fixed default does.
+ */
+export async function visionModel(s: Pick<Settings, "provider" | "model" | "localVisionModel">, p: Provider): Promise<string> {
   if (p === "local") return s.localVisionModel.trim();
-  return p === "brewlm" ? aiConfigNow().roles.transcribe : VISION_MODELS[p];
+  if (p === "brewlm") return aiConfigNow().roles.transcribe;
+  if (p === "openrouter" && s.provider === "openrouter" && (await acceptsImages(s.model))) return s.model.trim();
+  return VISION_MODELS[p];
+}
+
+/** Whether OpenRouter lists this model as taking images; false when unknown. */
+async function acceptsImages(id: string): Promise<boolean> {
+  if (!id.trim()) return false;
+  const m = (await loadOpenRouterCatalog())?.find((x) => x.id === id.trim());
+  return !!m?.architecture?.input_modalities?.includes("image");
 }
 
 /** Local vision models get a smaller picture: it fits small context windows and reads faster on a laptop. */
@@ -202,9 +216,8 @@ async function localVisionCall(s: Settings, jpeg: string, prompt: string): Promi
   return readCompletion(await res.json());
 }
 
-async function visionCall(s: Settings, p: Provider, jpeg: string): Promise<string> {
+async function visionCall(s: Settings, p: Provider, model: string, jpeg: string): Promise<string> {
   const key = keyFor(s, p);
-  const model = visionModel(s, p);
   let usage: StreamUsage = {};
   let text = "";
   if (p === "local") {
@@ -327,8 +340,9 @@ export async function describeImage(src: Blob | string, settings?: Settings): Pr
   let lastErr = "";
   for (const p of providers) {
     try {
-      const text = cap(await visionCall(s, p, jpeg));
-      if (text) return { text: `[Image contents, as read by ${visionModel(s, p)}]\n\n${text}` };
+      const model = await visionModel(s, p);
+      const text = cap(await visionCall(s, p, model, jpeg));
+      if (text) return { text: `[Image contents, as read by ${model}]\n\n${text}` };
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
     }
