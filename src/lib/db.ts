@@ -69,6 +69,13 @@ async function initDb(): Promise<SqlDb> {
       message_id TEXT PRIMARY KEY,
       text TEXT NOT NULL
     )`);
+  // The look-ups a reply made in its sources (agent.ts), shown above it. Like
+  // reasoning: kept on this computer, never synced, never sent to the model.
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS message_steps (
+      message_id TEXT PRIMARY KEY,
+      steps TEXT NOT NULL
+    )`);
   await db.execute(`
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -942,10 +949,44 @@ export async function listReasoning(chatId: string): Promise<Record<string, stri
   return Object.fromEntries(rows.map((r) => [r.message_id, r.text]));
 }
 
-/** Reasoning whose message is gone (deleted here, or by sync from another device). */
+/** One look-up as stored with a reply (agent.ts AgentStep, minus the live flag). */
+export interface SavedStep {
+  label: string;
+  ok: boolean;
+}
+
+/** Save the look-ups a reply made (at most 40, labels cut to 200 characters). */
+export async function setMessageSteps(messageId: string, steps: SavedStep[]): Promise<void> {
+  if (steps.length === 0) return;
+  const clean = steps.slice(0, 40).map((s) => ({ label: String(s.label).slice(0, 200), ok: s.ok !== false }));
+  const d = await getDb();
+  await d.execute("INSERT OR REPLACE INTO message_steps (message_id, steps) VALUES ($1, $2)", [messageId, JSON.stringify(clean)]);
+}
+
+/** Look-ups saved with a chat's replies, by message id. */
+export async function listSteps(chatId: string): Promise<Record<string, SavedStep[]>> {
+  const d = await getDb();
+  const rows = await d.select<{ message_id: string; steps: string }[]>(
+    "SELECT s.message_id, s.steps FROM message_steps s JOIN messages m ON m.id = s.message_id WHERE m.chat_id = $1",
+    [chatId]
+  );
+  const out: Record<string, SavedStep[]> = {};
+  for (const r of rows) {
+    try {
+      const v = JSON.parse(r.steps);
+      if (Array.isArray(v)) out[r.message_id] = v.filter((s) => s && typeof s.label === "string");
+    } catch {
+      /* a damaged row just shows no steps */
+    }
+  }
+  return out;
+}
+
+/** Reasoning and look-ups whose message is gone (deleted here, or by sync from another device). */
 async function pruneOrphanReasoning(): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM message_reasoning WHERE message_id NOT IN (SELECT id FROM messages)");
+  await d.execute("DELETE FROM message_steps WHERE message_id NOT IN (SELECT id FROM messages)");
 }
 
 /* ---------------------------- Image library ---------------------------- */

@@ -290,6 +290,10 @@ export interface Settings {
   showDetails: boolean;
   /** Each reply's reasoning starts open above it, not folded (/thinking show|hide). */
   showReasoning: boolean;
+  /** Look deeper: in notebooks too big to send whole, chat may search and read more of the sources before answering (agent.ts). */
+  agentTools: boolean;
+  /** Chat may set up one flashcard deck, quiz, mind map or report per message, made only after the user approves it (agent.ts). */
+  agentStudio: boolean;
   /** GIF and video chat backgrounds play; off, they hold their first frame. Per device (sync.ts LOCAL_SETTINGS). */
   animateBackgrounds: boolean;
   /** Look-and-feel beyond theme and font: shape, density, chat style, accessibility… (look.ts). */

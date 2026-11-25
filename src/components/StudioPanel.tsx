@@ -802,20 +802,20 @@ const StudioPanel = forwardRef<
           case "flashcards": {
             const tool = TOOLS.find((t) => t.kind === "flashcards");
             if (!tool) return "Flashcards tool is unavailable.";
-            return generate(tool, { prompt: cmd.prompt });
+            return generate(tool, { prompt: cmd.prompt, sourceIds: cmd.sourceIds, title: cmd.title });
           }
           case "quiz": {
             const tool = TOOLS.find((t) => t.kind === "quiz");
             if (!tool) return "Quiz tool is unavailable.";
-            return generate(tool, { prompt: cmd.prompt });
+            return generate(tool, { prompt: cmd.prompt, sourceIds: cmd.sourceIds, title: cmd.title });
           }
           case "mindmap": {
             const tool = TOOLS.find((t) => t.kind === "mindmap");
             if (!tool) return "Mind map tool is unavailable.";
-            return generate(tool, { prompt: cmd.prompt });
+            return generate(tool, { prompt: cmd.prompt, sourceIds: cmd.sourceIds, title: cmd.title });
           }
           case "report":
-            return runReport(cmd.label, cmd.prompt);
+            return runReport(cmd.label, cmd.prompt, cmd.sourceIds);
           case "audio":
             return genAudio(
               cmd.opts

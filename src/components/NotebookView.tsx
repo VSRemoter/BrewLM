@@ -746,6 +746,7 @@ export default function NotebookView({
         if (phone) setTab("studio"); // show what the command makes
         return studioRef.current!.run(cmd);
       }}
+      studyActions={!readOnly}
       onCloneNotebook={handleClone}
       onRemove={handleRemove}
       notebookStarred={notebook.starred === 1}

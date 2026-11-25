@@ -33,10 +33,18 @@ export type AudioCommandOptions =
   | { format: AudioFormat; length: AudioLength; mode: AudioMode; description: string }
   | null;
 
+/** Optional scoping a command can carry (chat's make_study_item uses it; typed commands don't). */
+interface Scoped {
+  /** Only these sources (empty or absent = all of them). */
+  sourceIds?: string[];
+  /** The Studio item's name, instead of the tool's. */
+  title?: string;
+}
+
 export type StudioCommand =
-  | { tool: "flashcards" | "quiz"; prompt: string }
-  | { tool: "mindmap"; prompt: string }
-  | { tool: "report"; label: string; prompt: string }
+  | ({ tool: "flashcards" | "quiz"; prompt: string } & Scoped)
+  | ({ tool: "mindmap"; prompt: string } & Scoped)
+  | ({ tool: "report"; label: string; prompt: string } & Scoped)
   | { tool: "audio"; opts: AudioCommandOptions }
   | { tool: "research"; title: string };
 
@@ -235,5 +243,96 @@ export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): Stud
     }
     default:
       return `Unknown Studio command “/${tool}”. Try /flashcards, /quiz, /mindmap, /audio, /report, or /research.`;
+  }
+}
+
+/* ------------------------- chat's make_study_item ------------------------- */
+
+/** What chat's study tool may make: the quick, text-only Studio tools. No audio (voices cost extra), no deep research (web searches). */
+export const STUDY_KINDS = ["flashcards", "quiz", "mindmap", "report"] as const;
+export type StudyKind = (typeof STUDY_KINDS)[number];
+/** Report types it may write (not "custom": free-form instructions stay with the user). */
+export const STUDY_REPORTS = ["summary", "study-guide", "faq", "timeline", "briefing", "analysis"] as const;
+export type StudyReport = (typeof STUDY_REPORTS)[number];
+
+export interface StudyRequest {
+  kind: StudyKind;
+  /** Snapped to the nearest size Studio offers. */
+  count?: number;
+  difficulty?: Difficulty;
+  focus?: string;
+  report?: StudyReport;
+  /** Already resolved to ids; empty = every source. */
+  sourceIds: string[];
+}
+
+/** Longest focus kept, in characters. */
+export const STUDY_FOCUS_MAX = 200;
+
+/** The allowed size nearest to `n` (ties go to the smaller). */
+function nearest(counts: Record<Amount, number>, n: number): Amount {
+  const sizes = (Object.entries(counts) as [Amount, number][]).sort((a, b) => a[1] - b[1]);
+  return sizes.reduce((best, cur) => (Math.abs(cur[1] - n) < Math.abs(best[1] - n) ? cur : best))[0];
+}
+
+/**
+ * A Studio command from chat's study tool, built only from fixed choices
+ * (kind, a size Studio offers, a difficulty, a report type) plus a short
+ * focus. `what` describes it for the approval card ("a 8-question hard quiz
+ * on NULL functions"). A string is a reason it can't be made.
+ */
+export function studyCommand(
+  req: StudyRequest,
+  defs: StudioDefaults = {}
+): { cmd: StudioCommand; what: string; title: string } | string {
+  if (!(STUDY_KINDS as readonly string[]).includes(req.kind)) return `It can make ${STUDY_KINDS.join(", ")}; not “${String(req.kind)}”.`;
+  const focus = (req.focus ?? "").replace(/\s+/g, " ").trim().slice(0, STUDY_FOCUS_MAX);
+  const on = focus ? ` on “${focus}”` : "";
+  // The item's name: the focus up to its first clause, cut at a word if it's still long.
+  const short = (() => {
+    const clause = focus.split(/[:;(,—–]/)[0].trim() || focus;
+    if (clause.length <= 40) return clause;
+    const cut = clause.slice(0, 40);
+    return `${cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 40).trimEnd()}…`;
+  })();
+  const named = (base: string) => (focus ? `${base}: ${short}` : base);
+  const difficulty: Difficulty | undefined =
+    req.difficulty && isDifficulty(req.difficulty) ? req.difficulty : undefined;
+  const scope = { sourceIds: req.sourceIds };
+  switch (req.kind) {
+    case "flashcards": {
+      const amount = req.count ? nearest(FLASHCARD_COUNTS, req.count) : (defs.defFlashcardsAmount ?? "default");
+      const d = difficulty ?? defs.defFlashcardsDifficulty ?? "medium";
+      const title = named("Flashcards");
+      return {
+        cmd: { tool: "flashcards", prompt: buildFlashcardsPrompt({ amount, difficulty: d, sourceIds: [], description: focus }), title, ...scope },
+        what: `${FLASHCARD_COUNTS[amount]} ${d} flashcards${on}`,
+        title,
+      };
+    }
+    case "quiz": {
+      const amount = req.count ? nearest(QUIZ_COUNTS, req.count) : (defs.defQuizAmount ?? "default");
+      const d = difficulty ?? defs.defQuizDifficulty ?? "medium";
+      const title = named("Quiz");
+      return {
+        cmd: { tool: "quiz", prompt: buildQuizPrompt({ amount, difficulty: d, sourceIds: [], description: focus }), title, ...scope },
+        what: `${QUIZ_COUNTS[amount] === 8 ? "an" : "a"} ${QUIZ_COUNTS[amount]}-question ${d} quiz${on}`,
+        title,
+      };
+    }
+    case "mindmap": {
+      const title = named("Mind map");
+      return { cmd: { tool: "mindmap", prompt: buildMindmapPrompt(focus), title, ...scope }, what: `a mind map${on}`, title };
+    }
+    case "report": {
+      const type: StudyReport = req.report && (STUDY_REPORTS as readonly string[]).includes(req.report) ? req.report : "study-guide";
+      const f = REPORT_FORMATS.find((x) => x.id === type);
+      const label = f?.label ?? "Thorough Analysis";
+      const base = f?.prompt ?? buildReportPrompt("analysis", "");
+      // A focus narrows the report; the report's own rules stay as they are.
+      const prompt = focus ? `${base}\n\nFocus especially on: ${focus}.` : base;
+      const title = named(label);
+      return { cmd: { tool: "report", label: title, prompt, title, ...scope }, what: `a ${label === "FAQ" ? label : label.toLowerCase()}${on}`, title };
+    }
   }
 }

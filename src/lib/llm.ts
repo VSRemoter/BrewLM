@@ -6,8 +6,33 @@ import { openRouterApi, speaksOpenRouter } from "./brewlmAi";
 import type { Provider, Thinking } from "./types";
 
 export interface LlmMessage {
-  role: "system" | "user" | "assistant";
+  /** "tool" carries one tool's result back to the model (agent.ts). */
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** assistant: the tools the model asked to run in this message. */
+  toolCalls?: ToolCall[];
+  /** tool: the call this result answers. */
+  toolCallId?: string;
+  /**
+   * assistant: provider blocks that must go back unchanged with its tool calls
+   * (Anthropic's signed thinking blocks, OpenRouter's reasoning_details), or
+   * the provider refuses the follow-up request.
+   */
+  replay?: unknown[];
+}
+
+/** A tool the model may call: a name, what it does, and its arguments as JSON Schema. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** One call the model asked for. `arguments` is the raw JSON text it wrote (may be malformed). */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 /** Token accounting for one completion, when the provider reports it. */
@@ -24,7 +49,7 @@ export interface StreamUsage {
   servedBy?: string;
 }
 
-interface StreamOptions {
+export interface StreamOptions {
   provider: Provider;
   apiKey: string;
   model: string;
@@ -60,6 +85,15 @@ interface StreamOptions {
    * cache-write surcharge on text that is never read again.
    */
   cacheHistory?: boolean;
+  /** Tools the model may call (agent.ts). Omit for a plain reply. */
+  tools?: ToolSpec[];
+  /** "none": the tools stay defined (earlier calls need them) but the model must answer now. */
+  toolChoice?: "auto" | "none";
+  /**
+   * Called once the stream ends when the model asked for tools, with its calls
+   * and the provider blocks to send back with them. Only called when `tools` was sent.
+   */
+  onToolCalls?: (calls: ToolCall[], replay: unknown[]) => void;
 }
 
 /**
@@ -86,13 +120,94 @@ function cachedSystemBlocks(system: string[]) {
   return system.map((text, i) => (i === 0 ? { type: "text", text, cache_control: EPHEMERAL } : { type: "text", text }));
 }
 
-/** The conversation, with a breakpoint on the newest message when `cacheHistory` asks for one. */
+/** A message with only text: no tool calls, not a tool's result. */
+const plainMessage = (m: LlmMessage) => m.role !== "tool" && !m.toolCalls?.length;
+
+/** One message in OpenAI's chat format (OpenAI, OpenRouter, BrewLM AI, local servers). */
+function openAIMessage(m: LlmMessage): Record<string, unknown> {
+  if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+  if (m.role === "assistant" && m.toolCalls?.length) {
+    return {
+      role: "assistant",
+      content: m.content || null,
+      tool_calls: m.toolCalls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: c.arguments || "{}" },
+      })),
+      ...(m.replay?.length ? { reasoning_details: m.replay } : {}),
+    };
+  }
+  return { role: m.role, content: m.content };
+}
+
+/** The conversation (OpenAI format), with a breakpoint on the newest message when `cacheHistory` asks for one. */
 function cachedTurns(rest: LlmMessage[], cacheHistory: boolean | undefined) {
-  return rest.map((m, i) =>
-    cacheHistory && i === rest.length - 1 && m.content
+  return rest.map((m, i) => {
+    if (!cacheHistory || i !== rest.length - 1 || !m.content) return openAIMessage(m);
+    // Mid-agent-loop the newest message is a tool's result: caching up to it
+    // lets the next round re-read the excerpts and earlier results at ~10%.
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.toolCallId, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] };
+    }
+    return plainMessage(m)
       ? { role: m.role, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] }
-      : { role: m.role, content: m.content }
-  );
+      : openAIMessage(m);
+  });
+}
+
+/** A tool call's arguments as an object; malformed JSON becomes {} (the tool then reports what's missing). */
+export function parseToolArgs(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+type AnthropicTurn = { role: "user" | "assistant"; content: string | Record<string, unknown>[] };
+
+/**
+ * The conversation in Anthropic's format: tool calls become tool_use blocks
+ * (after the thinking blocks they came with, which Anthropic requires back),
+ * and results that follow one another share one user message.
+ */
+function anthropicTurns(rest: LlmMessage[], cacheHistory: boolean | undefined): AnthropicTurn[] {
+  const out: AnthropicTurn[] = [];
+  for (const m of rest) {
+    if (m.role === "tool") {
+      const block = { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
+      const prev = out[out.length - 1];
+      if (prev?.role === "user" && Array.isArray(prev.content) && prev.content.every((b) => b.type === "tool_result")) {
+        prev.content.push(block);
+      } else {
+        out.push({ role: "user", content: [block] });
+      }
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      out.push({
+        role: "assistant",
+        content: [
+          ...((m.replay ?? []) as Record<string, unknown>[]),
+          ...(m.content.trim() ? [{ type: "text", text: m.content }] : []),
+          ...m.toolCalls.map((c) => ({ type: "tool_use", id: c.id, name: c.name, input: parseToolArgs(c.arguments) })),
+        ],
+      });
+      continue;
+    }
+    out.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
+  }
+  const last = out[out.length - 1];
+  if (cacheHistory && last && typeof last.content === "string" && last.content) {
+    last.content = [{ type: "text", text: last.content, cache_control: EPHEMERAL }];
+  } else if (cacheHistory && last && Array.isArray(last.content) && last.content.length > 0) {
+    // Mid-agent-loop: the newest tool result carries the breakpoint.
+    const i = last.content.length - 1;
+    last.content[i] = { ...last.content[i], cache_control: EPHEMERAL };
+  }
+  return out;
 }
 
 /**
@@ -179,7 +294,8 @@ const MIN_USEFUL_OUTPUT = 1024;
 
 /** Rough prompt size in tokens (~3.5 characters each). */
 function promptTokens(messages: LlmMessage[]): number {
-  return Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 3.5);
+  const chars = (m: LlmMessage) => m.content.length + (m.toolCalls ?? []).reduce((n, c) => n + c.name.length + c.arguments.length, 0);
+  return Math.ceil(messages.reduce((n, m) => n + chars(m), 0) / 3.5);
 }
 
 /**
@@ -334,6 +450,75 @@ function reasoningOf(part: unknown): string {
 }
 
 /**
+ * Tool calls in an OpenAI-style stream. Each arrives in pieces keyed by
+ * `index` (the id and name first, then the arguments a fragment at a time);
+ * some servers send a whole call in one chunk instead. Calls with no id get one.
+ */
+export class ToolCallCollector {
+  private slots: { id: string; name: string; arguments: string }[] = [];
+
+  add(list: unknown): void {
+    if (!Array.isArray(list)) return;
+    list.forEach((raw) => {
+      if (!raw || typeof raw !== "object") return;
+      const tc = raw as { index?: unknown; id?: unknown; function?: { name?: unknown; arguments?: unknown } };
+      let i: number;
+      if (typeof tc.index === "number" && tc.index >= 0 && tc.index < 64) i = tc.index;
+      else if (typeof tc.id === "string" && tc.id) {
+        const known = this.slots.findIndex((s) => s?.id === tc.id);
+        i = known >= 0 ? known : this.slots.length;
+      } else if (typeof tc.function?.name === "string" && tc.function.name) {
+        i = this.slots.length; // no index or id but a name: a whole new call
+      } else i = Math.max(0, this.slots.length - 1); // neither: more of the last call's arguments
+      const slot = (this.slots[i] ??= { id: "", name: "", arguments: "" });
+      if (typeof tc.id === "string" && tc.id) slot.id = tc.id;
+      const name = tc.function?.name;
+      if (typeof name === "string" && name && !slot.name.endsWith(name)) slot.name += name;
+      const args = tc.function?.arguments;
+      if (typeof args === "string") slot.arguments += args;
+      else if (args && typeof args === "object") slot.arguments = JSON.stringify(args);
+    });
+  }
+
+  done(): ToolCall[] {
+    return this.slots
+      .filter((s) => s && s.name)
+      .map((s, i) => ({ id: s.id || `call_${i}_${Math.random().toString(36).slice(2, 10)}`, name: s.name, arguments: s.arguments }));
+  }
+}
+
+/**
+ * OpenRouter's reasoning_details, streamed in pieces. Models that think
+ * (Gemini, Claude, OpenAI's o-series) need them sent back unchanged with
+ * their tool calls; pieces of one detail share an `index` and are joined.
+ */
+export class ReasoningDetails {
+  private list: Record<string, unknown>[] = [];
+
+  add(items: unknown): void {
+    if (!Array.isArray(items)) return;
+    for (const raw of items) {
+      if (!raw || typeof raw !== "object") continue;
+      const d = raw as Record<string, unknown>;
+      const prev =
+        typeof d.index === "number" ? this.list.find((x) => x.index === d.index && x.type === d.type) : undefined;
+      if (!prev) {
+        this.list.push({ ...d });
+        continue;
+      }
+      for (const k of ["text", "summary", "data"]) {
+        if (typeof d[k] === "string") prev[k] = (typeof prev[k] === "string" ? prev[k] : "") + d[k];
+      }
+      for (const k of ["signature", "id", "format"]) if (d[k] != null) prev[k] = d[k];
+    }
+  }
+
+  done(): unknown[] {
+    return this.list;
+  }
+}
+
+/**
  * The `thinking` field of an Anthropic request. Claude 4.6 to 4.8 only think
  * when asked (an effort level is set); later models think by default, so
  * asking changes nothing but `display`: from 4.7 on, thinking text comes back
@@ -386,7 +571,7 @@ async function openAICompatibleRequest(opts: StreamOptions) {
         ...(system.length ? [{ role: "system", content: cachedSystemBlocks(system) }] : []),
         ...cachedTurns(rest, opts.cacheHistory),
       ]
-    : [...(system.length ? [{ role: "system", content: system.join("\n\n") }] : []), ...rest];
+    : [...(system.length ? [{ role: "system", content: system.join("\n\n") }] : []), ...rest.map(openAIMessage)];
 
   const body: Record<string, unknown> = {
     model: opts.model,
@@ -440,6 +625,13 @@ async function openAICompatibleRequest(opts: StreamOptions) {
   }
   const temperature = temperatureFor(opts, limits, effort);
   if (temperature != null) body.temperature = temperature;
+  if (opts.tools?.length) {
+    body.tools = opts.tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+    body.tool_choice = opts.toolChoice ?? "auto";
+  }
   return { local, base, headers, body, capField, limits, effort, setEffort, localThinking };
 }
 
@@ -566,6 +758,8 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
       opts.onReasoning?.(reasoning);
     };
     const split = new ThinkSplitter();
+    const calls = new ToolCallCollector();
+    const details = new ReasoningDetails();
 
     for await (const payload of sseLines(res.body)) {
       if (payload === "[DONE]") break;
@@ -575,6 +769,11 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
         const choice = json.choices?.[0];
         if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
         addReasoning(reasoningOf(choice?.delta ?? choice?.message));
+        if (opts.tools?.length) {
+          const part = choice?.delta ?? choice?.message;
+          calls.add(part?.tool_calls);
+          details.add(part?.reasoning_details);
+        }
         const delta = choice?.delta?.content ?? choice?.message?.content;
         // some providers stream content as typed parts
         const texts = typeof delta === "string" ? [delta] : [];
@@ -619,8 +818,10 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     if (servedBy) noteServedBy(opts.model, servedBy);
     if (usage.input !== undefined || usage.output !== undefined) opts.onUsage?.({ ...usage, servedBy });
     for (const url of images) yield `\n\n![generated image](${url})\n\n`;
+    const asked = calls.done();
+    if (opts.tools?.length && asked.length > 0) opts.onToolCalls?.(asked, details.done());
 
-    const ranOut = finishReason === "length" && !wroteText && images.length === 0;
+    const ranOut = finishReason === "length" && !wroteText && images.length === 0 && asked.length === 0;
     if (!ranOut) return;
     const room = body[capField] as number | undefined;
     // Local: a reasoning model filled a small window with thinking. Once more with it off.
@@ -691,8 +892,12 @@ async function anthropicRequest(opts: StreamOptions) {
     // chats re-read the sources at ~10% input cost. In chats a second one on
     // the newest message caches the history for the next turn.
     system: system.length ? cachedSystemBlocks(system) : undefined,
-    messages: cachedTurns(rest, opts.cacheHistory),
+    messages: anthropicTurns(rest, opts.cacheHistory),
   };
+  if (opts.tools?.length) {
+    body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    body.tool_choice = { type: opts.toolChoice ?? "auto" };
+  }
   return { body, limits, effort };
 }
 
@@ -723,7 +928,11 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
     if (!res.body) throw new Error("Empty response body");
 
     if (retriedThinking) opts.onReasoning?.("");
-    const { wroteText, stopReason } = yield* readAnthropicStream(res.body, opts);
+    const { wroteText, stopReason, toolCalls, replay } = yield* readAnthropicStream(res.body, opts);
+    if (opts.tools?.length && stopReason === "tool_use" && toolCalls.length > 0) {
+      opts.onToolCalls?.(toolCalls, replay);
+      return;
+    }
     if (stopReason !== "max_tokens" || wroteText) return;
     const low = effortFor(opts, limits, "low");
     if (!retriedThinking && low && low !== effort) {
@@ -739,14 +948,20 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
 async function* readAnthropicStream(
   stream: ReadableStream<Uint8Array>,
   opts: StreamOptions
-): AsyncGenerator<string, { wroteText: boolean; stopReason?: string }> {
+): AsyncGenerator<string, { wroteText: boolean; stopReason?: string; toolCalls: ToolCall[]; replay: unknown[] }> {
   const usage: StreamUsage = {};
   let wroteText = false;
   let stopReason: string | undefined;
   let reasoning = "";
+  // With tools: the reply's thinking blocks (sent back with its tool calls,
+  // signatures intact) and its tool_use blocks, by content-block index.
+  const keep = !!opts.tools?.length;
+  const thinkingBlocks = new Map<number, Record<string, unknown>>();
+  const toolBlocks = new Map<number, { id: string; name: string; json: string }>();
   for await (const payload of sseLines(stream)) {
     try {
       const json = JSON.parse(payload);
+      const at = typeof json.index === "number" ? json.index : -1;
       if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
         if (json.delta.text) wroteText = true;
         yield json.delta.text as string;
@@ -754,10 +969,23 @@ async function* readAnthropicStream(
         if (typeof json.delta.thinking === "string" && json.delta.thinking) {
           reasoning += json.delta.thinking;
           opts.onReasoning?.(reasoning);
+          const b = thinkingBlocks.get(at);
+          if (b) b.thinking = String(b.thinking ?? "") + json.delta.thinking;
         }
+      } else if (json.type === "content_block_delta" && json.delta?.type === "signature_delta") {
+        const b = thinkingBlocks.get(at);
+        if (b && typeof json.delta.signature === "string") b.signature = String(b.signature ?? "") + json.delta.signature;
+      } else if (json.type === "content_block_delta" && json.delta?.type === "input_json_delta") {
+        const t = toolBlocks.get(at);
+        if (t && typeof json.delta.partial_json === "string") t.json += json.delta.partial_json;
       } else if (json.type === "content_block_start" && json.content_block?.type === "thinking") {
         // Interleaved thinking: several blocks in one reply, each its own paragraph.
         if (reasoning && !reasoning.endsWith("\n\n")) reasoning += "\n\n";
+        if (keep) thinkingBlocks.set(at, { type: "thinking", thinking: json.content_block.thinking ?? "", signature: json.content_block.signature ?? "" });
+      } else if (json.type === "content_block_start" && json.content_block?.type === "redacted_thinking") {
+        if (keep) thinkingBlocks.set(at, { type: "redacted_thinking", data: json.content_block.data });
+      } else if (json.type === "content_block_start" && json.content_block?.type === "tool_use") {
+        if (keep) toolBlocks.set(at, { id: String(json.content_block.id ?? ""), name: String(json.content_block.name ?? ""), json: "" });
       } else if (json.type === "message_start") {
         const u = json.message?.usage;
         if (u) {
@@ -787,7 +1015,11 @@ async function* readAnthropicStream(
     }
   }
   opts.onUsage?.(usage);
-  return { wroteText, stopReason };
+  const byIndex = <T,>(m: Map<number, T>) => [...m.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  const toolCalls = byIndex(toolBlocks)
+    .filter((t) => t.id && t.name)
+    .map((t) => ({ id: t.id, name: t.name, arguments: t.json || "{}" }));
+  return { wroteText, stopReason, toolCalls, replay: byIndex(thinkingBlocks) };
 }
 
 export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {

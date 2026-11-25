@@ -17,6 +17,8 @@ export interface ModelLimits {
   temperature?: boolean;
   /** Claude only: thinking must be asked for as { type: "adaptive" } to run. */
   adaptiveThinking?: boolean;
+  /** Whether it can call tools (agent.ts); undefined = the list doesn't say. */
+  tools?: boolean;
 }
 
 /** The fields of OpenRouter's public model list that BrewLM reads. */
@@ -56,6 +58,7 @@ async function openRouterLimits(model: string): Promise<ModelLimits | null> {
     maxOutput: positive(m.top_provider?.max_completion_tokens),
     efforts: m.supported_parameters?.includes("reasoning") ? STANDARD_EFFORTS : [],
     temperature: m.supported_parameters?.includes("temperature"),
+    tools: m.supported_parameters ? m.supported_parameters.includes("tools") : undefined,
   };
 }
 

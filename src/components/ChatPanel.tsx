@@ -49,14 +49,18 @@ import {
   addMessage,
   listFolders,
   listReasoning,
+  listSteps,
   renameChat,
   setNotebookConstitutionOn,
   setNotebookGrounded,
   setMessageReasoning,
+  setMessageSteps,
   setNotebookStarred,
   setSetting,
   sourceText,
+  type SavedStep,
 } from "../lib/db";
+import { agentChat, agentInstructions, chatToolset, sumUsage, type AgentRun, type AgentStep, type Approval } from "../lib/agent";
 import {
   BackgroundError,
   BG_IMAGE_EXTENSIONS,
@@ -89,7 +93,7 @@ import {
   type PickerRow,
   type ScopeHint,
 } from "../lib/mentions";
-import { canPrewarm, isAbortError, prewarmCache, streamChat, type LlmMessage, type StreamUsage } from "../lib/llm";
+import { canPrewarm, isAbortError, prewarmCache, type LlmMessage, type StreamUsage } from "../lib/llm";
 import { aiBlock, AI_TIERS, brewlmModelLabel, costLabel, costVsFast, loadAiConfig, TIER_DESCRIPTIONS } from "../lib/brewlmAi";
 import { AiBlockedNotice } from "./settings/BrewLmAi";
 import { CLOUD_BUDGET, contextBudget, ensureServerContext, type ContextBudget } from "../lib/local";
@@ -620,6 +624,9 @@ The **constitution** button adds a persona document — pick a template (Profess
 - **Drag files into the chat** to add them as sources and @-mention them automatically.
 - Keep several **chat threads** per notebook (Chats panel, bottom left): create, rename, delete, switch.
 - The AI can draw: ask for a mermaid flowchart, a diagram, or an SVG sketch and it renders inline.
+- **Look deeper**: in a notebook too big to send whole, the AI can search and read more of your sources before it answers (at most 3 extra rounds per message, counted in the reply's cost). Click **Looked deeper** above a reply to see what it searched and read. It can only read; it can't change or delete anything.
+- **Study items from chat**: ask in your own words, e.g. "make me a hard quiz on chapter 3" or "flashcards on the NULL functions lessons". The AI sets it up and shows you a card with exactly what it will make; nothing is made until you click **Make it**, and it makes at most one per message. Flashcards, quizzes, mind maps and reports only (audio overviews and deep research stay in Studio). Not from the phone.
+- Both are cloud-model features, on by default; turn either off in Settings → AI Model → Response style.
 
 ## 5. Studio (right panel)
 One click turns your sources into study materials. Every result is saved as an **artifact** you can reopen, **download** (.md / .mp3 / .wav), or **add back as a source**:
@@ -997,6 +1004,7 @@ export default function ChatPanel({
   onReturnHome,
   onSettingsChanged,
   onStudioCommand,
+  studyActions = false,
   onCloneNotebook,
   onRemove,
   notebookStarred,
@@ -1044,6 +1052,8 @@ export default function ChatPanel({
   onSettingsChanged: () => void;
   /** Studio tool commands — StudioPanel's imperative run(); result string for chat. */
   onStudioCommand: (cmd: StudioCommand) => Promise<string>;
+  /** Chat may offer to make Studio items (off in read-only shared notebooks). */
+  studyActions?: boolean;
   /** /clone command — NotebookView deep-copies the notebook; returns the clone title. */
   onCloneNotebook: (title: string, jump: boolean) => Promise<string>;
   /** /remove command — NotebookView bulk-deletes sources/chats/studio outputs. */
@@ -1125,6 +1135,35 @@ export default function ChatPanel({
   useEffect(() => setShowDetails(settings.showDetails), [settings.showDetails]);
   /** Reasoning saved with each reply of the open chat, by message id. */
   const [reasoningByMsg, setReasoningByMsg] = useState<Record<string, string>>({});
+  /** Look-ups each reply of the open chat made in its sources, by message id. */
+  const [stepsByMsg, setStepsByMsg] = useState<Record<string, SavedStep[]>>({});
+  /** Live look-ups per chat while a reply is being written. */
+  const [liveSteps, setLiveSteps] = useState<Record<string, AgentStep[]>>({});
+  const streamingSteps = chatId ? liveSteps[chatId] : undefined;
+  /** A change waiting for the user's yes, per chat (agent.ts confirm). */
+  const [approvals, setApprovals] = useState<Record<string, { approval: Approval; answer: (yes: boolean) => void }>>({});
+  const pendingApproval = chatId ? approvals[chatId] : undefined;
+  /** Every unanswered card's answer, so leaving the notebook counts as "no" instead of leaving the reply hanging. */
+  const approvalAnswersRef = useRef(new Set<(yes: boolean) => void>());
+  useEffect(() => () => approvalAnswersRef.current.forEach((answer) => answer(false)), []);
+  /** Show `approval` in chat `id` and wait for Make it / No thanks; stopping the reply is a no. */
+  const askApproval = (id: string, approval: Approval, signal: AbortSignal) =>
+    new Promise<boolean>((resolve) => {
+      if (signal.aborted) return resolve(false);
+      const answer = (yes: boolean) => {
+        signal.removeEventListener("abort", onAbort);
+        approvalAnswersRef.current.delete(answer);
+        setApprovals((prev) => {
+          const { [id]: _, ...rest } = prev;
+          return rest;
+        });
+        resolve(yes);
+      };
+      const onAbort = () => answer(false);
+      signal.addEventListener("abort", onAbort);
+      approvalAnswersRef.current.add(answer);
+      setApprovals((prev) => ({ ...prev, [id]: { approval, answer } }));
+    });
   // Mirror of settings.showReasoning so /thinking show|hide applies instantly.
   const [showReasoning, setShowReasoning] = useState(settings.showReasoning);
   useEffect(() => setShowReasoning(settings.showReasoning), [settings.showReasoning]);
@@ -2143,6 +2182,9 @@ export default function ChatPanel({
     listReasoning(chatId).then((r) => {
       if (!cancelled) setReasoningByMsg(r);
     });
+    listSteps(chatId).then((r) => {
+      if (!cancelled) setStepsByMsg(r);
+    });
     return () => {
       cancelled = true;
     };
@@ -2322,10 +2364,20 @@ export default function ChatPanel({
     });
     if (stable.length < PREWARM_MIN_CHARS || !claimWarm(settings, stable)) return;
     const { provider, model } = settings;
-    void prewarmCache({
+    // The real request carries chat's tools ahead of the prompt, so the warmed
+    // prefix must carry the same ones or the first message misses the cache.
+    void chatToolset({
+      settings,
+      apiKey: keyed,
+      sources,
+      whole: true,
+      grounded,
+      study: studyActions ? onStudioCommand : undefined,
+    }).then((tools) => prewarmCache({
       provider,
       apiKey: keyed,
       model,
+      tools: tools.length ? tools.map((t) => t.spec) : undefined,
       messages: [{ role: "system", content: stable }],
       temperature: settings.temperature ?? undefined,
       thinking: settings.thinking,
@@ -2335,7 +2387,7 @@ export default function ChatPanel({
       if (!u) return;
       void recordUsage("chat", provider, model, u);
       console.info(`[chat timing] cache warmed: write ${u.cachedWrite ?? 0}, read ${u.cachedRead ?? 0} tokens`);
-    });
+    }));
   };
 
   /**
@@ -2828,9 +2880,43 @@ export default function ChatPanel({
     });
     const system = buildSystemParts(sources, preparedMentions, retrieved, { grounded: groundedNow, constitution: (notebookConstitutionOn ?? 1) !== 0, budget: contextBudget(settings), whole });
     markWarm(settings, system.stable);
+
+    let acc = "";
+    /** This reply's look-ups, saved beside it when it's done. */
+    let turnSteps: AgentStep[] = [];
+    // Look deeper: a notebook too big to send whole, on a model that takes
+    // tools, may search and read more of its sources first (read-only; agent.ts).
+    // And it may offer to make one Studio item, which only happens on the user's yes.
+    const agentTools = await chatToolset({
+      settings,
+      apiKey: keyed,
+      sources,
+      whole,
+      grounded: groundedNow,
+      fixedPrompt: isSummarize,
+      seen: new Set(retrieved?.map((r) => r.id)),
+      study: studyActions ? onStudioCommand : undefined,
+    });
+    const agentRun: AgentRun | null =
+      agentTools.length > 0
+        ? {
+            tools: agentTools,
+            confirm: (approval) => askApproval(chatId, approval, ctrl.signal),
+            onSteps: (steps) => {
+              turnSteps = steps;
+              setLiveSteps((prev) => ({ ...prev, [chatId]: steps }));
+            },
+            // What it wrote before looking things up isn't the answer.
+            onDiscard: () => {
+              acc = "";
+              setStreaming("");
+            },
+          }
+        : null;
     const llmMessages: LlmMessage[] = [
       { role: "system", content: system.stable },
       ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
+      ...(agentRun ? [{ role: "system" as const, content: agentInstructions(agentRun.tools) }] : []),
       ...selectChatHistory(history, contextBudget(settings).history).map((m, i, arr) => ({
         role: m.role,
         // Image embeds in past turns stay on screen but leave the context
@@ -2844,20 +2930,24 @@ export default function ChatPanel({
       })),
     ];
 
-    let acc = "";
     let thought = "";
     let usage: StreamUsage | null = null;
     /** When the first answer text arrived (reasoning comes before it). */
     let firstToken: number | null = null;
-    /** Keep the reply's reasoning beside it (never in the message, so it isn't sent back). */
+    /** Keep the reply's reasoning and look-ups beside it (never in the message, so they aren't sent back). */
     const keepReasoning = async (messageId: string) => {
+      const steps = turnSteps.map((s) => ({ label: s.label, ok: s.ok }));
+      if (steps.length > 0) {
+        await setMessageSteps(messageId, steps);
+        setStepsByMsg((prev) => ({ ...prev, [messageId]: steps }));
+      }
       if (!thought.trim()) return;
       const text = thought.trim();
       await setMessageReasoning(messageId, text);
       setReasoningByMsg((prev) => ({ ...prev, [messageId]: text }));
     };
     try {
-      for await (const delta of streamChat({
+      for await (const delta of agentChat({
         provider: settings.provider,
         apiKey: keyed,
         model: settings.model,
@@ -2872,7 +2962,8 @@ export default function ChatPanel({
         // premium on the whole prompt (seen on an 80k-token notebook).
         cacheHistory: !retrieved,
         onUsage: (u) => {
-          usage = u;
+          // Looking deeper takes several rounds; the usage line shows them all.
+          usage = sumUsage(usage, u);
           void recordUsage("chat", settings.provider, settings.model, u);
           const ms = (t: number) => Math.round(t);
           console.info(
@@ -2885,7 +2976,7 @@ export default function ChatPanel({
           thought = r;
           setStreamingReasoning(r);
         },
-      })) {
+      }, agentRun)) {
         if (firstToken === null) firstToken = performance.now();
         acc += delta;
         setStreaming(acc);
@@ -2924,6 +3015,10 @@ export default function ChatPanel({
       streamingRef.current.delete(chatId);
       setStreaming(null);
       setStreamingReasoning("");
+      setLiveSteps((prev) => {
+        const { [chatId]: _, ...rest } = prev;
+        return rest;
+      });
       textareaRef.current?.focus();
     }
     onChatActivity?.(chatId, isFirst ? (isSummarize ? "Notebook summary" : text) : undefined);
@@ -3232,6 +3327,7 @@ export default function ChatPanel({
                 usage={showDetails ? usageByMsg[m.id] : undefined}
                 reasoning={reasoningByMsg[m.id]}
                 reasoningOpen={showReasoning}
+                steps={stepsByMsg[m.id]}
                 onImageAction={streaming === null ? onImageAction : undefined}
                 savedToSources={savedTexts.has(m.content)}
                 linkKeys={linkKeys}
@@ -3248,6 +3344,8 @@ export default function ChatPanel({
                 {streamingReasoning && (
                   <Reasoning text={streamingReasoning} live={!streaming} defaultOpen={showReasoning} />
                 )}
+                {streamingSteps && streamingSteps.length > 0 && <LookedDeeper steps={streamingSteps} live={!streaming} />}
+                {pendingApproval && <ApprovalCard approval={pendingApproval.approval} onAnswer={pendingApproval.answer} />}
                 {streaming ? <StreamingReply text={streaming} /> : !streamingReasoning && <BrewingStatus />}
               </div>
             )}
@@ -4120,6 +4218,89 @@ function Reasoning({ text, live = false, defaultOpen }: { text: string; live?: b
 }
 
 /**
+ * A change the AI wants to make (agent.ts), waiting for the user: what it is,
+ * built by the app from fixed choices, and Make it / No thanks.
+ */
+function ApprovalCard({ approval, onAnswer }: { approval: Approval; onAnswer: (yes: boolean) => void }) {
+  const [answered, setAnswered] = useState(false);
+  const answer = (yes: boolean) => {
+    if (answered) return;
+    setAnswered(true);
+    onAnswer(yes);
+  };
+  return (
+    <div role="group" aria-label={approval.title} className="mb-3 max-w-md rounded-xl border border-edge bg-panel px-3.5 py-3 shadow-sm">
+      <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-ink">
+        <Sparkles size={13} strokeWidth={1.9} className="text-accent" />
+        {approval.title}
+      </div>
+      <p className="mt-1 text-[12.5px] leading-relaxed text-ink-2">{approval.detail}</p>
+      <p className="mt-1 text-[11px] text-ink-3">Uses your AI like a click in Studio. Nothing else in the notebook changes.</p>
+      <div className="mt-2.5 flex gap-2">
+        <button
+          onClick={() => answer(true)}
+          disabled={answered}
+          className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {approval.yes}
+        </button>
+        <button
+          onClick={() => answer(false)}
+          disabled={answered}
+          className="rounded-lg px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-hover-soft disabled:opacity-50"
+        >
+          No thanks
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The look-ups a reply made in the notebook's sources before answering
+ * (Look deeper): folded to one line, open while they're running.
+ */
+function LookedDeeper({ steps, live = false }: { steps: (SavedStep & { running?: boolean })[]; live?: boolean }) {
+  const [open, setOpen] = useState(live);
+  useEffect(() => {
+    if (live) setOpen(true);
+  }, [live]);
+  // Study items (make_study_item) read differently from look-ups.
+  const lookups = steps.filter((s) => !/^(Make|Made) /.test(s.label));
+  const count = lookups.filter((s) => s.ok).length;
+  return (
+    <div className="mb-2">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={open ? "Hide look-ups" : "Show look-ups"}
+        className="-ml-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-[11.5px] font-medium text-ink-3 transition-colors hover:text-ink-2"
+      >
+        <Search size={11} strokeWidth={1.8} />
+        {lookups.length === 0
+          ? live
+            ? "Getting it ready…"
+            : "Studio"
+          : live
+            ? "Looking deeper in your sources…"
+            : `Looked deeper · ${count} look-up${count === 1 ? "" : "s"}`}
+        <ChevronRight size={11} strokeWidth={2} className={`transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <ul className="mt-1 space-y-0.5 border-l-2 border-edge pl-3 text-[12px] leading-relaxed text-ink-3">
+          {steps.map((s, i) => (
+            <li key={i} className={s.ok ? "" : "line-through opacity-70"}>
+              {s.label}
+              {s.running ? "…" : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * Ref for the highlighted row of a composer list: keeps it in view as ↑↓
  * move the highlight past the list's visible part. Scrolls only the list,
  * never the page around it.
@@ -4259,6 +4440,7 @@ function Bubble({
   usage,
   reasoning,
   reasoningOpen = false,
+  steps,
   onImageAction,
   savedToSources,
   linkKeys,
@@ -4277,6 +4459,8 @@ function Bubble({
   reasoning?: string;
   /** Start the reasoning open (/thinking show). */
   reasoningOpen?: boolean;
+  /** The look-ups this reply made in the sources (Look deeper), shown folded above it. */
+  steps?: SavedStep[];
   /** Edit / Remix / More like this on a library picture (absent while busy). */
   onImageAction?: (action: string, id: string, alt: string) => void;
   /** This reply's text is already a source in the notebook. */
@@ -4357,6 +4541,7 @@ function Bubble({
           (wide tables and code scroll sideways inside it). */}
       <div className="w-full min-w-0 text-[13.5px] leading-relaxed">
         {reasoning && <Reasoning text={reasoning} defaultOpen={reasoningOpen} />}
+        {steps && steps.length > 0 && <LookedDeeper steps={steps} />}
         <div
           className={`md${onImageAction ? "" : " img-actions-off"}`}
           dangerouslySetInnerHTML={{ __html: html }}

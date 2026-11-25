@@ -1,3 +1,4 @@
+import { MAX_TOOL_ROUNDS } from "../../lib/agent";
 import { ArrowRight, ExternalLink, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AUTO_OUTPUT_TOKENS, supportsTemperature } from "../../lib/llm";
@@ -321,6 +322,8 @@ export default function AiModelSection({
     `${THINKING_LABELS[settings.thinking === "off" && !isLocal ? "auto" : settings.thinking]} thinking`,
     temp == null ? "default temperature" : `temperature ${temp.toFixed(2)}`,
     settings.maxOutput == null ? "automatic length" : `up to ${settings.maxOutput / 1024}K tokens`,
+    !settings.agentTools && "look deeper off",
+    !settings.agentStudio && "study items from chat off",
   ]
     .filter(Boolean)
     .join(" · ")
@@ -618,6 +621,40 @@ export default function AiModelSection({
               </div>
             </Row>
           )}
+        </Card>
+
+        {/* Look deeper (agent.ts): read-only look-ups in big notebooks. */}
+        <Card>
+          <Row
+            label="Look deeper in big notebooks"
+            desc={
+              isLocal
+                ? "Not available with local models yet: small models use tools unreliably. Your setting is kept for cloud models."
+                : `When a notebook is too big to send whole, the AI can search and read more of its sources before answering: up to ${MAX_TOOL_ROUNDS} extra rounds per message, each shown above the reply and counted in its cost. It can only read this notebook's sources. It can't change, delete or send anything.`
+            }
+            alignTop
+          >
+            <Toggle
+              label="Look deeper in big notebooks"
+              checked={settings.agentTools}
+              onChange={(on) => patch({ agentTools: on })}
+            />
+          </Row>
+          <Row
+            label="Make study items from chat"
+            desc={
+              isLocal
+                ? "Not available with local models yet. Your setting is kept for cloud models."
+                : "Ask in your own words for flashcards, a quiz, a mind map or a report, and the AI sets it up. Nothing is made until you click Make it, and it makes one at most per message. Audio overviews and deep research stay in the Studio panel."
+            }
+            alignTop
+          >
+            <Toggle
+              label="Make study items from chat"
+              checked={settings.agentStudio}
+              onChange={(on) => patch({ agentStudio: on })}
+            />
+          </Row>
         </Card>
       </Disclosure>
       {(showImage || showWeb || showResearch || showTranscribe) && (

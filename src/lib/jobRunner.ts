@@ -30,6 +30,7 @@ import {
   renameChat,
   setArtifactPinned,
   setMessageReasoning,
+  setMessageSteps,
   setNotebookConstitutionOn,
   setNotebookCover,
   setNotebookGrounded,
@@ -51,7 +52,8 @@ import { reviseOutput } from "./revise";
 import { parseStudioCommand } from "./studioCommands";
 import { artifactText, buildMentionCatalog, exportName, resolveMentions, type MentionItem } from "./mentions";
 import { mentionsForTurn, prepareMentions } from "./mentionLinks";
-import { complete, extractJson, isAbortError, streamChat, type StreamUsage } from "./llm";
+import { complete, extractJson, isAbortError, type StreamUsage } from "./llm";
+import { agentChat, agentInstructions, chatToolset, sumUsage, type AgentRun, type AgentStep } from "./agent";
 import {
   cloneReply,
   constitutionTurn,
@@ -780,8 +782,36 @@ async function runChatJob(p: {
     let thought = "";
     let usage: StreamUsage | null = null;
     let shown = 0;
+    let steps: AgentStep[] = [];
+    // Look deeper, as on the desktop: read-only look-ups in a notebook too big to send whole.
+    // No study items from the phone: it has no approval card, and nothing changes without a yes.
+    const agentTools = await chatToolset({
+      settings,
+      apiKey: key,
+      sources,
+      whole,
+      grounded,
+      fixedPrompt: isSummarize,
+      seen: new Set(retrieved?.map((r) => r.id)),
+    });
+    const agentRun: AgentRun | null =
+      agentTools.length > 0
+        ? {
+            tools: agentTools,
+            onSteps: (s) => {
+              steps = s;
+            },
+            onDiscard: () => {
+              acc = "";
+              void setJobProgress("");
+            },
+          }
+        : null;
+    const keepSteps = async (messageId: string) => {
+      if (steps.length) await setMessageSteps(messageId, steps.map((s) => ({ label: s.label, ok: s.ok })));
+    };
     try {
-      for await (const delta of streamChat({
+      for await (const delta of agentChat({
         provider: settings.provider,
         apiKey: key,
         model: settings.model,
@@ -790,7 +820,7 @@ async function runChatJob(p: {
         maxOutput: settings.maxOutput,
         signal,
         onUsage: (u) => {
-          usage = u;
+          usage = sumUsage(usage, u);
           void recordUsage("chat", settings.provider, settings.model, u);
         },
         onReasoning: (r) => {
@@ -803,6 +833,7 @@ async function runChatJob(p: {
         messages: [
           { role: "system", content: system.stable },
           ...(system.volatile ? [{ role: "system" as const, content: system.volatile }] : []),
+          ...(agentRun ? [{ role: "system" as const, content: agentInstructions(agentRun.tools) }] : []),
           ...turns.map((m, i) => ({
             role: m.role,
             // The bubble keeps "/summarize"; the model gets the real prompt.
@@ -813,7 +844,7 @@ async function runChatJob(p: {
             ),
           })),
         ],
-      })) {
+      }, agentRun)) {
         acc += delta;
         // The phone shows the reply as it's written.
         if (Date.now() - shown > STREAM_PROGRESS_MS) {
@@ -827,6 +858,7 @@ async function runChatJob(p: {
       if (!signal.aborted && !isAbortError(e) && acc.trim()) {
         const partial = await addMessage(chatId, p.notebook_id, "assistant", acc);
         if (thought.trim()) await setMessageReasoning(partial.id, thought.trim());
+        await keepSteps(partial.id);
         announce(["chats", "messages"], p.notebook_id, chatId);
       }
       throw e;
@@ -840,6 +872,7 @@ async function runChatJob(p: {
     const reply = await addMessage(chatId, p.notebook_id, "assistant", answer);
     // Reasoning stays beside the reply (never in it, so it isn't sent back to the model).
     if (thought.trim()) await setMessageReasoning(reply.id, thought.trim());
+    await keepSteps(reply.id);
     if (usage) {
       const u: StreamUsage = usage;
       const cost = replyCostUsd(settings.provider, settings.model, u);
