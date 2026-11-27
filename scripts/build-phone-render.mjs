@@ -1,6 +1,7 @@
 // Bundle the desktop's chat renderer for the paired phone's page
 // (src/phone/render.ts → src-tauri/phone-render/), gzipped, plus Mermaid for
-// diagrams. The sharing server embeds these (src-tauri/build.rs) and serves
+// diagrams and the document file writers (src/phone/docfile.ts), which the
+// page loads on a document's first download. The sharing server embeds these (src-tauri/build.rs) and serves
 // them at /assets/…. Runs on npm install and before every dev/build.
 import { build } from "esbuild";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +12,7 @@ const out = "src-tauri/phone-render";
 mkdirSync(out, { recursive: true });
 
 const result = await build({
-  entryPoints: { render: "src/phone/render.ts" },
+  entryPoints: { render: "src/phone/render.ts", docfile: "src/phone/docfile.ts" },
   bundle: true,
   minify: true,
   format: "iife",

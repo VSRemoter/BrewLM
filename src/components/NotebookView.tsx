@@ -456,6 +456,7 @@ export default function NotebookView({
       note: "notes", notes: "notes",
       drawing: "drawing", drawings: "drawing",
       interactive: "interactive", interactives: "interactive",
+      document: "document", documents: "document", doc: "document", docs: "document",
     };
 
     if (what === "sources") {
@@ -491,7 +492,7 @@ export default function NotebookView({
     if (what === "studios") {
       const k = filter ? ARTIFACT_KINDS[filter] : undefined;
       if (filter && !k) {
-        return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, drawings, or notes.` };
+        return { reply: `I don't know a studio output type "${filter}" — try flashcards, quizzes, mindmaps, audios, reports, research, drawings, documents, or notes.` };
       }
       const count = artifacts.filter((a) => !k || a.kind === k).length;
       if (count > 0 && !(await confirmRemove(`${count} ${k ? k + " " : ""}studio output${count === 1 ? "" : "s"}`))) return CANCELLED;

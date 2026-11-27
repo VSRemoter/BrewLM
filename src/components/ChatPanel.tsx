@@ -14,6 +14,7 @@ import {
   Copy,
   ExternalLink,
   FilePlus2,
+  FilePen,
   FileText,
   FolderClosed,
   Globe,
@@ -582,6 +583,13 @@ const COMMANDS: ChatCommand[] = [
     takesArgs: true,
   },
   {
+    cmd: "/document",
+    usage: "/document [word|slides|excel|markdown] <what it should cover>",
+    desc: "Word, PowerPoint, Excel or Markdown file — saved to Studio",
+    icon: FilePen,
+    takesArgs: true,
+  },
+  {
     cmd: "/queue",
     usage: "/queue <prompt or command>",
     desc: "Line up a prompt/command to run when the current task finishes",
@@ -679,6 +687,7 @@ Type \`/\` in the composer to browse them (arrow keys + Enter).
 - \`/audio [deep-dive|brief|debate|critique] [short|standard|long] [focus]\` — two-host podcast, e.g. \`/audio debate short\`. Short ≈ 5 minutes, Standard ≈ 10, Long ≈ 20; longer episodes are planned first and written part by part, so they take a little longer to make.
 - \`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]\` — grounded markdown documents.
 - \`/research <topic>\` — plans searches, reads the web, writes a cited report (imported pages become sources).
+- \`/document [word|slides|excel|markdown] <what it should cover and do>\` — writes a file you can download: a Word document, PowerPoint slides, an Excel spreadsheet (with working formulas) or a Markdown file, e.g. \`/document slides a Christmas-themed red and green talk on why sleep matters, 12 slides\`. Describe the length, coverage and look you want and it follows them. Word when you don't name a type. You can also just ask in your own words ("make me a slide deck on…") and confirm the card.
 - \`/fetch <what you want to learn>\` — searches the web for sources to learn from and lists them as cards, e.g. \`/fetch "Attention Is All You Need"\`. Click a title to open it in your browser, **Add** to save it to Sources (or **Add all**); anything you don't add is ignored. Uses your Research model's web search, billed per query.
 - \`/search <query>\` — one-shot web answer, right here in chat, with numbered source links. Your provider bills web searches per query, so this only runs when you ask; for a deep multi-source dossier use \`/research\` instead.
 - \`/image [ratio] <prompt>\` — generates a picture with your **Image model** (Settings → AI Model), e.g. \`/image 16:9 a watercolor fox in snow\`. Only your prompt is sent — no sources or chat history — so you pay just for the image (about $0.03 with the default model). Needs an OpenRouter key. Later chat turns see a one-line description of the image, never the pixels. If your selected model is itself an image model (e.g. via \`/model qwen/qwen-image-2.1-turbo\`), \`/image\` uses it, and plain messages generate images too — a message right after a picture edits that picture (start with \`/image\` for a fresh one).
@@ -2795,7 +2804,7 @@ export default function ChatPanel({
     }
 
     // Studio tool commands — run in the Studio panel, confirm here.
-    const studioMatch = /^\/(flashcards|quiz|mindmap|audio|report|research)(\s|$)/i.exec(text);
+    const studioMatch = /^\/(flashcards|quiz|mindmap|audio|report|research|document|doc)(\s|$)/i.exec(text);
     if (studioMatch) {
       const parsed = parseStudioCommand(text, settings);
       if (typeof parsed === "string") {

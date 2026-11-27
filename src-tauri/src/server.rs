@@ -57,6 +57,8 @@ frame-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-ac
 const RENDER_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/render.js.gz"));
 const RENDER_CSS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/render.css.gz"));
 const MERMAID_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mermaid.js.gz"));
+/// The document file writers (Word, PowerPoint, Excel), loaded on a document's first download.
+const DOCFILE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/docfile.js.gz"));
 
 /// The phone page with its asset URLs versioned, so phones cache them until they change.
 fn mobile_html() -> &'static str {
@@ -707,6 +709,7 @@ async fn asset_handler(Path(file): Path<String>) -> Response {
         "render.js" => (RENDER_JS, "text/javascript; charset=utf-8"),
         "render.css" => (RENDER_CSS, "text/css; charset=utf-8"),
         "mermaid.js" => (MERMAID_JS, "text/javascript; charset=utf-8"),
+        "docfile.js" => (DOCFILE_JS, "text/javascript; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     if body.is_empty() {
@@ -1495,9 +1498,11 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
     })
     .collect::<Vec<_>>();
 
+    // A document's file type rides along, so the phone shows its icon before opening it.
     let artifacts = sqlx::query(
-        "SELECT id, kind, title, created_at, pinned FROM artifacts WHERE notebook_id = ? \
-         ORDER BY pinned DESC, created_at DESC",
+        "SELECT id, kind, title, created_at, pinned, \
+         CASE WHEN kind = 'document' AND json_valid(data) THEN json_extract(data, '$.format') END AS doc_format \
+         FROM artifacts WHERE notebook_id = ? ORDER BY pinned DESC, created_at DESC",
     )
     .bind(&id)
     .fetch_all(&st.pool)
@@ -1505,13 +1510,17 @@ async fn notebook_handler(State(st): State<ServerState>, Path((key, id)): Path<(
     .unwrap_or_default()
     .iter()
     .map(|r| {
-        json!({
+        let mut a = json!({
             "id": r.get::<String, _>("id"),
             "kind": r.get::<String, _>("kind"),
             "title": r.get::<String, _>("title"),
             "created_at": r.get::<i64, _>("created_at"),
             "pinned": r.get::<i64, _>("pinned") != 0,
-        })
+        });
+        if let Ok(Some(f)) = r.try_get::<Option<String>, _>("doc_format") {
+            a["doc_format"] = json!(f);
+        }
+        a
     })
     .collect::<Vec<_>>();
 
@@ -2162,7 +2171,7 @@ async fn chat_handler(
     }
 }
 
-const GENERATE_KINDS: [&str; 7] = ["flashcards", "quiz", "mindmap", "report", "research", "audio", "interactive"];
+const GENERATE_KINDS: [&str; 8] = ["flashcards", "quiz", "mindmap", "report", "research", "audio", "interactive", "document"];
 
 #[derive(Deserialize)]
 struct GenerateBody {
@@ -2226,9 +2235,15 @@ async fn generate_handler(
         "title": pick("title", 80).trim().to_string(),
         // Research titles itself with its topic; an interactive page's brief can run longer.
         "topic": pick("topic", if body.kind == "interactive" { 1000 } else { 200 }).trim().to_string(),
+        // A document's file type, and what it should cover and do.
+        "doc_format": match pick("doc_format", 8).as_str() { "pptx" | "xlsx" | "md" => pick("doc_format", 8), _ => "docx".into() },
+        "instructions": pick("instructions", 8000).trim().to_string(),
     });
     if body.kind == "research" && options["topic"].as_str().unwrap_or("").is_empty() {
         return err_json(StatusCode::BAD_REQUEST, "Research needs a topic.");
+    }
+    if body.kind == "document" && options["instructions"].as_str().unwrap_or("").is_empty() {
+        return err_json(StatusCode::BAD_REQUEST, "Say what the document should cover and do.");
     }
     if body.kind == "report"
         && options["report_type"] == "custom"
@@ -3195,6 +3210,16 @@ mod tests {
         let p = payload(send(r#"{"notebook_id":"nb1","kind":"audio","options":{"mode":"choir"}}"#).await).await;
         assert_eq!(p["options"]["mode"], "");
 
+        // A document must say what it's for; its file type is one of four, Word otherwise.
+        let resp = send(r#"{"notebook_id":"nb1","kind":"document","options":{"doc_format":"xlsx","instructions":" "}}"#).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let p = payload(send(r#"{"notebook_id":"nb1","kind":"document","options":{"doc_format":"xlsx","instructions":" A budget "}}"#).await).await;
+        assert_eq!(p["kind"], "document");
+        assert_eq!(p["options"]["doc_format"], "xlsx");
+        assert_eq!(p["options"]["instructions"], "A budget");
+        let p = payload(send(r#"{"notebook_id":"nb1","kind":"document","options":{"doc_format":"exe","instructions":"Notes"}}"#).await).await;
+        assert_eq!(p["options"]["doc_format"], "docx");
+
         // A custom report must say what it's for.
         let resp = send(r#"{"notebook_id":"nb1","kind":"report","options":{"report_type":"custom","custom_prompt":"  "}}"#).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -3510,6 +3535,9 @@ mod tests {
             "UPDATE sources SET pinned = 1 WHERE id = 's3'",
             "INSERT INTO sources (id, notebook_id, type, title, created_at) VALUES ('s0', 'nb1', 'context', 'Constitution', 9)",
             "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at, pinned) VALUES ('a0', 'nb1', 'report', 'Old pinned', '', 1, 1)",
+            // Documents carry their file type; one with damaged data still lists.
+            "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ('d1', 'nb1', 'document', 'Deck', '{\"format\":\"pptx\",\"prompt\":\"x\",\"slides\":[]}', 0)",
+            "INSERT INTO artifacts (id, notebook_id, kind, title, data, created_at) VALUES ('d2', 'nb1', 'document', 'Broken', '{not json', 0)",
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -3517,8 +3545,12 @@ mod tests {
         let nb: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
         let ids = |k: &str| nb[k].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         assert_eq!(ids("sources"), ["s0", "s3", "s1", "s2"]);
-        assert_eq!(ids("artifacts"), ["a0", "a1"]);
+        assert_eq!(&ids("artifacts")[..2], ["a0", "a1"]);
         assert_eq!(nb["artifacts"][0]["pinned"], true);
+        let art = |id: &str| nb["artifacts"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
+        assert_eq!(art("d1")["doc_format"], "pptx");
+        assert!(art("d2").get("doc_format").is_none());
+        assert!(art("a0").get("doc_format").is_none());
     }
 
     #[tokio::test]

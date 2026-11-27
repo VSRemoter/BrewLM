@@ -86,6 +86,9 @@ const MIME: Record<string, string> = {
   pdf: "application/pdf",
   md: "text/markdown",
   csv: "text/csv",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 const mimeFor = (ext: string) => MIME[ext] ?? "application/octet-stream";
 

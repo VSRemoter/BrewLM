@@ -11,6 +11,7 @@
 
 import { sourceText } from "./db";
 import { parseInteractive } from "./interactive";
+import { documentText, parseDocument } from "./document";
 import type { Artifact, Source } from "./types";
 
 export type MentionGroup = "source" | "output" | "notebook";
@@ -97,6 +98,11 @@ export function artifactText(a: Artifact): string | null {
       case "interactive":
         // The storyboard is the readable version; the page itself is code.
         return parseInteractive(a.data)?.storyboard.trim() || null;
+      case "document": {
+        // Slides and sheets read as markdown; Word and Markdown files are markdown already.
+        const d = parseDocument(a.data);
+        return d ? documentText(d).trim() || null : null;
+      }
       case "notes":
       case "report":
       case "mindmap":

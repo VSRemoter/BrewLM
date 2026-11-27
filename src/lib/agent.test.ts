@@ -352,6 +352,28 @@ describe("make_study_item", () => {
     expect(card.detail).toMatch(/^A study guide on “joins”/); // "custom" isn't allowed: the default type instead
   });
 
+  it("makes document files: the card names the file type and what it covers", async () => {
+    const { tool, started } = studio();
+    const card = await tool.ask!({ kind: "document", format: "slides", instructions: "A beginner talk on car parts: engine, brakes and tires." });
+    expect(card.title).toBe("Make a PowerPoint slide deck?");
+    expect(card.detail).toBe(
+      "A PowerPoint slide deck covering “A beginner talk on car parts: engine, brakes and tires.”, from all 2 sources. It's saved to Studio as “Beginner talk on car parts”."
+    );
+    await run([{ calls: [{ name: "make_study_item", args: { kind: "document", format: "xlsx", instructions: "A budget", title: "Car costs" } }] }], [tool], async () => true);
+    expect(started[0]).toEqual({ tool: "document", format: "xlsx", instructions: "A budget", title: "Car costs", sourceIds: [] });
+    // Without instructions there's nothing to make: the model hears why.
+    await expect(tool.ask!({ kind: "document", format: "docx" })).rejects.toThrow(/cover and do/);
+  });
+
+  it("offers only documents in a notebook without sources", async () => {
+    const started: any[] = [];
+    const tool = studyTool([SOURCES[2]], async (cmd: any) => (started.push(cmd), "ok"));
+    expect(tool.spec.parameters).toMatchObject({ properties: { kind: { enum: ["document"] } } });
+    await expect(tool.ask!({ kind: "quiz" })).rejects.toThrow(/only a document/);
+    const card = await tool.ask!({ kind: "document", format: "md", instructions: "Notes on brakes" });
+    expect(card.detail).toMatch(/from general knowledge \(this notebook has no sources yet\)/);
+  });
+
   it("stopping the reply while the card is up makes nothing", async () => {
     const { tool, started } = studio();
     const ctrl = new AbortController();

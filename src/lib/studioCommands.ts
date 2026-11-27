@@ -1,6 +1,6 @@
 /**
  * Parsing for the Studio-triggering chat commands (/flashcards, /quiz,
- * /mindmap, /audio, /report, /research). Pure functions: they turn raw
+ * /mindmap, /audio, /report, /research, /document). Pure functions: they turn raw
  * command text into a StudioCommand for StudioPanel.run plus the user-facing
  * notice/error string and a friendly latest-title for the chat.
  *
@@ -27,6 +27,7 @@ import {
   type Difficulty,
   type ReportType,
 } from "./studio";
+import { DOC_FORMAT_INFO, DOC_PROMPT_MAX, docFormatFrom, isDocFormat, type DocFormat } from "./document";
 
 /** Audio options without the source scoping (commands always use all sources). */
 export type AudioCommandOptions =
@@ -45,6 +46,7 @@ export type StudioCommand =
   | ({ tool: "flashcards" | "quiz"; prompt: string } & Scoped)
   | ({ tool: "mindmap"; prompt: string } & Scoped)
   | ({ tool: "report"; label: string; prompt: string } & Scoped)
+  | ({ tool: "document"; format: DocFormat; instructions: string } & Scoped)
   | { tool: "audio"; opts: AudioCommandOptions }
   | { tool: "research"; title: string };
 
@@ -107,7 +109,16 @@ const USAGE: Record<string, string> = {
   audio: "`/audio [solo] [deep-dive|brief|debate|critique] [short|standard|long] [optional focus]`",
   report: "`/report [summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]`",
   research: "`/research <topic>` — a topic is required",
+  document: "`/document [word|slides|excel|markdown] <what it should cover and do>` — say what the file is for",
 };
+
+/** A file's default name from what it should cover: its first clause, capitalized, cut at a word. */
+export function documentTitle(instructions: string): string {
+  const clause = instructions.replace(/\s+/g, " ").trim().split(/[.:;(\n—–]/)[0].replace(/^(an?|the)\s+/i, "").trim();
+  if (!clause) return "Document";
+  const cut = clause.length <= 50 ? clause : `${clause.slice(0, 50).replace(/\s+\S*$/, "").trimEnd() || clause.slice(0, 50)}…`;
+  return cut.charAt(0).toUpperCase() + cut.slice(1);
+}
 
 export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): StudioParsed | string {
   const m = /^\/(\w+)\s*([\s\S]*)$/i.exec(raw);
@@ -233,6 +244,20 @@ export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): Stud
         title: f.label,
       };
     }
+    case "document":
+    case "doc": {
+      // An optional format first (word, slides, excel, markdown…); Word when there's none.
+      const format = (args[0] && docFormatFrom(args[0])) || null;
+      const instructions = (format ? args.slice(1).join(" ") : rest).trim().slice(0, DOC_PROMPT_MAX);
+      if (!instructions) return USAGE.document;
+      const f = format ?? "docx";
+      const title = documentTitle(instructions);
+      return {
+        cmd: { tool: "document", format: f, instructions, title },
+        notice: `Writing ${DOC_FORMAT_INFO[f].noun} — ${instructions.slice(0, 60)}${instructions.length > 60 ? "…" : ""}`,
+        title,
+      };
+    }
     case "research": {
       if (!rest) return USAGE.research;
       return {
@@ -242,14 +267,14 @@ export function parseStudioCommand(raw: string, defs: StudioDefaults = {}): Stud
       };
     }
     default:
-      return `Unknown Studio command “/${tool}”. Try /flashcards, /quiz, /mindmap, /audio, /report, or /research.`;
+      return `Unknown Studio command “/${tool}”. Try /flashcards, /quiz, /mindmap, /audio, /report, /research, or /document.`;
   }
 }
 
 /* ------------------------- chat's make_study_item ------------------------- */
 
 /** What chat's study tool may make: the quick, text-only Studio tools. No audio (voices cost extra), no deep research (web searches). */
-export const STUDY_KINDS = ["flashcards", "quiz", "mindmap", "report"] as const;
+export const STUDY_KINDS = ["flashcards", "quiz", "mindmap", "report", "document"] as const;
 export type StudyKind = (typeof STUDY_KINDS)[number];
 /** Report types it may write (not "custom": free-form instructions stay with the user). */
 export const STUDY_REPORTS = ["summary", "study-guide", "faq", "timeline", "briefing", "analysis"] as const;
@@ -262,9 +287,18 @@ export interface StudyRequest {
   difficulty?: Difficulty;
   focus?: string;
   report?: StudyReport;
+  /** Documents: the file type (Word when absent). */
+  format?: DocFormat;
+  /** Documents: what the file should cover and do. */
+  instructions?: string;
+  /** Documents: the file's name (made from the instructions when absent). */
+  title?: string;
   /** Already resolved to ids; empty = every source. */
   sourceIds: string[];
 }
+
+/** Longest document request kept from chat, in characters. */
+export const STUDY_DOC_MAX = 4000;
 
 /** Longest focus kept, in characters. */
 export const STUDY_FOCUS_MAX = 200;
@@ -333,6 +367,18 @@ export function studyCommand(
       const prompt = focus ? `${base}\n\nFocus especially on: ${focus}.` : base;
       const title = named(label);
       return { cmd: { tool: "report", label: title, prompt, title, ...scope }, what: `a ${label === "FAQ" ? label : label.toLowerCase()}${on}`, title };
+    }
+    case "document": {
+      const format: DocFormat = isDocFormat(req.format) ? req.format : "docx";
+      const instructions = (req.instructions ?? "").replace(/\s+/g, " ").trim().slice(0, STUDY_DOC_MAX) || focus;
+      if (!instructions) return "Say what the document should cover and do (instructions).";
+      const title = (req.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || documentTitle(instructions);
+      const brief = instructions.length > 140 ? `${instructions.slice(0, 139).trimEnd()}…` : instructions;
+      return {
+        cmd: { tool: "document", format, instructions, title, ...scope },
+        what: `${DOC_FORMAT_INFO[format].noun} covering “${brief}”`,
+        title,
+      };
     }
   }
 }

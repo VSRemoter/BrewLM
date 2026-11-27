@@ -663,6 +663,7 @@ const PHONE_COMMANDS = [
   ['/audio', '[brief|debate|critique] [short|long] [solo] [focus]', 'Make an audio overview'],
   ['/report', '[summary|study-guide|briefing|faq|timeline|analysis|custom <instructions>]', 'Write a report'],
   ['/research', '<topic>', 'Run deep research'],
+  ['/document', '[word|slides|excel|markdown] <what it covers>', 'Make a document file'],
   ['/queue', '<prompt or command>', 'Run it when the current reply finishes'],
   ['/star', '', 'Star or unstar this notebook'],
   ['/move', '<folder>', 'File this notebook in a folder'],
@@ -1123,6 +1124,7 @@ const AUDIO_EXT = { 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/mpeg': 'mp3
 /* Download, as the desktop's: audio in its own format, a page as HTML,
    anything else as markdown (the computer flattens it, as it does there). */
 async function downloadArtifact(a) {
+  if (a.kind === 'document') return saveDocFile(a.id);
   if (a.kind === 'audio') {
     const r = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(a.id)}/audio`);
     if (r.ok) {
@@ -1314,8 +1316,11 @@ const GEN_TOOLS = [
   { kind: 'research', label: 'Deep research', opts: [['topic', 'text', 'Topic to research…']] },
   { kind: 'audio', label: 'Audio overview', opts: [['mode', ['conversation', 'solo']], ['format', ['deep-dive', 'brief', 'debate', 'critique']], ['length', ['short', 'standard', 'long']], ['focus', 'text', FOCUS]] },
   { kind: 'interactive', label: 'Interactive', opts: [['topic', 'area', 'What to build (optional) — a game, simulation, explorer… Leave it empty and BrewLM picks an idea from your sources.']] },
+  // A file to download: Word, PowerPoint, Excel or Markdown (src/lib/document.ts).
+  { kind: 'document', label: 'Document', opts: [['doc_format', ['docx', 'pptx', 'xlsx', 'md']],
+    ['instructions', 'area', 'What should it cover, do and look like? e.g. “A 12-slide Christmas-themed talk on sleep, red and green, with speaker notes”']] },
 ];
-const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0, mode: 0 };
+const GEN_OPT_DEFAULT = { amount: 1, difficulty: 1, format: 0, length: 1, report_type: 0, mode: 0, doc_format: 0 };
 /* Where a choice starts: the desktop's Studio Defaults (from /preferences), else the usual one. */
 function genDefault(kind, key, vals) {
   const d = PREFS.defaults || {};
@@ -1334,9 +1339,10 @@ const OPT_LABELS = {
   'study-guide': 'Study Guide', 'briefing-doc': 'Briefing Doc', analysis: 'Thorough Analysis', custom: 'Custom',
   conversation: 'Conversation', solo: 'Solo', 'deep-dive': 'Deep Dive', brief: 'Brief', debate: 'Debate',
   critique: 'Critique', short: 'Short', standard: 'Standard', long: 'Long',
+  docx: 'Word', pptx: 'PowerPoint', xlsx: 'Excel', md: 'Markdown',
 };
 // Long-running tools get longer before the phone stops waiting (the job keeps going).
-const GEN_WAIT_S = { audio: 900, research: 900, interactive: 900 };
+const GEN_WAIT_S = { audio: 900, research: 900, interactive: 900, document: 600 };
 const activeJobs = {}; // jobId -> {label}
 
 async function pollJob(id, maxSeconds, onTick, everyMs = 2000) {
@@ -1355,17 +1361,21 @@ async function pollJob(id, maxSeconds, onTick, everyMs = 2000) {
 }
 
 function renderStudioTab(pane, nb, st) {
-  const groups = { audio: [], interactive: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
+  // A fresh list may hold revised documents: read their content again.
+  for (const k of Object.keys(fileCache)) delete fileCache[k];
+  const groups = { audio: [], interactive: [], files: [], docs: [], flashcards: [], quiz: [], mindmap: [] };
   for (const a of nb.artifacts) {
     if (a.kind === 'drawing') continue; // desktop-only sketchpad
     if (a.kind === 'audio') groups.audio.push(a);
+    else if (a.kind === 'document') groups.files.push(a);
     else if (a.kind === 'interactive') groups.interactive.push(a);
     else if (a.kind === 'flashcards') groups.flashcards.push(a);
     else if (a.kind === 'quiz') groups.quiz.push(a);
     else if (a.kind === 'mindmap') groups.mindmap.push(a);
     else groups.docs.push(a);
   }
-  const artCard = (a, body) => `<div class="card has-menu"><h3>${esc(a.title)}<span class="pill">${a.kind}</span>${
+  const artCard = (a, body) => `<div class="card has-menu"><h3>${a.kind === 'document' ? docIcon(a.doc_format) : ''}${esc(a.title)}<span class="pill">${
+      a.kind === 'document' ? esc(DOC_TYPES[a.doc_format]?.label || 'document') : a.kind}</span>${
       a.pinned ? '<span class="pill pin-pill">Pinned</span>' : ''}</h3>
     <span class="menu" data-amenu="${esc(a.id)}" aria-label="More for ${esc(a.title)}">⋯</span>${body}</div>`;
   let h = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
@@ -1387,6 +1397,12 @@ function renderStudioTab(pane, nb, st) {
     for (const a of groups.interactive) h += artCard(a, `
       <div class="tts-row"><button class="btn btn-primary" data-page="${esc(a.id)}">▶ Open page</button></div>
       <details><summary>Read the plan</summary><div class="body-md" data-plan="${esc(a.id)}"></div></details>`);
+  }
+  if (groups.files.length) {
+    h += `<div class="sec">Files</div>`;
+    for (const a of groups.files) h += artCard(a, `
+      <div class="tts-row"><button class="btn btn-primary" data-dl="${esc(a.id)}">⬇ Download .${esc(DOC_TYPES[a.doc_format]?.ext || 'file')}</button></div>
+      <details><summary>Preview</summary><div class="body-md" data-file="${esc(a.id)}"></div></details>`);
   }
   if (groups.docs.length) {
     h += `<div class="sec">Documents</div>`;
@@ -1413,12 +1429,15 @@ function renderStudioTab(pane, nb, st) {
   pane.querySelectorAll('[data-quiz]').forEach(el => el.parentElement.addEventListener('click', () => loadQuiz(el), { once: true }));
   pane.querySelectorAll('[data-mind]').forEach(el => el.parentElement.addEventListener('click', () => loadMind(el), { once: true }));
   pane.querySelectorAll('[data-page]').forEach(b => b.onclick = () => openPage(b));
+  pane.querySelectorAll('[data-dl]').forEach(b => b.onclick = (e) => { e.stopPropagation(); downloadFile(b); });
   pane.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
     if (!d.open) return;
     const el = d.querySelector('[data-script]');
     if (el && !el.dataset.done) loadScript(el);
     const plan = d.querySelector('[data-plan]');
     if (plan && !plan.dataset.done) loadPlan(plan);
+    const file = d.querySelector('[data-file]');
+    if (file && !file.dataset.done) loadFilePreview(file);
   }));
   pane.querySelectorAll('audio').forEach(a => {
     a.addEventListener('play', () => {
@@ -1530,6 +1549,7 @@ function generateSheet(pane, nb, preKind) {
     if (picked.kind === 'report' && options.report_type === 'custom' && !options.custom_prompt) {
       alert('Say what the custom report should cover.'); return;
     }
+    if (picked.kind === 'document' && !options.instructions) { alert('Say what the document should cover and do.'); return; }
     if (picked.kind !== 'research' && root.querySelector('[data-scope="pick"]').classList.contains('active')) {
       options.source_ids = [...root.querySelectorAll('#srcpick input:checked')].map(x => x.value);
       if (!options.source_ids.length) { alert('Pick at least one source, or use All sources.'); return; }
@@ -1587,6 +1607,89 @@ async function loadDoc(el) {
     el.innerHTML = text || '<p class="empty">Empty.</p>';
     hydrate(el);
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ----------------------------- document files ----------------------------- */
+/* A document's content comes from the computer; the file itself (Word,
+   PowerPoint, Excel) is built here by the desktop's own writers, loaded from
+   /assets/docfile.js on first use, so it's the same file the desktop saves. */
+const DOC_TYPES = {
+  docx: { label: 'Word', ext: 'docx' }, pptx: { label: 'PowerPoint', ext: 'pptx' },
+  xlsx: { label: 'Excel', ext: 'xlsx' }, md: { label: 'Markdown', ext: 'md' },
+};
+// Each file type's icon (from the desktop's icon set, lucide), in its own color.
+const DOC_OUTLINE = '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/>';
+const DOC_ICON_PATHS = {
+  docx: DOC_OUTLINE + '<path d="M11 18h2"/><path d="M12 12v6"/><path d="M9 13v-.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5v.5"/>',
+  pptx: '<path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/>',
+  xlsx: DOC_OUTLINE + '<path d="M8 13h2"/><path d="M14 13h2"/><path d="M8 17h2"/><path d="M14 17h2"/>',
+  md: DOC_OUTLINE + '<path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/>',
+};
+function docIcon(format) {
+  const f = DOC_ICON_PATHS[format] ? format : 'md';
+  return `<svg class="doc-ico doc-${f}" viewBox="0 0 24 24" aria-hidden="true">${DOC_ICON_PATHS[f]}</svg>`;
+}
+let docfileLoad = null;
+function loadDocfile() {
+  docfileLoad ??= new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = `/assets/docfile.js?v=${ASSETS_V}`;
+    s.onload = () => window.BrewDocFile ? ok(window.BrewDocFile) : fail(new Error('Files can’t be made here.'));
+    s.onerror = () => { docfileLoad = null; fail(new Error('Couldn’t load the file maker — try again.')); };
+    document.head.appendChild(s);
+  });
+  return docfileLoad;
+}
+const fileCache = {}; // artifact id -> its stored data (JSON text) and title
+async function fileData(id) {
+  if (!fileCache[id]) {
+    const a = await api(`/artifacts/${encodeURIComponent(id)}`);
+    fileCache[id] = { data: typeof a.data === 'string' ? a.data : JSON.stringify(a.data), title: a.title, doc: a.data };
+  }
+  return fileCache[id];
+}
+/* The document's real file (Word, PowerPoint, Excel or Markdown), saved as the desktop saves it. */
+async function saveDocFile(id) {
+  const [{ data, title }, lib] = await Promise.all([fileData(id), loadDocfile()]);
+  const f = await lib.build(data, title);
+  saveFile(exportName(title || 'document', f.ext), new Blob([f.bytes], { type: f.mime }));
+}
+async function downloadFile(btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Making the file…';
+  try { await saveDocFile(btn.dataset.dl); }
+  catch (e) { alert(e.message || 'Couldn’t make the file.'); }
+  finally { btn.disabled = false; btn.textContent = label; }
+}
+/* A document's preview, drawn by the desktop's own renderer (docfile.js), in
+   the file's look: Word on its page, slides in the deck's theme, sheets with
+   their styles. Markdown files show as formatted text. */
+async function loadFilePreview(el) {
+  el.dataset.done = '1';
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const [{ data }, lib] = await Promise.all([fileData(el.dataset.file), loadDocfile()]);
+    const d = lib.parse(data);
+    if (!d) throw new Error('This document’s data looks malformed.');
+    let h = d.prompt ? `<p class="doc-meta">Asked for: ${esc(d.prompt)}</p>` : '';
+    if (d.format === 'pptx') {
+      h += (d.slides || []).map((s, i) => `<div class="sec" style="margin-top:12px">Slide ${i + 1}</div>` +
+        `<div class="slide-wrap">${lib.slideHtml(s, i + 1, d.theme)}</div>` +
+        (s.notes ? `<details><summary>Speaker notes</summary><p style="font-size:13.5px;color:var(--ink2)">${esc(s.notes)}</p></details>` : '')).join('');
+    } else if (d.format === 'xlsx') {
+      const shown = lib.sheetDisplay(d.sheets);
+      h += d.sheets.map((sh, i) => {
+        const tab = lib.tabColor(sh, d.sheetStyle);
+        return `<div class="sec" style="margin-top:12px${tab ? `;border-bottom:2px solid #${tab};display:inline-block` : ''}">${esc(sh.name)}</div>` +
+          `<div class="sheet-wrap">${lib.sheetHtml(sh, shown[i], d.sheetStyle)}</div>`;
+      }).join('');
+    } else if (d.format === 'docx') {
+      h += `<div class="page-wrap">${lib.docHtml(d.markdown || '', d.style)}</div>`;
+    } else h += rich(d.markdown || '');
+    el.innerHTML = h;
+    hydrate(el);
+  } catch (e) { el.dataset.done = ''; el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
 /* ---------------------------- interactive pages --------------------------- */

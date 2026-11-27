@@ -7,6 +7,8 @@
 import { complete, extractJson, isAbortError } from "./llm";
 import { INTERACTIVE_REVISE_FORMAT, parseInteractive, writePage } from "./interactive";
 import { MINDMAP_FORMAT } from "./studio";
+import { documentFromReply, documentReviseContent, documentReviseFormat, parseDocument } from "./document";
+import { writeInParts } from "./longWrite";
 import { parseScript, scriptLine, synthesizeScript, type ScriptTurn } from "./tts";
 import type { Artifact, ArtifactKind, Settings } from "./types";
 
@@ -31,6 +33,10 @@ export function reviseContent(a: Artifact): string {
     }
   }
   if (a.kind === "interactive") return parseInteractive(a.data)?.html ?? a.data;
+  if (a.kind === "document") {
+    const d = parseDocument(a.data);
+    return d ? documentReviseContent(d) : a.data;
+  }
   return a.data; // mindmap, notes, report
 }
 
@@ -49,6 +55,7 @@ export const REVISE_FORMAT: Record<ArtifactKind, string> = {
     "Return ONLY the revised markdown report — no preface, no commentary. Keep the existing citation style (sources by title/url).",
   drawing: "", // drawings aren't revised by the AI
   interactive: INTERACTIVE_REVISE_FORMAT,
+  document: "", // per file type: documentReviseFormat
   audio: `Respond with the revised script only: one turn per line, exactly "Host: <line>" or "Co-Host: <line>", alternating and starting with the Host, about as long as the current script unless the instruction says otherwise. The hosts never call each other by name. Spoken language only: no markdown, no emojis, no stage directions.`,
 };
 
@@ -86,7 +93,10 @@ export async function reviseOutput(opts: {
 }): Promise<string> {
   const { a, note, reAudio, settings } = opts;
   const signal = opts.request.signal;
-  const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind]}`;
+  const doc = a.kind === "document" ? parseDocument(a.data) : null;
+  if (a.kind === "document" && !doc) throw new Error("This document's data looks malformed.");
+  const contract = doc ? documentReviseFormat(doc.format) : a.kind === "audio" && isSoloAudio(a) ? REVISE_FORMAT_AUDIO_SOLO : REVISE_FORMAT[a.kind];
+  const revisePrompt = `Here is the current "${a.title}":\n\n${reviseContent(a)}\n\nRevise it according to this instruction: ${note}\n\n${contract}`;
   const request = {
     ...opts.request,
     messages: [
@@ -95,7 +105,8 @@ export async function reviseOutput(opts: {
     ],
   };
   // Pages come back as a whole HTML document; writePage extracts and checks it.
-  const raw = a.kind === "interactive" ? await writePage(request) : await complete(request);
+  // Documents may be longer than one reply: a cut-off one is continued.
+  const raw = a.kind === "interactive" ? await writePage(request) : doc ? await writeInParts(request) : await complete(request);
 
   let data: string;
   if (a.kind === "flashcards" || a.kind === "quiz") {
@@ -138,6 +149,9 @@ export async function reviseOutput(opts: {
   } else if (a.kind === "interactive") {
     const page = parseInteractive(a.data);
     data = JSON.stringify({ html: raw, storyboard: page?.storyboard ?? "" });
+  } else if (doc) {
+    // Same file type, same request; the content is what changes.
+    data = JSON.stringify(documentFromReply(doc.format, doc.prompt, raw));
   } else if (a.kind === "research") {
     const md = raw.trim();
     if (md.length < 30) throw new Error("The revision came back empty — try again.");

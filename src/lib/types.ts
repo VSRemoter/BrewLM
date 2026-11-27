@@ -100,6 +100,8 @@ export interface Chat {
  * "drawing" is the user's own Excalidraw sketch — never sent to the AI.
  * "interactive" is an AI-written HTML page (animation, simulation or game),
  * shown in a sandboxed iframe.
+ * "document" is a file the AI wrote: Word, PowerPoint, Excel or Markdown
+ * (DocumentData JSON; the file is built on download, see document.ts).
  */
 export type ArtifactKind =
   | "flashcards"
@@ -110,7 +112,8 @@ export type ArtifactKind =
   | "audio"
   | "research"
   | "drawing"
-  | "interactive";
+  | "interactive"
+  | "document";
 
 export interface Artifact {
   id: string;
@@ -292,7 +295,7 @@ export interface Settings {
   showReasoning: boolean;
   /** Look deeper: in notebooks too big to send whole, chat may search and read more of the sources before answering (agent.ts). */
   agentTools: boolean;
-  /** Chat may set up one flashcard deck, quiz, mind map or report per message, made only after the user approves it (agent.ts). */
+  /** Chat may set up one flashcard deck, quiz, mind map, report or document per message, made only after the user approves it (agent.ts). */
   agentStudio: boolean;
   /** GIF and video chat backgrounds play; off, they hold their first frame. Per device (sync.ts LOCAL_SETTINGS). */
   animateBackgrounds: boolean;

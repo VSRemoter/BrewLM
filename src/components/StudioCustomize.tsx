@@ -33,7 +33,10 @@ import {
   type ReportType,
 } from "../lib/studio";
 import type { InteractiveOptions } from "../lib/interactive";
+import { DOC_FORMAT_INFO, DOC_FORMATS, DOC_PROMPT_MAX, type DocFormat } from "../lib/document";
+import { documentTitle } from "../lib/studioCommands";
 import type { Source } from "../lib/types";
+import { DOC_COLOR, DOC_ICON } from "./docIcons";
 import { SOURCE_TYPE_ICON } from "./sourceIcons";
 import {
   Divider,
@@ -150,11 +153,17 @@ function CustomizeFrame({
   disabled,
   rows,
   children,
+  namePlaceholder,
+  allowNoSources = false,
 }: {
   title: string;
   /** Saved-artifact name (prefilled with the tool default). */
   name: string;
   onNameChange: (v: string) => void;
+  /** Shown in an empty Name field. */
+  namePlaceholder?: string;
+  /** It can be made without any source (from general knowledge). */
+  allowNoSources?: boolean;
   sources: Source[];
   selected: string[];
   onSourcesChange: (ids: string[]) => void;
@@ -175,13 +184,15 @@ function CustomizeFrame({
       size="lg"
       footer={
         <>
-          <span className={`mr-auto text-[12.5px] ${none ? "text-warn" : "text-ink-3"}`}>
+          <span className={`mr-auto text-[12.5px] ${none && !allowNoSources ? "text-warn" : "text-ink-3"}`}>
             {none
-              ? "Pick at least one source"
+              ? allowNoSources
+                ? "From general knowledge"
+                : "Pick at least one source"
               : `From ${selected.length} ${selected.length === 1 ? "source" : "sources"}`}
           </span>
           <GhostButton onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton onClick={onGenerate} disabled={disabled || none}>
+          <PrimaryButton onClick={onGenerate} disabled={disabled || (none && !allowNoSources)}>
             {generateLabel}
           </PrimaryButton>
         </>
@@ -195,6 +206,7 @@ function CustomizeFrame({
               onChange={(e) => onNameChange(e.target.value)}
               maxLength={80}
               aria-label="Name"
+              placeholder={namePlaceholder}
               className={`${inputClass} h-8 py-0 font-medium`}
             />
           </PropertyRow>
@@ -563,6 +575,103 @@ export function InteractiveModal({
         />
         <p className="mt-1.5 text-[12px] leading-snug text-ink-3">
           Writes a whole web page, so it uses more of your model&apos;s output than other tools (roughly 15–45k tokens). Works best on a strong model.
+        </p>
+      </FormField>
+    </CustomizeFrame>
+  );
+}
+
+/* -------------------------------- document --------------------------------- */
+
+export interface DocumentOptions {
+  format: DocFormat;
+  /** What the file should cover and do. */
+  prompt: string;
+  title: string;
+  /** Sources to draw on; empty = none (general knowledge). */
+  sourceIds: string[];
+}
+
+const DOC_PLACEHOLDER: Record<DocFormat, string> = {
+  docx: "e.g. A two-page guide to car maintenance for new drivers, with a checklist and a table of service intervals. Georgia font, dark green headings on a cream page, page numbers.",
+  pptx: "e.g. A 12-slide Christmas-themed talk on why sleep matters, red and green with gold stars, big statistics, a quote and speaker notes.",
+  xlsx: "e.g. A yearly car running-costs budget: fuel, insurance and repairs by month, totals and averages in €, a bold title row and green headers.",
+  md: "e.g. Revision notes on the engine and brakes, with headings, key terms in bold and a short quiz at the end.",
+};
+
+/** Name the file, pick Word / PowerPoint / Excel / Markdown, and say what it should cover and do. */
+export function DocumentModal({
+  sources,
+  initialFormat = "docx",
+  onClose,
+  onGenerate,
+}: {
+  sources: Source[];
+  initialFormat?: DocFormat;
+  onClose: () => void;
+  onGenerate: (opts: DocumentOptions) => void;
+}) {
+  const [format, setFormat] = useState<DocFormat>(initialFormat);
+  const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState("");
+  const [sourceIds, setSourceIds] = useSourceSelection(sources);
+  const ready = prompt.trim().length > 0;
+
+  return (
+    <CustomizeFrame
+      title="Create a document"
+      name={name}
+      onNameChange={setName}
+      namePlaceholder={prompt.trim() ? documentTitle(prompt) : "Named from your request if left blank"}
+      sources={sources}
+      selected={sourceIds}
+      onSourcesChange={setSourceIds}
+      onClose={onClose}
+      onGenerate={() => ready && onGenerate({ format, prompt: prompt.trim(), title: name.trim() || documentTitle(prompt), sourceIds })}
+      generateLabel="Create"
+      disabled={!ready}
+      allowNoSources
+    >
+      <FormField label="File type">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="radiogroup" aria-label="File type">
+          {DOC_FORMATS.map((f) => {
+            const Icon = DOC_ICON[f];
+            const on = f === format;
+            return (
+              <button
+                key={f}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => setFormat(f)}
+                title={DOC_FORMAT_INFO[f].desc}
+                className={`flex flex-col items-start gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                  on ? "border-accent bg-hover-soft ring-1 ring-accent" : "border-edge hover:border-ink-3"
+                }`}
+              >
+                <Icon size={18} strokeWidth={1.8} className={DOC_COLOR[f]} />
+                <span className="text-[12.5px] font-semibold leading-none text-ink">{DOC_FORMAT_INFO[f].label}</span>
+                <span className="text-[11px] leading-none text-ink-3">.{DOC_FORMAT_INFO[f].ext}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-1.5 text-[12px] leading-snug text-ink-3">{DOC_FORMAT_INFO[format].desc}.</p>
+      </FormField>
+      <FormField label="What should it cover, do and look like?">
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder={DOC_PLACEHOLDER[format]}
+          rows={4}
+          maxLength={DOC_PROMPT_MAX}
+          autoFocus
+          className={textareaClass}
+        />
+        <p className="mt-1.5 text-[12px] leading-snug text-ink-3">
+          {format === "md"
+            ? "Say what it covers, its length and structure."
+            : "Say what it covers, how long it is and how it's organized, and describe the look you want: colors, fonts, theme, layout. The AI follows your words; anything you leave out it picks to suit the topic."}
         </p>
       </FormField>
     </CustomizeFrame>

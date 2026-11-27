@@ -28,6 +28,9 @@ import {
   sandboxDoc,
 } from "../lib/interactive";
 import type { Artifact, Flashcard, QuizQuestion } from "../lib/types";
+import { DOC_FORMAT_INFO, documentFile, documentSummary, parseDocument, sheetDisplay, type DocumentData } from "../lib/document";
+import { docHtml, sheetHtml, slideHtml, tabColor } from "../lib/docfile/preview";
+import { DocIcon } from "./docIcons";
 import { SPEAKER_LABEL } from "../lib/tts";
 import { fmtItemStorage, useItemStorage } from "../lib/storage";
 import { fmtUsageLine, parseOutputUsage } from "../lib/usage";
@@ -115,10 +118,21 @@ export default function ArtifactView({
     }
   };
 
-  /** Save the output to disk — audio in its own format (m4a/mp3/wav), everything else as markdown. */
+  /** Save the output to disk — audio in its own format (m4a/mp3/wav), documents as their file, everything else as markdown. */
   const download = async () => {
     setExportError(null);
     try {
+      if (artifact.kind === "document") {
+        const d = parseDocument(artifact.data);
+        if (!d) throw new Error("this document's data looks malformed");
+        const file = await documentFile(d, artifact.title);
+        await platform.saveFile({
+          defaultName: exportName(artifact.title, file.ext),
+          filters: [{ name: file.filterName, extensions: [file.ext] }],
+          data: file.data,
+        });
+        return;
+      }
       if (artifact.kind === "interactive") {
         const page = parseInteractive(artifact.data);
         if (page) {
@@ -190,7 +204,7 @@ export default function ArtifactView({
             <FilePlus2 size={15} strokeWidth={1.8} />
           )}
         </IconButton>
-        <IconButton onClick={download} label="Download…">
+        <IconButton onClick={download} label={artifact.kind === "document" ? "Download file…" : "Download…"}>
           <Download size={15} strokeWidth={1.8} />
         </IconButton>
       </div>
@@ -232,6 +246,7 @@ export default function ArtifactView({
           )}
           {artifact.kind === "research" && <ResearchView data={artifact.data} />}
           {artifact.kind === "audio" && <AudioView id={artifact.id} title={artifact.title} data={artifact.data} />}
+          {artifact.kind === "document" && <DocumentView data={artifact.data} onDownload={download} />}
         </div>
       )}
       {(usage || storageLine) && (
@@ -724,6 +739,120 @@ function AudioView({ id, title, data }: { id: string; title: string; data: strin
           </p>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------ Document view ----------------------------- */
+
+/**
+ * A document's preview, drawn by the same code and in the same look as its
+ * file (docfile/preview.ts): Word on its page in its fonts and colors,
+ * slides in the deck's theme with their speaker notes, sheets with their
+ * styles and formulas worked out. Markdown files show as formatted text.
+ * Download saves the real file.
+ */
+function DocumentView({ data, onDownload }: { data: string; onDownload: () => Promise<void> }) {
+  const doc = useMemo(() => parseDocument(data), [data]);
+  const [saving, setSaving] = useState(false);
+  if (!doc) return <ParseError />;
+  const info = DOC_FORMAT_INFO[doc.format];
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onDownload();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-3 rounded-xl border border-edge-soft bg-canvas px-3 py-2.5">
+        <DocIcon format={doc.format} size={22} className="shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[12.5px] font-semibold">{info.long}</span>
+          <span className="block truncate text-[11px] text-ink-3">
+            .{info.ext} · {documentSummary(doc)}
+          </span>
+        </span>
+        <GhostButton onClick={() => void save()} disabled={saving}>
+          {saving ? <Loader2 size={12} className="mr-1.5 inline animate-spin" /> : <Download size={12} className="mr-1.5 inline" />}
+          Download .{info.ext}
+        </GhostButton>
+      </div>
+      {doc.prompt && (
+        <details className="rounded-lg bg-hover-soft px-3 py-2 text-[12px] text-ink-3">
+          <summary className="cursor-pointer select-none">What it was asked to do</summary>
+          <p className="mt-1.5 whitespace-pre-wrap leading-relaxed text-ink-2">{doc.prompt}</p>
+        </details>
+      )}
+      {doc.format === "pptx" ? (
+        <SlidesPreview doc={doc} />
+      ) : doc.format === "xlsx" ? (
+        <SheetsPreview doc={doc} />
+      ) : doc.format === "docx" ? (
+        <div className="text-[13.5px] text-black" dangerouslySetInnerHTML={{ __html: docHtml(doc.markdown ?? "", doc.style) }} />
+      ) : (
+        <div className="md text-[13.5px] leading-relaxed" dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.markdown ?? "") }} />
+      )}
+    </div>
+  );
+}
+
+function SlidesPreview({ doc }: { doc: DocumentData }) {
+  const slides = doc.slides ?? [];
+  const html = useMemo(() => slides.map((s, i) => slideHtml(s, i + 1, doc.theme)), [slides, doc.theme]);
+  return (
+    <div className="flex flex-col gap-4">
+      {slides.map((s, i) => (
+        <div key={i} className="flex flex-col gap-1.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Slide {i + 1}</span>
+          <div className="overflow-hidden rounded-lg border border-edge-soft shadow-sm" dangerouslySetInnerHTML={{ __html: html[i] }} />
+          {s.notes && (
+            <details className="text-[12px] text-ink-3">
+              <summary className="cursor-pointer select-none">Speaker notes</summary>
+              <p className="mt-1 whitespace-pre-wrap leading-relaxed text-ink-2">{s.notes}</p>
+            </details>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SheetsPreview({ doc }: { doc: DocumentData }) {
+  const sheets = doc.sheets ?? [];
+  const shown = useMemo(() => sheetDisplay(sheets), [sheets]);
+  const [tab, setTab] = useState(0);
+  const i = Math.min(tab, sheets.length - 1);
+  const sheet = sheets[i];
+  const html = useMemo(() => (sheet ? sheetHtml(sheet, shown[i], doc.sheetStyle) : ""), [sheet, shown, i, doc.sheetStyle]);
+  if (!sheet) return <ParseError />;
+  return (
+    <div className="flex flex-col gap-2">
+      {sheets.length > 1 && (
+        <div className="flex flex-wrap gap-1" role="tablist">
+          {sheets.map((sh, k) => {
+            const color = tabColor(sh, doc.sheetStyle);
+            return (
+              <button
+                key={k}
+                role="tab"
+                aria-selected={k === i}
+                onClick={() => setTab(k)}
+                style={color ? { boxShadow: `inset 0 -2px 0 #${color}` } : undefined}
+                className={`rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                  k === i ? "bg-accent text-accent-ink" : "bg-hover-soft text-ink-3 hover:text-ink"
+                }`}
+              >
+                {sh.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div className="brew-sheet-wrap overflow-auto rounded-lg border border-edge-soft bg-white" dangerouslySetInnerHTML={{ __html: html }} />
+      <p className="text-[11px] text-ink-3">Hover a calculated cell to see its formula. Excel and Numbers keep them live.</p>
     </div>
   );
 }

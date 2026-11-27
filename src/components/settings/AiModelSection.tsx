@@ -645,7 +645,7 @@ export default function AiModelSection({
             desc={
               isLocal
                 ? "Not available with local models yet. Your setting is kept for cloud models."
-                : "Ask in your own words for flashcards, a quiz, a mind map or a report, and the AI sets it up. Nothing is made until you click Make it, and it makes one at most per message. Audio overviews and deep research stay in the Studio panel."
+                : "Ask in your own words for flashcards, a quiz, a mind map, a report or a document (Word, PowerPoint, Excel or Markdown), and the AI sets it up. Nothing is made until you click Make it, and it makes one at most per message. Audio overviews and deep research stay in the Studio panel."
             }
             alignTop
           >

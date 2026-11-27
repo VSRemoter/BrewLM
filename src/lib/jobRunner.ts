@@ -49,7 +49,18 @@ import { cloneNotebook } from "./share";
 import { cleanUpShares } from "./shareLinks";
 import { CONSTITUTION_TEMPLATES, CONSTITUTION_TITLE } from "./constitution";
 import { reviseOutput } from "./revise";
-import { parseStudioCommand } from "./studioCommands";
+import { documentTitle, parseStudioCommand } from "./studioCommands";
+import { writeInParts } from "./longWrite";
+import {
+  buildDocumentPrompt,
+  DOC_FORMAT_INFO,
+  DOCUMENT_ROLE,
+  documentFromReply,
+  documentSummary,
+  isDocFormat,
+  noSourcesSystem,
+  type DocFormat,
+} from "./document";
 import { artifactText, buildMentionCatalog, exportName, resolveMentions, type MentionItem } from "./mentions";
 import { mentionsForTurn, prepareMentions } from "./mentionLinks";
 import { complete, extractJson, isAbortError, type StreamUsage } from "./llm";
@@ -555,7 +566,7 @@ async function runChatCommand(
   );
   // Studio commands (/quiz hard 10 …): parsed as the desktop parses them, with
   // its Studio Defaults; a notice first, then the result, as its chat shows them.
-  if (/^\/(flashcards|quiz|mindmap|audio|report|research)(\s|$)/i.test(text)) {
+  if (/^\/(flashcards|quiz|mindmap|audio|report|research|document|doc)(\s|$)/i.test(text)) {
     const parsed = parseStudioCommand(text, settings);
     if (typeof parsed === "string") return parsed;
     await addMessage(c.chatId, c.notebookId, "assistant", parsed.notice);
@@ -573,7 +584,9 @@ async function runChatCommand(
           ? { kind: "research", options: { ...BASE_GEN, topic: cmd.title } }
           : cmd.tool === "report"
             ? { kind: "report", options: { ...BASE_GEN, prompt: cmd.prompt, label: cmd.label } }
-            : { kind: cmd.tool, options: { ...BASE_GEN, prompt: cmd.prompt } };
+            : cmd.tool === "document"
+              ? { kind: "document", options: { ...BASE_GEN, doc_format: cmd.format, instructions: cmd.instructions, title: cmd.title } }
+              : { kind: cmd.tool, options: { ...BASE_GEN, prompt: cmd.prompt } };
     try {
       return await runGenerateJob({ notebook_id: c.notebookId, ...job }, c.signal);
     } catch (e) {
@@ -969,6 +982,10 @@ interface GenOpts {
   /** A Studio command from chat: its prompt, built by parseStudioCommand (and a report's name). */
   prompt?: string;
   label?: string;
+  /** Documents: the file type (docx, pptx, xlsx, md). */
+  doc_format?: string;
+  /** Documents: what the file should cover and do. */
+  instructions?: string;
 }
 
 async function runGenerateJob(p: {
@@ -1022,6 +1039,8 @@ async function runGenerateJob(p: {
     announce(["artifacts", "sources", "notebooks"], p.notebook_id);
     return `Saved research “${named || o.topic}” to Studio — ${outcome.pages.length} pages read & imported as sources.`;
   }
+
+  if (p.kind === "document") return runDocumentJob(p.notebook_id, o, grounding, settings, key, signal, meter);
 
   if (grounding.length === 0 || !grounding.some(isTextSource)) {
     throw new Error("This notebook needs at least one text-based source (note, PDF, or link) first.");
@@ -1235,6 +1254,69 @@ async function runGenerateJob(p: {
   await touchNotebook(p.notebook_id);
   announce(["artifacts", "notebooks"], p.notebook_id);
   return done;
+}
+
+/**
+ * A document from the phone (its Generate sheet or /document in chat), made
+ * as the desktop's Studio makes it: grounded in the sources when there are
+ * any, from general knowledge when there are none.
+ */
+async function runDocumentJob(
+  notebookId: string,
+  o: GenOpts,
+  grounding: Source[],
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  key: string,
+  signal: AbortSignal,
+  meter: ReturnType<typeof newUsageMeter>
+): Promise<string> {
+  const format: DocFormat = isDocFormat(o.doc_format) ? o.doc_format : "docx";
+  const instructions = (o.instructions ?? "").trim();
+  if (!instructions) throw new Error("Say what the document should cover and do.");
+  const title = (o.title ?? "").trim() || documentTitle(instructions);
+  const prompt = buildDocumentPrompt(format, title, instructions);
+  void setJobProgress(`Writing ${DOC_FORMAT_INFO[format].noun}…`);
+  let system: string;
+  if (grounding.some(isTextSource)) {
+    await ensureIndexed(grounding, settings);
+    const total = grounding.filter(isRetrievable).reduce((sum, s) => sum + sourceText(s).length, 0);
+    if (total > MAP_REDUCE_THRESHOLD) {
+      const notes = await condenseNotebook(notebookId, grounding, settings, (ph) => void setJobProgress(ph), signal);
+      system = condensedSystemPrompt(notes, DOCUMENT_ROLE);
+    } else {
+      const budget = contextBudget(settings);
+      const retrieved = await rankChunks(grounding, instructions, settings, budget.sources);
+      system = buildSystemPrompt(grounding, [], retrieved.length ? retrieved : undefined, { budget, role: DOCUMENT_ROLE });
+    }
+    void setJobProgress(`Writing ${DOC_FORMAT_INFO[format].noun}…`);
+  } else system = noSourcesSystem();
+  // As long as the request wants: a reply cut off at the output limit is continued.
+  const raw = await writeInParts(
+    {
+      provider: settings.provider,
+      apiKey: key,
+      model: settings.model,
+      thinking: settings.thinking,
+      maxOutput: settings.maxOutput,
+      temperature: settings.temperature ?? undefined,
+      signal,
+      onUsage: (u) => {
+        void recordUsage("studio", settings.provider, settings.model, u);
+        meterUsage(meter, settings.provider, settings.model, u);
+      },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: prompt },
+      ],
+    },
+    (part) => void setJobProgress(`Writing ${DOC_FORMAT_INFO[format].noun} — part ${part}…`)
+  );
+  const doc = documentFromReply(format, instructions, raw);
+  throwIfAborted(signal);
+  await addArtifact(notebookId, "document", title, JSON.stringify(doc), meterTotal(meter));
+  await touchNotebook(notebookId);
+  announce(["artifacts", "notebooks"], notebookId);
+  return `Saved ${DOC_FORMAT_INFO[format].noun} to Studio as “${title}” (${documentSummary(doc)}).`;
 }
 
 /* -------------------------------- helpers --------------------------------- */

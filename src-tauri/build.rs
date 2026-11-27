@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 fn phone_assets() {
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for name in ["render.js.gz", "render.css.gz", "mermaid.js.gz"] {
+    for name in ["render.js.gz", "render.css.gz", "mermaid.js.gz", "docfile.js.gz"] {
         let src = std::path::Path::new("phone-render").join(name);
         println!("cargo:rerun-if-changed={}", src.display());
         let bytes = std::fs::read(&src).unwrap_or_default();

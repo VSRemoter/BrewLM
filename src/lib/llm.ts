@@ -94,6 +94,12 @@ export interface StreamOptions {
    * and the provider blocks to send back with them. Only called when `tools` was sent.
    */
   onToolCalls?: (calls: ToolCall[], replay: unknown[]) => void;
+  /**
+   * Called when the reply was cut off at the output limit after writing text
+   * (finish_reason "length" / stop_reason "max_tokens"), so a caller can ask
+   * for the rest (document.ts writeInParts). Not called for complete replies.
+   */
+  onCutOff?: () => void;
 }
 
 /**
@@ -821,6 +827,7 @@ async function* streamOpenAICompatible(opts: StreamOptions): AsyncGenerator<stri
     const asked = calls.done();
     if (opts.tools?.length && asked.length > 0) opts.onToolCalls?.(asked, details.done());
 
+    if (finishReason === "length" && wroteText) opts.onCutOff?.();
     const ranOut = finishReason === "length" && !wroteText && images.length === 0 && asked.length === 0;
     if (!ranOut) return;
     const room = body[capField] as number | undefined;
@@ -933,6 +940,7 @@ async function* streamAnthropic(opts: StreamOptions): AsyncGenerator<string> {
       opts.onToolCalls?.(toolCalls, replay);
       return;
     }
+    if (stopReason === "max_tokens" && wroteText) opts.onCutOff?.();
     if (stopReason !== "max_tokens" || wroteText) return;
     const low = effortFor(opts, limits, "low");
     if (!retriedThinking && low && low !== effort) {

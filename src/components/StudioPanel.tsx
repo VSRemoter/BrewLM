@@ -1,5 +1,6 @@
 import {
   AudioLines,
+  FilePen,
   FileText,
   GraduationCap,
   Layers,
@@ -30,6 +31,7 @@ import {
 } from "../lib/rag";
 import { cancelStudioJob, startStudioJob, throwIfCancelled, useStudioJobs } from "../lib/studioJobs";
 import { reviseOutput } from "../lib/revise";
+import { writeInParts } from "../lib/longWrite";
 import { deepResearch } from "../lib/research";
 import { activeKey, noKeyMessage } from "../lib/settings";
 import { aiBlock } from "../lib/brewlmAi";
@@ -55,7 +57,17 @@ import {
   type AudioOptions,
   type ReportOptions,
 } from "../lib/studio";
-import type { StudioCommand } from "../lib/studioCommands";
+import { documentTitle, type StudioCommand } from "../lib/studioCommands";
+import {
+  buildDocumentPrompt,
+  DOC_FORMAT_INFO,
+  DOC_FORMATS,
+  DOCUMENT_ROLE,
+  documentFromReply,
+  documentSummary,
+  noSourcesSystem,
+  parseDocument,
+} from "../lib/document";
 import {
   hasFocus,
   interactivePrior,
@@ -85,12 +97,15 @@ import { activeTheme, isDarkTheme } from "../lib/themes";
 import { buildSystemPrompt } from "./ChatPanel";
 import {
   AudioModal,
+  DocumentModal,
   FlashcardsModal,
   InteractiveModal,
   MindmapModal,
   QuizModal,
   ReportModal,
+  type DocumentOptions,
 } from "./StudioCustomize";
+import { DOC_COLOR, DOC_ICON, DocIcon } from "./docIcons";
 import { FormField, GhostButton, inputClass, Modal, PrimaryButton, Spinner, textareaClass } from "./ui";
 import { Toggle } from "./settings/controls";
 import { LocalOnlyToggle, useLocalOnly } from "./LocalOnly";
@@ -139,6 +154,7 @@ const KIND_ICON: Record<ArtifactKind, typeof Layers> = {
   research: Telescope,
   drawing: PenLine,
   interactive: MonitorPlay,
+  document: FilePen,
 };
 
 /* ---------------------------------- Audio --------------------------------- */
@@ -198,6 +214,7 @@ const StudioPanel = forwardRef<
   const [reportOpen, setReportOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [interactiveOpen, setInteractiveOpen] = useState(false);
+  const [documentOpen, setDocumentOpen] = useState(false);
   const [customizing, setCustomizing] = useState<CustomizeKind | null>(null);
   /** Quick-generation naming step: prefilled default + what to run on confirm. */
   const [naming, setNaming] = useState<{
@@ -557,6 +574,52 @@ const StudioPanel = forwardRef<
   };
 
   /**
+   * Document: a Word, PowerPoint, Excel or Markdown file written from the
+   * user's request, grounded in the picked sources (or general knowledge when
+   * none are picked). What's saved is the content; the file is built when
+   * it's downloaded (document.ts).
+   */
+  const genDocument = async (opts: DocumentOptions & { allSources?: boolean }): Promise<string> => {
+    setDocumentOpen(false);
+    setError(null);
+    if (!activeKey(settings)) {
+      onOpenSettings();
+      return noKeyMessage(settings, true);
+    }
+    const info = DOC_FORMAT_INFO[opts.format];
+    const title = opts.title.trim() || documentTitle(opts.prompt);
+    const job = startStudioJob(notebookId, "document", title, `Writing ${info.noun}…`);
+    const meter = newUsageMeter();
+    try {
+      // From chat, no pick means every source; from the dialog, an empty pick means none.
+      const scoped = opts.allSources ? sources : sources.filter((s) => opts.sourceIds.includes(s.id));
+      const system = scoped.some(isTextSource)
+        ? await groundedSystem(scoped, opts.prompt, { exhaustive: true, onPhase: job.setPhase, signal: job.signal, role: DOCUMENT_ROLE })
+        : noSourcesSystem();
+      job.setPhase(`Writing ${info.noun}…`);
+      // As long as the request wants: a reply cut off at the output limit is continued.
+      const raw = await writeInParts(
+        {
+          ...llmRequest(job.signal, meter),
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: buildDocumentPrompt(opts.format, title, opts.prompt) },
+          ],
+        },
+        (part) => job.setPhase(`Writing ${info.noun} — part ${part}…`)
+      );
+      const doc = documentFromReply(opts.format, opts.prompt, raw);
+      throwIfCancelled(job.signal);
+      await addArtifact(notebookId, "document", title, JSON.stringify(doc), meterTotal(meter));
+      return `Saved ${info.noun} to Studio as “${title}” (${documentSummary(doc)}).`;
+    } catch (e) {
+      return failMsg(e, "Document", job.signal);
+    } finally {
+      job.finish();
+    }
+  };
+
+  /**
    * Audio overview: chat model writes a two-host podcast script; the TTS
    * provider chosen in Settings → Audio voices (OpenAI / ElevenLabs /
    * system voices) decides how it's synthesized.
@@ -824,6 +887,14 @@ const StudioPanel = forwardRef<
             );
           case "research":
             return genResearch(cmd.title, "");
+          case "document":
+            return genDocument({
+              format: cmd.format,
+              prompt: cmd.instructions,
+              title: cmd.title ?? "",
+              sourceIds: cmd.sourceIds ?? [],
+              allSources: !cmd.sourceIds?.length,
+            });
         }
       },
     })
@@ -969,6 +1040,31 @@ const StudioPanel = forwardRef<
               <span className="text-[12.5px] font-semibold leading-none">Drawings</span>
               <span className="text-[11px] leading-tight text-ink-3">Sketch, write &amp; work problems</span>
             </div>
+            {/* Document — a Word, PowerPoint, Excel or Markdown file */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setDocumentOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setDocumentOpen(true);
+              }}
+              className="lift group relative col-span-2 flex cursor-pointer flex-col items-start gap-1.5 rounded-xl border border-edge bg-panel p-3 text-left hover:border-ink-3"
+            >
+              <span className="absolute right-3 top-3 flex items-center gap-1" aria-hidden>
+                {DOC_FORMATS.map((f) => {
+                  const Icon = DOC_ICON[f];
+                  return <Icon key={f} size={13} strokeWidth={1.8} className={DOC_COLOR[f]} />;
+                })}
+              </span>
+              <FilePen size={16} strokeWidth={1.8} className="text-ink" />
+              <span className="flex items-center gap-1.5 text-[12.5px] font-semibold leading-none">
+                Document
+                {runningSpinner("document")}
+              </span>
+              <span className="text-[11px] leading-tight text-ink-3">
+                Word, PowerPoint, Excel or Markdown files
+              </span>
+            </div>
             {/* Interactive — an AI-built web page: app, animation, game, simulation… */}
             <div
               role="button"
@@ -1054,6 +1150,7 @@ const StudioPanel = forwardRef<
                 {[...artifacts].sort((x, y) => y.pinned - x.pinned).map((a) => {
                   const Icon = KIND_ICON[a.kind] ?? StickyNote;
                   let subtitle = "";
+                  let doc: ReturnType<typeof parseDocument> = null;
                   try {
                     if (a.kind === "flashcards")
                       subtitle = `${JSON.parse(a.data).length} cards`;
@@ -1067,6 +1164,10 @@ const StudioPanel = forwardRef<
                       subtitle = `${d.sources?.length ?? 0} sources read`;
                     } else if (a.kind === "drawing") subtitle = `Drawing · ${formatTime(a.created_at)}`;
                     else if (a.kind === "interactive") subtitle = `Interactive · ${formatTime(a.created_at)}`;
+                    else if (a.kind === "document") {
+                      doc = parseDocument(a.data);
+                      subtitle = doc ? `${DOC_FORMAT_INFO[doc.format].label} · ${documentSummary(doc)}` : formatTime(a.created_at);
+                    }
                     else subtitle = formatTime(a.created_at);
                   } catch {
                     subtitle = formatTime(a.created_at);
@@ -1080,7 +1181,11 @@ const StudioPanel = forwardRef<
                         onClick={() => viewArtifact(a)}
                         className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                       >
-                        <Icon size={15} strokeWidth={1.8} className="shrink-0 text-ink-2" />
+                        {a.kind === "document" ? (
+                          <DocIcon format={doc?.format} className="shrink-0" />
+                        ) : (
+                          <Icon size={15} strokeWidth={1.8} className="shrink-0 text-ink-2" />
+                        )}
                         <span className="min-w-0">
                           <span className="block truncate text-[12.5px] font-medium">
                             {a.title}
@@ -1172,6 +1277,14 @@ const StudioPanel = forwardRef<
             ))}
           </div>
         </Modal>
+      )}
+
+      {documentOpen && (
+        <DocumentModal
+          sources={textSources}
+          onClose={() => setDocumentOpen(false)}
+          onGenerate={(opts) => void genDocument(opts)}
+        />
       )}
 
       {interactiveOpen && (
@@ -1383,6 +1496,7 @@ function ReviseModal({
     report: "e.g. add a caveats section, tighten the intro",
     research: "e.g. focus more on 2024 findings, trim the history",
     notes: "e.g. condense to half the length",
+    document: "e.g. add a slide on safety, make it more formal, add a totals row",
   };
 
   return (
