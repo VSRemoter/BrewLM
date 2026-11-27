@@ -334,7 +334,7 @@ describe("abuse limits", () => {
     // Another account isn't affected.
     const other = await signIn("calm@example.com");
     expect((await call(`/v1/vaults/${other.vault}/pull?since=0`, { session: other.session })).status).toBe(200);
-  });
+  }, 30_000); // 610 requests in a row: slow CI runners need more than the default 5 s
 
   it("tells browsers not to guess what a file is", async () => {
     const res = await call("/v1/vaults/abuse-push/pull?since=0", { headers: { authorization: "Bearer test-token" } });
