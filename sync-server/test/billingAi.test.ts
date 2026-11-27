@@ -1,10 +1,20 @@
 import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cycleOf, reconcile, restOfMonth, type AiAccount } from "../src/ai";
 import { AI_CONFIG, AI_MONTHLY, AI_TOPUP_CREDIT, AI_TRIAL } from "../src/aiConfig";
 import { sha256, type User } from "../src/auth";
 import { changePlan as changePlanRoute, checkout as checkoutRoute } from "../src/billing";
+
+
+// The first month is prorated, with the trial amount as a floor (ai.ts), so
+// late in a real month the floor wins and the proration checks below fail.
+// Run these tests on the 10th of the month, whatever day CI runs them.
+beforeAll(() => {
+  const d = new Date();
+  vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 10, 12) });
+});
+afterAll(() => vi.useRealTimers());
 
 const call = (path: string, init?: RequestInit & { session?: string }) =>
   exports.default.fetch(`https://sync.test${path}`, {
